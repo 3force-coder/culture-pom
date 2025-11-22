@@ -7,9 +7,7 @@ from database import get_connection
 from components import show_footer
 from auth import is_authenticated
 import io
-import json
-import os
-from streamlit_lottie import st_lottie
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Sources - Culture Pom", page_icon="📋", layout="wide")
 
@@ -82,18 +80,20 @@ if not is_authenticated():
     st.warning("⚠️ Veuillez vous connecter pour accéder à cette page")
     st.stop()
 
-# ⭐ FONCTION CHARGEMENT ANIMATION LOTTIE
-def load_lottie_file(filepath: str):
-    """Charge une animation Lottie depuis un fichier local"""
-    try:
-        with open(filepath, "r") as f:
-            return json.load(f)
-    except:
-        return None
-
-# Charger l'animation confetti (fichier dans le même dossier que le script)
-LOTTIE_PATH = os.path.join(os.path.dirname(__file__), "confetti_animation.json")
-LOTTIE_CONFETTI = load_lottie_file(LOTTIE_PATH)
+# ⭐ FONCTION ANIMATION LOTTIE
+def show_confetti_animation():
+    """Affiche l'animation confetti Lottie via web component"""
+    confetti_html = """
+    <script src="https://unpkg.com/@lottiefiles/dotlottie-wc@0.8.5/dist/dotlottie-wc.js" type="module"></script>
+    <div style="display: flex; justify-content: center; align-items: center;">
+        <dotlottie-wc 
+            src="https://lottie.host/21b8e802-34df-4b54-89ca-4c7843e1da14/AoYf85WPKi.lottie" 
+            style="width: 300px; height: 300px" 
+            autoplay>
+        </dotlottie-wc>
+    </div>
+    """
+    components.html(confetti_html, height=320)
 
 st.title("📋 Gestion des Tables de Référence")
 st.markdown("---")
@@ -579,14 +579,9 @@ if st.session_state.get('show_add_form', False):
                 success, message = add_record(selected_table, filtered_data)
                 if success:
                     st.success(message)
-                    # ⭐ Animation confettis Lottie
-                    if LOTTIE_CONFETTI:
-                        st_lottie(LOTTIE_CONFETTI, height=300, key="confetti_success")
-                        time.sleep(2)
-                    else:
-                        # Fallback si fichier non trouvé
-                        st.balloons()
-                        time.sleep(1.5)
+                    # ⭐ Animation confettis Lottie (web component)
+                    show_confetti_animation()
+                    time.sleep(2)
                     st.session_state.show_add_form = False
                     st.session_state.pop('new_data', None)
                     st.rerun()
