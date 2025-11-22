@@ -123,66 +123,25 @@ def get_active_varietes():
     """Récupère les codes variétés actifs depuis ref_varietes"""
     try:
         conn = get_connection()
+        cursor = conn.cursor()
         
-        # DEBUG : Afficher type de connexion
-        st.write(f"🔍 DEBUG: Type connexion = {type(conn)}")
+        # ✅ MÊME MÉTHODE QUE load_table_data (qui fonctionne)
+        cursor.execute("SELECT code_variete FROM ref_varietes WHERE is_active = TRUE ORDER BY code_variete")
         
-        # MÉTHODE 1 : Pandas (recommandé)
-        try:
-            query = "SELECT code_variete FROM ref_varietes WHERE is_active = TRUE ORDER BY code_variete"
-            df = pd.read_sql(query, conn)
-            st.write(f"🔍 DEBUG: pd.read_sql OK - {len(df)} lignes")
-            codes = df['code_variete'].tolist()
-        except Exception as e1:
-            st.warning(f"⚠️ pd.read_sql échoué : {e1}")
-            
-            # MÉTHODE 2 : Cursor classique (fallback)
-            try:
-                cursor = conn.cursor()
-                cursor.execute("SELECT code_variete FROM ref_varietes WHERE is_active = TRUE ORDER BY code_variete")
-                
-                # Tester différents formats de retour
-                results = cursor.fetchall()
-                st.write(f"🔍 DEBUG: fetchall OK - {len(results)} lignes")
-                st.write(f"🔍 DEBUG: Premier résultat type = {type(results[0]) if results else 'vide'}")
-                
-                if results:
-                    # Essayer différentes méthodes d'accès
-                    first = results[0]
-                    if isinstance(first, tuple):
-                        codes = [row[0] for row in results]
-                    elif isinstance(first, list):
-                        codes = [row[0] for row in results]
-                    else:
-                        # Peut-être juste une string
-                        codes = [str(row) for row in results]
-                    
-                    st.write(f"🔍 DEBUG: Extraction OK - {len(codes)} codes")
-                else:
-                    codes = []
-                    st.error("❌ fetchall retourne liste vide")
-                
-                cursor.close()
-            except Exception as e2:
-                st.error(f"❌ Cursor aussi échoué : {e2}")
-                codes = []
-        
+        rows = cursor.fetchall()
+        cursor.close()
         conn.close()
         
-        # Afficher résultat
-        if codes:
-            st.success(f"✅ {len(codes)} codes variétés chargés")
-            st.write(f"🔍 DEBUG: Premiers codes = {codes[:5]}")
-        else:
-            st.error("❌ AUCUN CODE RÉCUPÉRÉ")
-            st.info("💡 Vérifier : SELECT COUNT(*) FROM ref_varietes WHERE is_active = TRUE")
+        # Créer DataFrame comme dans load_table_data
+        df = pd.DataFrame(rows, columns=['code_variete'])
+        
+        # Extraire liste de codes
+        codes = df['code_variete'].tolist()
         
         return codes
         
     except Exception as e:
-        st.error(f"❌ Erreur get_active_varietes : {str(e)}")
-        import traceback
-        st.error(f"```\n{traceback.format_exc()}\n```")
+        st.error(f"❌ Erreur chargement variétés : {str(e)}")
         return []
 
 def get_varietes_with_existing(df, column_name):
