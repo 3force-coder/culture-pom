@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
-import time  # ⭐ AJOUT pour time.sleep() dans le formulaire
 from database import get_connection
 from components import show_footer
 from auth import is_authenticated
@@ -13,61 +12,43 @@ st.set_page_config(page_title="Sources - Culture Pom", page_icon="📋", layout=
 # CSS custom pour réduire FORTEMENT les espacements
 st.markdown("""
 <style>
-    /* Réduire espacement général du container */
     .block-container {
         padding-top: 2rem !important;
         padding-bottom: 0.5rem !important;
         padding-left: 2rem !important;
         padding-right: 2rem !important;
     }
-    
-    /* Réduire espacement autour de TOUS les titres */
     h1, h2, h3, h4 {
         margin-top: 0.3rem !important;
         margin-bottom: 0.3rem !important;
         padding-top: 0 !important;
         padding-bottom: 0 !important;
     }
-    
-    /* Réduire espacement entre widgets */
     .stSelectbox, .stButton, .stCheckbox {
         margin-bottom: 0.3rem !important;
         margin-top: 0.3rem !important;
     }
-    
-    /* Réduire espacement des data_editor */
     .stDataFrame {
         margin-top: 0.5rem !important;
         margin-bottom: 0.5rem !important;
     }
-    
-    /* Réduire espacement des métriques */
     [data-testid="stMetricValue"] {
         font-size: 1.4rem !important;
     }
-    
     [data-testid="metric-container"] {
         padding: 0.3rem !important;
     }
-    
-    /* Réduire espacement markdown (lignes hr) */
     hr {
         margin-top: 0.5rem !important;
         margin-bottom: 0.5rem !important;
     }
-    
-    /* Réduire espacement colonnes */
     [data-testid="column"] {
         padding: 0.2rem !important;
     }
-    
-    /* Réduire espacement formulaires */
     .stForm {
         padding: 0.5rem !important;
         margin: 0.3rem !important;
     }
-    
-    /* Réduire espacement subheaders */
     .stSubheader {
         margin-top: 0.3rem !important;
         margin-bottom: 0.3rem !important;
@@ -82,33 +63,17 @@ if not is_authenticated():
 st.title("📋 Gestion des Tables de Référence")
 st.markdown("---")
 
-# ⭐ LISTES DE VALEURS POUR DROPDOWNS
-
-# Variétés
+# Listes dropdowns
 VARIETES_TYPES = [
-    "Chair ferme jaune",
-    "Chair ferme rouge",
-    "Fritable entrée de gamme",
-    "Fritable haut de gamme",
-    "Fritable milieu de gamme",
-    "Poly",
-    "Poly jaune",
-    "Poly rouge"
+    "Chair ferme jaune", "Chair ferme rouge", "Fritable entrée de gamme",
+    "Fritable haut de gamme", "Fritable milieu de gamme", "Poly", "Poly jaune", "Poly rouge"
 ]
 
 VARIETES_UTILISATIONS = [
-    "Four",
-    "Four/Frites",
-    "Four/Potage",
-    "Four/Potage/Frites",
-    "Four/Purée/Potage",
-    "Four/Purée/Potage/Frites",
-    "Frites",
-    "Vapeur",
-    "Vapeur/Rissolées"
+    "Four", "Four/Frites", "Four/Potage", "Four/Potage/Frites",
+    "Four/Purée/Potage", "Four/Purée/Potage/Frites", "Frites", "Vapeur", "Vapeur/Rissolées"
 ]
 
-# Plants
 PLANTS_CALIBRES = [
     "25/30", "25/32", "28/30", "28/32", "28/35", "28/40",
     "30/40", "30/45", "30/50", "32/35", "32/40",
@@ -121,7 +86,7 @@ PLANTS_CALIBRES = [
 ]
 
 def get_active_varietes():
-    """Récupère les codes variétés actifs depuis ref_varietes"""
+    """Récupère les codes variétés actifs"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -131,17 +96,15 @@ def get_active_varietes():
         conn.close()
         df = pd.DataFrame(rows, columns=['code_variete'])
         return df['code_variete'].tolist()
-    except Exception as e:
-        st.error(f"❌ Erreur chargement variétés : {str(e)}")
+    except:
         return []
 
 def get_varietes_with_existing(df, column_name):
-    """Récupère variétés actifs + valeurs déjà présentes dans le dataframe"""
+    """Récupère variétés + valeurs existantes"""
     active = get_active_varietes()
     existing = df[column_name].dropna().unique().tolist() if column_name in df.columns else []
     return sorted(list(set(existing + active)))
 
-# ✅ TABLES_CONFIG CORRIGÉ - TOUTES LES COLONNES EXACTES
 TABLES_CONFIG = {
     "Variétés": {
         "table": "ref_varietes",
@@ -154,8 +117,7 @@ TABLES_CONFIG = {
             "type": VARIETES_TYPES,
             "utilisation": VARIETES_UTILISATIONS
         },
-        "filter_columns": ["nom_variete", "type", "utilisation"],
-        "required_fields": ["code_variete", "nom_variete"]  # ⭐ NOUVEAU
+        "filter_columns": ["nom_variete", "type", "utilisation"]
     },
     
     "Plants": {
@@ -169,8 +131,7 @@ TABLES_CONFIG = {
             "calibre": PLANTS_CALIBRES,
             "code_variete_base": "dynamic_varietes"
         },
-        "filter_columns": ["libelle_long", "code_variete_base", "is_bio"],
-        "required_fields": ["code_plant", "libelle_long"]  # ⭐ NOUVEAU - champs obligatoires
+        "filter_columns": ["libelle_long", "code_variete_base", "is_bio"]
     },
     
     "Producteurs": {
@@ -178,8 +139,7 @@ TABLES_CONFIG = {
         "columns": ["code_producteur", "cle_producteur", "nom", "siret", "adresse", "code_postal", "ville", "telephone", "email", "nom_contact", "is_active", "notes"],
         "primary_key": "id",
         "editable": ["nom", "siret", "adresse", "code_postal", "ville", "telephone", "email", "nom_contact", "is_active", "notes"],
-        "has_updated_at": True,
-        "required_fields": ["code_producteur", "nom"]  # ⭐ NOUVEAU
+        "has_updated_at": True
     },
     
     "Sites Stockage": {
@@ -188,8 +148,7 @@ TABLES_CONFIG = {
         "primary_key": "id",
         "editable": ["nom_complet", "adresse", "capacite_max_pallox", "capacite_max_tonnes", "is_active", "notes"],
         "has_updated_at": True,
-        "auto_cle_unique": True,
-        "required_fields": ["code_site", "code_emplacement", "nom_complet"]  # ⭐ NOUVEAU
+        "auto_cle_unique": True
     },
     
     "Types Déchets": {
@@ -197,8 +156,7 @@ TABLES_CONFIG = {
         "columns": ["code", "libelle", "description", "is_active"],
         "primary_key": "id",
         "editable": ["libelle", "description", "is_active"],
-        "has_updated_at": False,
-        "required_fields": ["code", "libelle"]  # ⭐ NOUVEAU
+        "has_updated_at": False
     },
     
     "Emballages": {
@@ -206,8 +164,7 @@ TABLES_CONFIG = {
         "columns": ["code_emballage", "atelier", "poids_unitaire", "unite_poids", "nbr_uvc", "type_produit", "is_active", "notes"],
         "primary_key": "id",
         "editable": ["atelier", "poids_unitaire", "unite_poids", "nbr_uvc", "type_produit", "is_active", "notes"],
-        "has_updated_at": True,
-        "required_fields": ["code_emballage"]  # ⭐ NOUVEAU
+        "has_updated_at": True
     },
     
     "Produits Commerciaux": {
@@ -215,8 +172,7 @@ TABLES_CONFIG = {
         "columns": ["code_produit", "marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "code_variete", "is_bio", "is_active", "notes"],
         "primary_key": "id",
         "editable": ["marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "code_variete", "is_bio", "is_active", "notes"],
-        "has_updated_at": True,
-        "required_fields": ["code_produit", "marque", "libelle"]  # ⭐ NOUVEAU
+        "has_updated_at": True
     }
 }
 
@@ -227,14 +183,11 @@ def load_table_data(table_name, show_inactive=False):
         cursor = conn.cursor()
         config = TABLES_CONFIG[table_name]
         
-        # ⭐ Charger toutes les colonnes (visibles + cachées) pour modifications
         all_columns = config["columns"].copy()
         if "hidden_columns" in config:
             all_columns.extend(config["hidden_columns"])
         
         columns_str = ", ".join(all_columns)
-        
-        # ⭐ Filtrer par is_active si show_inactive = False
         where_clause = ""
         if not show_inactive and 'is_active' in all_columns:
             where_clause = " WHERE is_active = TRUE"
@@ -248,16 +201,11 @@ def load_table_data(table_name, show_inactive=False):
         conn.close()
         
         df = pd.DataFrame(rows, columns=columns)
-        
-        # ⭐ Ne garder que les colonnes visibles pour l'affichage
         display_columns = [config['primary_key']] + config['columns']
         df_display = df[display_columns].copy()
-        
-        # Stocker le df complet en session pour les updates
         st.session_state[f'full_df_{table_name}'] = df
         
         return df_display
-        
     except Exception as e:
         st.error(f"❌ Erreur : {str(e)}")
         return pd.DataFrame()
@@ -282,9 +230,6 @@ def save_changes(table_name, original_df, edited_df):
         cursor = conn.cursor()
         updates = 0
         
-        # ⭐ Récupérer le df complet avec colonnes cachées
-        full_df = st.session_state.get(f'full_df_{table_name}')
-        
         for idx in edited_df.index:
             if idx not in original_df.index:
                 continue
@@ -292,7 +237,6 @@ def save_changes(table_name, original_df, edited_df):
             row_id = convert_to_native_types(edited_df.loc[idx, config['primary_key']])
             changes = {}
             
-            # Colonnes visibles éditées
             for col in config['editable']:
                 if col not in edited_df.columns or col not in original_df.columns:
                     continue
@@ -321,14 +265,13 @@ def save_changes(table_name, original_df, edited_df):
         cursor.close()
         conn.close()
         return True, f"✅ {updates} enregistrement(s) mis à jour"
-        
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
 def delete_record(table_name, record_id):
-    """Désactive un enregistrement (soft delete)"""
+    """Désactive un enregistrement"""
     try:
         config = TABLES_CONFIG[table_name]
         conn = get_connection()
@@ -344,7 +287,6 @@ def delete_record(table_name, record_id):
         cursor.close()
         conn.close()
         return True, "✅ Désactivé"
-        
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
@@ -367,25 +309,22 @@ def reactivate_record(table_name, record_id):
         cursor.close()
         conn.close()
         return True, "✅ Réactivé"
-        
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
 def add_record(table_name, data):
-    """Ajoute un enregistrement"""
+    """Ajoute un enregistrement - CODE SIMPLE QUI MARCHAIT"""
     try:
         config = TABLES_CONFIG[table_name]
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ⭐ Générer cle_unique pour Sites Stockage
         if config.get('auto_cle_unique'):
             if 'code_site' in data and 'code_emplacement' in data:
                 data['cle_unique'] = f"{data['code_site']}_{data['code_emplacement']}"
         
-        # ⭐ Ajouter colonnes cachées avec valeurs NULL si besoin
         if "hidden_columns" in config:
             for col in config["hidden_columns"]:
                 if col not in data:
@@ -405,105 +344,56 @@ def add_record(table_name, data):
         conn.commit()
         cursor.close()
         conn.close()
-        return True, "✅ Ajouté avec succès"
-        
+        return True, "✅ Ajouté"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
-# Interface - Sélection table
+# Interface
 selected_table = st.selectbox("📋 Table", list(TABLES_CONFIG.keys()), key="table_selector")
-
 st.markdown("---")
 
-# ⭐ Formulaire ajout - AVEC VALIDATION
+# Formulaire ajout - SIMPLE comme v3
 if st.session_state.get('show_add_form', False):
     with st.form("add_form"):
         st.subheader(f"➕ Ajouter - {selected_table}")
         config = TABLES_CONFIG[selected_table]
         new_data = {}
         
-        # ⭐ NOUVEAU : Afficher liste champs obligatoires
-        if "required_fields" in config:
-            required_fields_str = ", ".join([f.replace('_', ' ').title() for f in config["required_fields"]])
-            st.info(f"📝 Champs obligatoires : **{required_fields_str}**")
-        
         col1, col2 = st.columns(2)
         for i, col in enumerate(config['columns']):
-            # ⭐ NOUVEAU : Marquer champs obligatoires avec astérisque
-            label = col.replace('_', ' ').title()
-            if "required_fields" in config and col in config["required_fields"]:
-                label = f"{label} *"
-            
             with col1 if i % 2 == 0 else col2:
-                # ⭐ Dropdowns pour champs spécifiques
                 if "dropdown_fields" in config and col in config["dropdown_fields"]:
                     field_config = config["dropdown_fields"][col]
                     
-                    # ⭐ Dropdown dynamique pour code_variete_base
                     if field_config == "dynamic_varietes":
                         varietes = get_active_varietes()
                         options = [""] + varietes
-                        new_data[col] = st.selectbox(
-                            label,
-                            options=options,
-                            key=f"add_{col}"
-                        )
-                    # Dropdown statique
+                        new_data[col] = st.selectbox(col.replace('_', ' ').title(), options, key=f"add_{col}")
                     else:
                         options = [""] + field_config
-                        new_data[col] = st.selectbox(
-                            label,
-                            options=options,
-                            key=f"add_{col}"
-                        )
+                        new_data[col] = st.selectbox(col.replace('_', ' ').title(), options, key=f"add_{col}")
                 elif col in ['is_active', 'is_bio', 'global_gap']:
-                    new_data[col] = st.checkbox(label, value=True)
+                    new_data[col] = st.checkbox(col.replace('_', ' ').title(), value=True)
                 elif 'capacite' in col or 'prix' in col or 'poids' in col:
-                    new_data[col] = st.number_input(label, min_value=0.0, value=0.0, step=0.1)
+                    new_data[col] = st.number_input(col.replace('_', ' ').title(), min_value=0.0, value=0.0, step=0.1)
                 elif 'nbr' in col:
-                    new_data[col] = st.number_input(label, min_value=0, value=0, step=1)
+                    new_data[col] = st.number_input(col.replace('_', ' ').title(), min_value=0, value=0, step=1)
                 else:
-                    new_data[col] = st.text_input(label)
+                    new_data[col] = st.text_input(col.replace('_', ' ').title())
         
         col1, col2 = st.columns([1, 1])
         with col1:
             if st.form_submit_button("💾 Enregistrer", use_container_width=True):
-                # ⭐ NOUVEAU : VALIDATION EXPLICITE des champs obligatoires
-                missing_fields = []
-                if "required_fields" in config:
-                    for field in config["required_fields"]:
-                        if field not in new_data or not new_data[field] or new_data[field] == '':
-                            missing_fields.append(field.replace('_', ' ').title())
-                
-                if missing_fields:
-                    st.error(f"❌ Champs obligatoires manquants : {', '.join(missing_fields)}")
+                filtered_data = {k: v for k, v in new_data.items() if v != '' and v is not None}
+                success, message = add_record(selected_table, filtered_data)
+                if success:
+                    st.success(message)
+                    st.session_state.show_add_form = False
+                    st.rerun()
                 else:
-                    # ⭐ CORRIGÉ : Ne pas filtrer les False (checkboxes)
-                    # Garder toutes les valeurs sauf chaînes vides et None
-                    filtered_data = {}
-                    for k, v in new_data.items():
-                        # Garder False (checkboxes décochées)
-                        if isinstance(v, bool):
-                            filtered_data[k] = v
-                        # Garder 0 (nombres)
-                        elif isinstance(v, (int, float)) and v == 0:
-                            filtered_data[k] = v
-                        # Exclure chaînes vides et None
-                        elif v != '' and v is not None:
-                            filtered_data[k] = v
-                    
-                    success, message = add_record(selected_table, filtered_data)
-                    if success:
-                        st.success(message)
-                        st.balloons()  # ⭐ NOUVEAU : Effet visuel de succès
-                        # ⭐ AMÉLIORATION : Attendre 1.5 secondes avant rerun
-                        time.sleep(1.5)
-                        st.session_state.show_add_form = False
-                        st.rerun()
-                    else:
-                        st.error(message)
+                    st.error(message)
         with col2:
             if st.form_submit_button("❌ Annuler", use_container_width=True):
                 st.session_state.show_add_form = False
@@ -511,16 +401,14 @@ if st.session_state.get('show_add_form', False):
     
     st.markdown("---")
 
-# ⭐ Toggle pour afficher/masquer les inactifs
+# Toggle inactifs
 show_inactive = st.checkbox("👁️ Afficher les éléments inactifs", value=False, key=f"show_inactive_{selected_table}")
-
-# Charger données avec filtre
 df_full = load_table_data(selected_table, show_inactive=show_inactive)
 
 if not df_full.empty:
     config = TABLES_CONFIG[selected_table]
     
-    # Métriques (sur données complètes avant filtrage)
+    # Métriques
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("📊 Total", len(df_full))
@@ -533,9 +421,8 @@ if not df_full.empty:
     
     st.markdown("---")
     
-    # ⭐ FILTRES (colonnes les plus importantes)
-    df = df_full.copy()  # Copie pour filtrage
-    
+    # Filtres
+    df = df_full.copy()
     if "filter_columns" in config:
         st.markdown("#### 🔍 Filtres")
         filter_cols = st.columns(len(config["filter_columns"]))
@@ -544,27 +431,16 @@ if not df_full.empty:
         for i, col_name in enumerate(config["filter_columns"]):
             with filter_cols[i]:
                 if col_name in df.columns:
-                    # ⭐ Traitement spécial pour is_bio (boolean)
                     if col_name == "is_bio":
                         bio_options = ["Tous", "OUI", "NON"]
-                        filters[col_name] = st.selectbox(
-                            "Bio",
-                            bio_options,
-                            key=f"filter_{col_name}"
-                        )
+                        filters[col_name] = st.selectbox("Bio", bio_options, key=f"filter_{col_name}")
                     else:
                         unique_values = ["Tous"] + sorted([str(v) for v in df[col_name].dropna().unique()])
-                        filters[col_name] = st.selectbox(
-                            col_name.replace('_', ' ').title(),
-                            unique_values,
-                            key=f"filter_{col_name}"
-                        )
+                        filters[col_name] = st.selectbox(col_name.replace('_', ' ').title(), unique_values, key=f"filter_{col_name}")
         
-        # Appliquer les filtres
         for col_name, selected_value in filters.items():
             if selected_value != "Tous":
                 if col_name == "is_bio":
-                    # Filtrer par boolean
                     if selected_value == "OUI":
                         df = df[df[col_name] == True]
                     elif selected_value == "NON":
@@ -572,13 +448,12 @@ if not df_full.empty:
                 else:
                     df = df[df[col_name].astype(str) == selected_value]
         
-        # Afficher nombre de résultats filtrés
         if len(df) != len(df_full):
             st.info(f"🔍 {len(df)} résultat(s) après filtrage (sur {len(df_full)} total)")
         
         st.markdown("---")
     
-    # ⭐ En-tête table avec bouton Ajouter aligné à droite
+    # En-tête + bouton Ajouter
     col_title, col_button = st.columns([4, 1])
     with col_title:
         st.subheader(f"📋 {selected_table}")
@@ -586,42 +461,29 @@ if not df_full.empty:
         if st.button("➕ Ajouter", use_container_width=True, type="primary"):
             st.session_state.show_add_form = not st.session_state.get('show_add_form', False)
     
-    # ⭐ Configuration colonnes pour data_editor avec dropdowns
+    # Configuration dropdowns
     column_config = {}
     if "dropdown_fields" in config:
         for field, field_config in config["dropdown_fields"].items():
-            # ⭐ Dropdown dynamique
             if field_config == "dynamic_varietes":
                 varietes = get_varietes_with_existing(df_full, field)
                 column_config[field] = st.column_config.SelectboxColumn(
-                    field.replace('_', ' ').title(),
-                    options=varietes,
-                    required=False
-                )
-            # Dropdown statique
+                    field.replace('_', ' ').title(), options=varietes, required=False)
             else:
-                # ⭐ Inclure valeurs existantes aussi pour listes statiques
                 existing = df_full[field].dropna().unique().tolist() if field in df_full.columns else []
                 all_options = sorted(list(set(existing + field_config)))
                 column_config[field] = st.column_config.SelectboxColumn(
-                    field.replace('_', ' ').title(),
-                    options=all_options,
-                    required=False
-                )
+                    field.replace('_', ' ').title(), options=all_options, required=False)
     
-    # Initialiser original_df
     if 'original_df' not in st.session_state:
         st.session_state.original_df = df.copy()
     
     # Tableau
     edited_df = st.data_editor(
-        df,
-        use_container_width=True,
-        num_rows="fixed",
+        df, use_container_width=True, num_rows="fixed",
         disabled=[config['primary_key']],
         column_config=column_config if column_config else None,
-        key=f"editor_{selected_table}"
-    )
+        key=f"editor_{selected_table}")
     
     # Boutons
     col1, col2 = st.columns([1, 5])
@@ -639,20 +501,14 @@ if not df_full.empty:
             st.session_state.pop('original_df', None)
             st.rerun()
     
-    # Désactivation / Réactivation
+    # Gestion activation
     st.markdown("---")
     st.subheader("🔒 Gestion activation")
     
-    # Dropdown pleine largeur
     first_col = config['columns'][0]
     options = [f"{row[config['primary_key']]} - {row[first_col]}" for _, row in df_full.iterrows()]
-    selected_record = st.selectbox(
-        f"Sélectionner un élément à activer/désactiver",
-        options,
-        key="activation_selector"
-    )
+    selected_record = st.selectbox(f"Sélectionner un élément à activer/désactiver", options, key="activation_selector")
     
-    # Boutons centrés en dessous
     col_space1, col_btn1, col_btn2, col_space2 = st.columns([1, 1, 1, 1])
     
     with col_btn1:
@@ -684,8 +540,7 @@ if not df_full.empty:
     
     with col1:
         csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 CSV", csv, f"{config['table']}_{datetime.now().strftime('%Y%m%d')}.csv", 
-                          "text/csv", use_container_width=True)
+        st.download_button("📥 CSV", csv, f"{config['table']}_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv", use_container_width=True)
     
     with col2:
         buffer = io.BytesIO()
