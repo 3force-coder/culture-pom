@@ -9,12 +9,44 @@ import io
 
 st.set_page_config(page_title="Sources - Culture Pom", page_icon="📋", layout="wide")
 
+# CSS custom pour réduire les espacements
+st.markdown("""
+<style>
+    /* Réduire espacement entre sections */
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 1rem;
+    }
+    
+    /* Réduire espacement autour des titres */
+    h1, h2, h3 {
+        margin-top: 0.5rem;
+        margin-bottom: 0.5rem;
+    }
+    
+    /* Réduire espacement entre widgets */
+    .stSelectbox, .stButton {
+        margin-bottom: 0.5rem;
+    }
+    
+    /* Réduire espacement des data_editor */
+    .stDataFrame {
+        margin-top: 0.5rem;
+        margin-bottom: 0.5rem;
+    }
+    
+    /* Réduire espacement des métriques */
+    [data-testid="stMetricValue"] {
+        font-size: 1.5rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 if not is_authenticated():
     st.warning("⚠️ Veuillez vous connecter pour accéder à cette page")
     st.stop()
 
 show_header()
-st.title("📋 Gestion des Tables de Référence")
 st.markdown("---")
 
 # ⭐ LISTES DE VALEURS POUR DROPDOWNS
@@ -375,7 +407,7 @@ if not df_full.empty:
     df = df_full.copy()  # Copie pour filtrage
     
     if "filter_columns" in config:
-        st.markdown("### 🔍 Filtres")
+        st.markdown("#### 🔍 Filtres")
         filter_cols = st.columns(len(config["filter_columns"]))
         filters = {}
         
@@ -452,24 +484,19 @@ if not df_full.empty:
     st.markdown("---")
     st.subheader("🔒 Gestion activation")
     
-    # Utiliser 5 colonnes pour meilleur alignement
-    col1, col2, col3 = st.columns([3, 1, 1])
+    # Dropdown pleine largeur
+    first_col = config['columns'][0]
+    options = [f"{row[config['primary_key']]} - {row[first_col]}" for _, row in df_full.iterrows()]
+    selected_record = st.selectbox(
+        "Sélectionner une variété à activer/désactiver",
+        options,
+        key="activation_selector"
+    )
     
-    with col1:
-        first_col = config['columns'][0]
-        # Utiliser df_full pour avoir accès à tous les éléments
-        options = [f"{row[config['primary_key']]} - {row[first_col]}" for _, row in df_full.iterrows()]
-        selected_record = st.selectbox("Sélectionner", options, key="activation_selector", label_visibility="collapsed")
-    
-    # Ajout d'un espace vide pour aligner les boutons avec la liste
-    st.write("")  # Espace pour alignement visuel
-    
-    col_btn1, col_btn2, col_btn3 = st.columns([3, 1, 1])
+    # Boutons centrés en dessous
+    col_space1, col_btn1, col_btn2, col_space2 = st.columns([1, 1, 1, 1])
     
     with col_btn1:
-        st.write("")  # Colonne vide pour alignement
-    
-    with col_btn2:
         if st.button("🔒 Désactiver", use_container_width=True, type="secondary", key="btn_deactivate"):
             record_id = int(selected_record.split(" - ")[0])
             success, message = delete_record(selected_table, record_id)
@@ -480,7 +507,7 @@ if not df_full.empty:
             else:
                 st.error(message)
     
-    with col_btn3:
+    with col_btn2:
         if st.button("🔓 Réactiver", use_container_width=True, type="secondary", key="btn_reactivate"):
             record_id = int(selected_record.split(" - ")[0])
             success, message = reactivate_record(selected_table, record_id)
