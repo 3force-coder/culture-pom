@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import time  # ⭐ AJOUT pour time.sleep() dans le formulaire
 from database import get_connection
 from components import show_footer
 from auth import is_authenticated
@@ -497,8 +498,7 @@ if st.session_state.get('show_add_form', False):
                     if success:
                         st.success(message)
                         st.balloons()  # ⭐ NOUVEAU : Effet visuel de succès
-                        # ⭐ AMÉLIORATION : Attendre 2 secondes avant rerun
-                        import time
+                        # ⭐ AMÉLIORATION : Attendre 1.5 secondes avant rerun
                         time.sleep(1.5)
                         st.session_state.show_add_form = False
                         st.rerun()
