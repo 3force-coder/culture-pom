@@ -7,6 +7,8 @@ from database import get_connection
 from components import show_footer
 from auth import is_authenticated
 import io
+import requests
+from streamlit_lottie import st_lottie
 
 st.set_page_config(page_title="Sources - Culture Pom", page_icon="📋", layout="wide")
 
@@ -78,6 +80,20 @@ st.markdown("""
 if not is_authenticated():
     st.warning("⚠️ Veuillez vous connecter pour accéder à cette page")
     st.stop()
+
+# ⭐ FONCTION CHARGEMENT ANIMATION LOTTIE
+def load_lottie_url(url: str):
+    """Charge une animation Lottie depuis une URL"""
+    try:
+        r = requests.get(url)
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except:
+        return None
+
+# Animation confettis (succès ajout)
+LOTTIE_CONFETTI = load_lottie_url("https://lottie.host/3c9e74ef-1b7f-4ad1-92a0-7303bc8e545e/I44wdnKO78.json")
 
 st.title("📋 Gestion des Tables de Référence")
 st.markdown("---")
@@ -333,7 +349,34 @@ def save_changes(table_name, original_df, edited_df):
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
-        return False, f"❌ Erreur : {str(e)}"
+        
+        # ⭐ RENDRE LES ERREURS COMPRÉHENSIBLES
+        error_msg = str(e).lower()
+        
+        # Erreur : Code/clé déjà existant
+        if "duplicate key" in error_msg or "unique constraint" in error_msg:
+            if "code_producteur" in error_msg:
+                return False, "❌ Ce code producteur est déjà utilisé par un autre enregistrement."
+            elif "code_plant" in error_msg:
+                return False, "❌ Ce code plant est déjà utilisé par un autre enregistrement."
+            elif "code_variete" in error_msg:
+                return False, "❌ Ce code variété est déjà utilisé par un autre enregistrement."
+            elif "code_site" in error_msg:
+                return False, "❌ Ce code site est déjà utilisé par un autre enregistrement."
+            elif "code_emballage" in error_msg:
+                return False, "❌ Ce code emballage est déjà utilisé par un autre enregistrement."
+            elif "code_produit" in error_msg:
+                return False, "❌ Ce code produit est déjà utilisé par un autre enregistrement."
+            else:
+                return False, "❌ Cette valeur est déjà utilisée. Impossible de modifier."
+        
+        # Erreur : Champ obligatoire manquant
+        elif "not null" in error_msg or "null value" in error_msg:
+            return False, "❌ Un champ obligatoire ne peut pas être vide."
+        
+        # Autres erreurs
+        else:
+            return False, f"❌ Erreur : {str(e)}"
 
 def delete_record(table_name, record_id):
     """Désactive un enregistrement (soft delete)"""
@@ -418,7 +461,35 @@ def add_record(table_name, data):
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
-        return False, f"❌ Erreur : {str(e)}"
+        
+        # ⭐ RENDRE LES ERREURS COMPRÉHENSIBLES
+        error_msg = str(e).lower()
+        
+        # Erreur : Code/clé déjà existant
+        if "duplicate key" in error_msg or "unique constraint" in error_msg:
+            # Extraire le nom du champ
+            if "code_producteur" in error_msg:
+                return False, "❌ Ce code producteur est déjà utilisé. Merci de choisir un autre code."
+            elif "code_plant" in error_msg:
+                return False, "❌ Ce code plant est déjà utilisé. Merci de choisir un autre code."
+            elif "code_variete" in error_msg:
+                return False, "❌ Ce code variété est déjà utilisé. Merci de choisir un autre code."
+            elif "code_site" in error_msg:
+                return False, "❌ Ce code site est déjà utilisé. Merci de choisir un autre code."
+            elif "code_emballage" in error_msg:
+                return False, "❌ Ce code emballage est déjà utilisé. Merci de choisir un autre code."
+            elif "code_produit" in error_msg:
+                return False, "❌ Ce code produit est déjà utilisé. Merci de choisir un autre code."
+            else:
+                return False, "❌ Cette valeur est déjà utilisée. Merci de choisir une autre valeur."
+        
+        # Erreur : Champ obligatoire manquant
+        elif "not null" in error_msg or "null value" in error_msg:
+            return False, "❌ Un champ obligatoire est manquant. Veuillez vérifier votre saisie."
+        
+        # Autres erreurs (afficher message technique)
+        else:
+            return False, f"❌ Erreur : {str(e)}"
 
 # Interface - Sélection table
 selected_table = st.selectbox("📋 Table", list(TABLES_CONFIG.keys()), key="table_selector")
@@ -508,8 +579,10 @@ if st.session_state.get('show_add_form', False):
                 success, message = add_record(selected_table, filtered_data)
                 if success:
                     st.success(message)
-                    st.snow()  # ⭐ Animation flocons
-                    time.sleep(2.5)  # ⭐ 2.5s pour bien voir l'animation
+                    # ⭐ Animation confettis Lottie
+                    if LOTTIE_CONFETTI:
+                        st_lottie(LOTTIE_CONFETTI, height=300, key="confetti_success")
+                    time.sleep(2)  # ⭐ 2s pour voir l'animation
                     st.session_state.show_add_form = False
                     st.session_state.pop('new_data', None)
                     st.rerun()
