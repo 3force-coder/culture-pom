@@ -178,7 +178,7 @@ TABLES_CONFIG = {
         "columns": ["code_producteur", "nom", "code_postal", "ville", "departement", "telephone", "email", "nom_contact", "statut", "acheteur_referent", "global_gap", "is_active", "notes"],
         "hidden_columns": ["cle_producteur", "siret", "forme_juridique", "adresse", "adresse_complement", "pays", "latitude", "longitude", "prenom_contact", "type_contrat"],
         "primary_key": "id",
-        "editable": ["nom", "code_postal", "ville", "departement", "telephone", "email", "nom_contact", "statut", "acheteur_referent", "global_gap", "is_active", "notes"],
+        "editable": ["nom", "code_postal", "ville", "telephone", "email", "nom_contact", "statut", "acheteur_referent", "global_gap", "is_active", "notes"],
         "has_updated_at": True,
         "filter_columns": ["nom", "departement", "acheteur_referent", "global_gap"],
         "required_fields": ["code_producteur", "nom"]
@@ -250,6 +250,12 @@ def load_table_data(table_name, show_inactive=False):
         conn.close()
         
         df = pd.DataFrame(rows, columns=columns)
+        
+        # ⭐ CALCULER département automatiquement depuis code_postal (2 premiers caractères)
+        if 'code_postal' in df.columns and 'departement' in df.columns:
+            df['departement'] = df['code_postal'].apply(
+                lambda x: str(x)[:2] if pd.notna(x) and str(x).strip() != '' else None
+            )
         
         # ⭐ Ne garder que les colonnes visibles pour l'affichage
         display_columns = [config['primary_key']] + config['columns']
@@ -502,8 +508,8 @@ if st.session_state.get('show_add_form', False):
                 success, message = add_record(selected_table, filtered_data)
                 if success:
                     st.success(message)
-                    st.snow()
-                    time.sleep(0.8)
+                    st.snow()  # ⭐ Animation flocons
+                    time.sleep(2.5)  # ⭐ 2.5s pour bien voir l'animation
                     st.session_state.show_add_form = False
                     st.session_state.pop('new_data', None)
                     st.rerun()
