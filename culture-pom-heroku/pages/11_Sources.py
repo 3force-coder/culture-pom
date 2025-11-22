@@ -14,7 +14,7 @@ st.markdown("""
 <style>
     /* Réduire espacement général du container */
     .block-container {
-        padding-top: 2rem !important;      /* Augmenté pour éviter titre tronqué */
+        padding-top: 2rem !important;
         padding-bottom: 0.5rem !important;
         padding-left: 2rem !important;
         padding-right: 2rem !important;
@@ -82,6 +82,8 @@ st.title("📋 Gestion des Tables de Référence")
 st.markdown("---")
 
 # ⭐ LISTES DE VALEURS POUR DROPDOWNS
+
+# Variétés
 VARIETES_TYPES = [
     "Chair ferme jaune",
     "Chair ferme rouge",
@@ -105,28 +107,60 @@ VARIETES_UTILISATIONS = [
     "Vapeur/Rissolées"
 ]
 
+# Plants
+PLANTS_CALIBRES = [
+    "25/30", "25/32", "28/30", "28/32", "28/35", "28/40",
+    "30/40", "30/45", "30/50", "32/35", "32/40",
+    "35/45", "35/50", "35/55",
+    "40/45", "40/50",
+    "45/50", "45/55",
+    "50/55", "50/60",
+    "55/60", "55/65",
+    "60/65", "60/80"
+]
+
+def get_active_varietes():
+    """Récupère les codes variétés actifs depuis ref_varietes"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT code_variete FROM ref_varietes WHERE is_active = TRUE ORDER BY code_variete")
+        codes = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        conn.close()
+        return codes
+    except Exception as e:
+        st.error(f"❌ Erreur chargement variétés : {str(e)}")
+        return []
+
 # ✅ TABLES_CONFIG CORRIGÉ - TOUTES LES COLONNES EXACTES
 TABLES_CONFIG = {
     "Variétés": {
         "table": "ref_varietes",
-        "columns": ["code_variete", "nom_variete", "type", "utilisation", "is_active", "notes"],  # ⭐ Colonnes affichées seulement
-        "hidden_columns": ["couleur_peau", "couleur_chair", "precocite"],  # ⭐ Colonnes cachées mais en DB
+        "columns": ["code_variete", "nom_variete", "type", "utilisation", "is_active", "notes"],
+        "hidden_columns": ["couleur_peau", "couleur_chair", "precocite"],
         "primary_key": "id",
         "editable": ["nom_variete", "type", "utilisation", "is_active", "notes"],
         "has_updated_at": True,
-        "dropdown_fields": {  # ⭐ Champs avec listes déroulantes
+        "dropdown_fields": {
             "type": VARIETES_TYPES,
             "utilisation": VARIETES_UTILISATIONS
         },
-        "filter_columns": ["nom_variete", "type", "utilisation"]  # ⭐ Colonnes pour filtres rapides
+        "filter_columns": ["nom_variete", "type", "utilisation"]
     },
     
     "Plants": {
         "table": "ref_plants",
-        "columns": ["code_plant", "libelle_long", "code_variete_base", "calibre", "is_bio", "poids_unite", "is_active", "notes"],
+        "columns": ["code_plant", "libelle_long", "code_variete_base", "calibre", "is_bio", "is_active", "notes"],
+        "hidden_columns": ["poids_unite"],  # ⭐ Colonne masquée (100% vide)
         "primary_key": "id",
-        "editable": ["libelle_long", "code_variete_base", "calibre", "is_bio", "poids_unite", "is_active", "notes"],
-        "has_updated_at": True
+        "editable": ["libelle_long", "code_variete_base", "calibre", "is_bio", "is_active", "notes"],
+        "has_updated_at": True,
+        "dropdown_fields": {
+            "calibre": PLANTS_CALIBRES,  # ⭐ Liste statique 24 valeurs
+            "code_variete_base": "dynamic_varietes"  # ⭐ Dynamique depuis ref_varietes
+        },
+        "filter_columns": ["libelle_long", "code_variete_base", "is_bio"]  # ⭐ 3 filtres
     },
     
     "Producteurs": {
@@ -368,7 +402,7 @@ selected_table = st.selectbox("📋 Table", list(TABLES_CONFIG.keys()), key="tab
 
 st.markdown("---")
 
-# ⭐ Formulaire ajout - AVEC DROPDOWNS
+# ⭐ Formulaire ajout - AVEC DROPDOWNS DYNAMIQUES
 if st.session_state.get('show_add_form', False):
     with st.form("add_form"):
         st.subheader(f"➕ Ajouter - {selected_table}")
@@ -380,12 +414,25 @@ if st.session_state.get('show_add_form', False):
             with col1 if i % 2 == 0 else col2:
                 # ⭐ Dropdowns pour champs spécifiques
                 if "dropdown_fields" in config and col in config["dropdown_fields"]:
-                    options = [""] + config["dropdown_fields"][col]  # Vide en premier
-                    new_data[col] = st.selectbox(
-                        col.replace('_', ' ').title(),
-                        options=options,
-                        key=f"add_{col}"
-                    )
+                    field_config = config["dropdown_fields"][col]
+                    
+                    # ⭐ Dropdown dynamique pour code_variete_base
+                    if field_config == "dynamic_varietes":
+                        varietes = get_active_varietes()
+                        options = [""] + varietes
+                        new_data[col] = st.selectbox(
+                            col.replace('_', ' ').title(),
+                            options=options,
+                            key=f"add_{col}"
+                        )
+                    # Dropdown statique
+                    else:
+                        options = [""] + field_config
+                        new_data[col] = st.selectbox(
+                            col.replace('_', ' ').title(),
+                            options=options,
+                            key=f"add_{col}"
+                        )
                 elif col in ['is_active', 'is_bio', 'global_gap']:
                     new_data[col] = st.checkbox(col.replace('_', ' ').title(), value=True)
                 elif 'capacite' in col or 'prix' in col or 'poids' in col:
@@ -446,17 +493,33 @@ if not df_full.empty:
         for i, col_name in enumerate(config["filter_columns"]):
             with filter_cols[i]:
                 if col_name in df.columns:
-                    unique_values = ["Tous"] + sorted([str(v) for v in df[col_name].dropna().unique()])
-                    filters[col_name] = st.selectbox(
-                        col_name.replace('_', ' ').title(),
-                        unique_values,
-                        key=f"filter_{col_name}"
-                    )
+                    # ⭐ Traitement spécial pour is_bio (boolean)
+                    if col_name == "is_bio":
+                        bio_options = ["Tous", "OUI", "NON"]
+                        filters[col_name] = st.selectbox(
+                            "Bio",
+                            bio_options,
+                            key=f"filter_{col_name}"
+                        )
+                    else:
+                        unique_values = ["Tous"] + sorted([str(v) for v in df[col_name].dropna().unique()])
+                        filters[col_name] = st.selectbox(
+                            col_name.replace('_', ' ').title(),
+                            unique_values,
+                            key=f"filter_{col_name}"
+                        )
         
         # Appliquer les filtres
         for col_name, selected_value in filters.items():
             if selected_value != "Tous":
-                df = df[df[col_name].astype(str) == selected_value]
+                if col_name == "is_bio":
+                    # Filtrer par boolean
+                    if selected_value == "OUI":
+                        df = df[df[col_name] == True]
+                    elif selected_value == "NON":
+                        df = df[df[col_name] == False]
+                else:
+                    df = df[df[col_name].astype(str) == selected_value]
         
         # Afficher nombre de résultats filtrés
         if len(df) != len(df_full):
@@ -475,12 +538,22 @@ if not df_full.empty:
     # ⭐ Configuration colonnes pour data_editor avec dropdowns
     column_config = {}
     if "dropdown_fields" in config:
-        for field, options in config["dropdown_fields"].items():
-            column_config[field] = st.column_config.SelectboxColumn(
-                field.replace('_', ' ').title(),
-                options=options,
-                required=False
-            )
+        for field, field_config in config["dropdown_fields"].items():
+            # ⭐ Dropdown dynamique
+            if field_config == "dynamic_varietes":
+                varietes = get_active_varietes()
+                column_config[field] = st.column_config.SelectboxColumn(
+                    field.replace('_', ' ').title(),
+                    options=varietes,
+                    required=False
+                )
+            # Dropdown statique
+            else:
+                column_config[field] = st.column_config.SelectboxColumn(
+                    field.replace('_', ' ').title(),
+                    options=field_config,
+                    required=False
+                )
     
     # Initialiser original_df
     if 'original_df' not in st.session_state:
@@ -520,7 +593,7 @@ if not df_full.empty:
     first_col = config['columns'][0]
     options = [f"{row[config['primary_key']]} - {row[first_col]}" for _, row in df_full.iterrows()]
     selected_record = st.selectbox(
-        "Sélectionner une variété à activer/désactiver",
+        f"Sélectionner un élément à activer/désactiver",
         options,
         key="activation_selector"
     )
