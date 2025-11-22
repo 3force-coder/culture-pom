@@ -106,7 +106,7 @@ TABLES_CONFIG = {
     }
 }
 
-def load_table_data(table_name):
+def load_table_data(table_name, show_inactive=False):
     """Charge les données d'une table"""
     try:
         conn = get_connection()
@@ -119,7 +119,13 @@ def load_table_data(table_name):
             all_columns.extend(config["hidden_columns"])
         
         columns_str = ", ".join(all_columns)
-        query = f"SELECT {config['primary_key']}, {columns_str} FROM {config['table']} ORDER BY {config['primary_key']}"
+        
+        # ⭐ Filtrer par is_active si show_inactive = False
+        where_clause = ""
+        if not show_inactive and 'is_active' in all_columns:
+            where_clause = " WHERE is_active = TRUE"
+        
+        query = f"SELECT {config['primary_key']}, {columns_str} FROM {config['table']}{where_clause} ORDER BY {config['primary_key']}"
         cursor.execute(query)
         
         rows = cursor.fetchall()
@@ -208,7 +214,7 @@ def save_changes(table_name, original_df, edited_df):
         return False, f"❌ Erreur : {str(e)}"
 
 def delete_record(table_name, record_id):
-    """Supprime (soft delete)"""
+    """Désactive un enregistrement (soft delete)"""
     try:
         config = TABLES_CONFIG[table_name]
         conn = get_connection()
@@ -223,7 +229,7 @@ def delete_record(table_name, record_id):
         conn.commit()
         cursor.close()
         conn.close()
-        return True, "✅ Supprimé"
+        return True, "✅ Désactivé"
         
     except Exception as e:
         if 'conn' in locals():
@@ -269,13 +275,8 @@ def add_record(table_name, data):
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
-# Interface
-col1, col2 = st.columns([3, 1])
-with col1:
-    selected_table = st.selectbox("📋 Table", list(TABLES_CONFIG.keys()), key="table_selector")
-with col2:
-    if st.button("➕ Ajouter", use_container_width=True):
-        st.session_state.show_add_form = not st.session_state.get('show_add_form', False)
+# Interface - Sélection table
+selected_table = st.selectbox("📋 Table", list(TABLES_CONFIG.keys()), key="table_selector")
 
 st.markdown("---")
 
@@ -324,8 +325,11 @@ if st.session_state.get('show_add_form', False):
     
     st.markdown("---")
 
-# Charger données
-df = load_table_data(selected_table)
+# ⭐ Toggle pour afficher/masquer les inactifs
+show_inactive = st.checkbox("👁️ Afficher les éléments inactifs", value=False, key=f"show_inactive_{selected_table}")
+
+# Charger données avec filtre
+df = load_table_data(selected_table, show_inactive=show_inactive)
 
 if not df.empty:
     config = TABLES_CONFIG[selected_table]
@@ -343,8 +347,13 @@ if not df.empty:
     
     st.markdown("---")
     
-    if 'original_df' not in st.session_state:
-        st.session_state.original_df = df.copy()
+    # ⭐ En-tête table avec bouton Ajouter aligné à droite
+    col_title, col_button = st.columns([4, 1])
+    with col_title:
+        st.subheader(f"📋 {selected_table}")
+    with col_button:
+        if st.button("➕ Ajouter", use_container_width=True, type="primary"):
+            st.session_state.show_add_form = not st.session_state.get('show_add_form', False)
     
     # ⭐ Configuration colonnes pour data_editor avec dropdowns
     column_config = {}
@@ -356,9 +365,11 @@ if not df.empty:
                 required=False
             )
     
-    # Tableau
-    st.subheader(f"📋 {selected_table}")
+    # Initialiser original_df
+    if 'original_df' not in st.session_state:
+        st.session_state.original_df = df.copy()
     
+    # Tableau
     edited_df = st.data_editor(
         df,
         use_container_width=True,
@@ -384,9 +395,9 @@ if not df.empty:
             st.session_state.pop('original_df', None)
             st.rerun()
     
-    # Suppression
+    # Désactivation
     st.markdown("---")
-    st.subheader("🗑️ Supprimer")
+    st.subheader("🔒 Désactiver")
     col1, col2 = st.columns([3, 1])
     
     with col1:
@@ -395,7 +406,7 @@ if not df.empty:
         selected_record = st.selectbox("Sélectionner", options, key="delete_selector")
     
     with col2:
-        if st.button("🗑️ Supprimer", use_container_width=True, type="secondary"):
+        if st.button("🔒 Désactiver", use_container_width=True, type="secondary"):
             record_id = int(selected_record.split(" - ")[0])
             success, message = delete_record(selected_table, record_id)
             if success:
