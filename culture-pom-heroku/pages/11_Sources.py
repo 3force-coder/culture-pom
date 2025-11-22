@@ -53,7 +53,8 @@ TABLES_CONFIG = {
         "dropdown_fields": {  # ⭐ Champs avec listes déroulantes
             "type": VARIETES_TYPES,
             "utilisation": VARIETES_UTILISATIONS
-        }
+        },
+        "filter_columns": ["nom_variete", "type", "utilisation"]  # ⭐ Colonnes pour filtres rapides
     },
     
     "Plants": {
@@ -236,6 +237,29 @@ def delete_record(table_name, record_id):
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
+def reactivate_record(table_name, record_id):
+    """Réactive un enregistrement"""
+    try:
+        config = TABLES_CONFIG[table_name]
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        if config.get('has_updated_at', True):
+            query = f"UPDATE {config['table']} SET is_active = TRUE, updated_at = CURRENT_TIMESTAMP WHERE {config['primary_key']} = %s"
+        else:
+            query = f"UPDATE {config['table']} SET is_active = TRUE WHERE {config['primary_key']} = %s"
+        
+        cursor.execute(query, (record_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, "✅ Réactivé"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
 def add_record(table_name, data):
     """Ajoute un enregistrement"""
     try:
@@ -329,23 +353,52 @@ if st.session_state.get('show_add_form', False):
 show_inactive = st.checkbox("👁️ Afficher les éléments inactifs", value=False, key=f"show_inactive_{selected_table}")
 
 # Charger données avec filtre
-df = load_table_data(selected_table, show_inactive=show_inactive)
+df_full = load_table_data(selected_table, show_inactive=show_inactive)
 
-if not df.empty:
+if not df_full.empty:
     config = TABLES_CONFIG[selected_table]
     
-    # Métriques
+    # Métriques (sur données complètes avant filtrage)
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("📊 Total", len(df))
+        st.metric("📊 Total", len(df_full))
     with col2:
-        actifs = df['is_active'].sum() if 'is_active' in df.columns else len(df)
+        actifs = df_full['is_active'].sum() if 'is_active' in df_full.columns else len(df_full)
         st.metric("✅ Actifs", actifs)
     with col3:
-        inactifs = len(df) - actifs if 'is_active' in df.columns else 0
+        inactifs = len(df_full) - actifs if 'is_active' in df_full.columns else 0
         st.metric("❌ Inactifs", inactifs)
     
     st.markdown("---")
+    
+    # ⭐ FILTRES (colonnes les plus importantes)
+    df = df_full.copy()  # Copie pour filtrage
+    
+    if "filter_columns" in config:
+        st.markdown("### 🔍 Filtres")
+        filter_cols = st.columns(len(config["filter_columns"]))
+        filters = {}
+        
+        for i, col_name in enumerate(config["filter_columns"]):
+            with filter_cols[i]:
+                if col_name in df.columns:
+                    unique_values = ["Tous"] + sorted([str(v) for v in df[col_name].dropna().unique()])
+                    filters[col_name] = st.selectbox(
+                        col_name.replace('_', ' ').title(),
+                        unique_values,
+                        key=f"filter_{col_name}"
+                    )
+        
+        # Appliquer les filtres
+        for col_name, selected_value in filters.items():
+            if selected_value != "Tous":
+                df = df[df[col_name].astype(str) == selected_value]
+        
+        # Afficher nombre de résultats filtrés
+        if len(df) != len(df_full):
+            st.info(f"🔍 {len(df)} résultat(s) après filtrage (sur {len(df_full)} total)")
+        
+        st.markdown("---")
     
     # ⭐ En-tête table avec bouton Ajouter aligné à droite
     col_title, col_button = st.columns([4, 1])
@@ -395,20 +448,33 @@ if not df.empty:
             st.session_state.pop('original_df', None)
             st.rerun()
     
-    # Désactivation
+    # Désactivation / Réactivation
     st.markdown("---")
-    st.subheader("🔒 Désactiver")
-    col1, col2 = st.columns([3, 1])
+    st.subheader("🔒 Gestion activation")
+    
+    col1, col2, col3 = st.columns([3, 1, 1])
     
     with col1:
         first_col = config['columns'][0]
-        options = [f"{row[config['primary_key']]} - {row[first_col]}" for _, row in df.iterrows()]
-        selected_record = st.selectbox("Sélectionner", options, key="delete_selector")
+        # Utiliser df_full pour avoir accès à tous les éléments
+        options = [f"{row[config['primary_key']]} - {row[first_col]}" for _, row in df_full.iterrows()]
+        selected_record = st.selectbox("Sélectionner", options, key="activation_selector")
     
     with col2:
         if st.button("🔒 Désactiver", use_container_width=True, type="secondary"):
             record_id = int(selected_record.split(" - ")[0])
             success, message = delete_record(selected_table, record_id)
+            if success:
+                st.success(message)
+                st.session_state.pop('original_df', None)
+                st.rerun()
+            else:
+                st.error(message)
+    
+    with col3:
+        if st.button("🔓 Réactiver", use_container_width=True, type="secondary"):
+            record_id = int(selected_record.split(" - ")[0])
+            success, message = reactivate_record(selected_table, record_id)
             if success:
                 st.success(message)
                 st.session_state.pop('original_df', None)
