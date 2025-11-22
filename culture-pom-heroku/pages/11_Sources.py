@@ -128,10 +128,37 @@ def get_active_varietes():
         codes = [row[0] for row in cursor.fetchall()]
         cursor.close()
         conn.close()
+        
+        # Si aucun code récupéré, afficher erreur détaillée
+        if not codes:
+            st.error("❌ Erreur chargement variétés : aucune variété active trouvée dans ref_varietes")
+        
         return codes
     except Exception as e:
         st.error(f"❌ Erreur chargement variétés : {str(e)}")
+        import traceback
+        st.error(f"Détails : {traceback.format_exc()}")
         return []
+
+def get_varietes_with_existing(df, column_name):
+    """
+    Récupère codes variétés actifs + valeurs déjà présentes dans le dataframe
+    CRITIQUE : Préserve les valeurs existantes même si variété désactivée
+    """
+    # Codes actifs
+    active_codes = get_active_varietes()
+    
+    # Valeurs déjà présentes dans le df (pour ne pas les perdre)
+    if column_name in df.columns:
+        existing_values = df[column_name].dropna().unique().tolist()
+    else:
+        existing_values = []
+    
+    # Fusionner : existing + active (sans doublons)
+    all_codes = list(set(existing_values + active_codes))
+    all_codes.sort()
+    
+    return all_codes
 
 # ✅ TABLES_CONFIG CORRIGÉ - TOUTES LES COLONNES EXACTES
 TABLES_CONFIG = {
@@ -541,17 +568,28 @@ if not df_full.empty:
         for field, field_config in config["dropdown_fields"].items():
             # ⭐ Dropdown dynamique
             if field_config == "dynamic_varietes":
-                varietes = get_active_varietes()
+                # CRITIQUE : Utiliser df_full (pas df) pour inclure TOUTES les valeurs existantes
+                varietes = get_varietes_with_existing(df_full, field)
                 column_config[field] = st.column_config.SelectboxColumn(
                     field.replace('_', ' ').title(),
                     options=varietes,
                     required=False
                 )
-            # Dropdown statique
+            # Dropdown statique - AUSSI inclure valeurs existantes
             else:
+                # Valeurs existantes dans df_full (TOUTES les lignes)
+                if field in df_full.columns:
+                    existing_values = df_full[field].dropna().unique().tolist()
+                else:
+                    existing_values = []
+                
+                # Fusionner : existing + config (sans doublons)
+                all_options = list(set(existing_values + field_config))
+                all_options.sort()
+                
                 column_config[field] = st.column_config.SelectboxColumn(
                     field.replace('_', ' ').title(),
-                    options=field_config,
+                    options=all_options,
                     required=False
                 )
     
