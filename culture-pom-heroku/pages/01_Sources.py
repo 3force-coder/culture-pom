@@ -7,7 +7,8 @@ from database import get_connection
 from components import show_footer
 from auth import is_authenticated
 import io
-import requests
+import json
+import os
 from streamlit_lottie import st_lottie
 
 st.set_page_config(page_title="Sources - Culture Pom", page_icon="📋", layout="wide")
@@ -82,18 +83,17 @@ if not is_authenticated():
     st.stop()
 
 # ⭐ FONCTION CHARGEMENT ANIMATION LOTTIE
-def load_lottie_url(url: str):
-    """Charge une animation Lottie depuis une URL"""
+def load_lottie_file(filepath: str):
+    """Charge une animation Lottie depuis un fichier local"""
     try:
-        r = requests.get(url)
-        if r.status_code != 200:
-            return None
-        return r.json()
+        with open(filepath, "r") as f:
+            return json.load(f)
     except:
         return None
 
-# Animation confettis (succès ajout)
-LOTTIE_CONFETTI = load_lottie_url("https://lottie.host/3c9e74ef-1b7f-4ad1-92a0-7303bc8e545e/I44wdnKO78.json")
+# Charger l'animation confetti (fichier dans le même dossier que le script)
+LOTTIE_PATH = os.path.join(os.path.dirname(__file__), "confetti_animation.json")
+LOTTIE_CONFETTI = load_lottie_file(LOTTIE_PATH)
 
 st.title("📋 Gestion des Tables de Référence")
 st.markdown("---")
@@ -582,7 +582,11 @@ if st.session_state.get('show_add_form', False):
                     # ⭐ Animation confettis Lottie
                     if LOTTIE_CONFETTI:
                         st_lottie(LOTTIE_CONFETTI, height=300, key="confetti_success")
-                    time.sleep(2)  # ⭐ 2s pour voir l'animation
+                        time.sleep(2)
+                    else:
+                        # Fallback si fichier non trouvé
+                        st.balloons()
+                        time.sleep(1.5)
                     st.session_state.show_add_form = False
                     st.session_state.pop('new_data', None)
                     st.rerun()
