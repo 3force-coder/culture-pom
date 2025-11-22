@@ -175,10 +175,12 @@ TABLES_CONFIG = {
     
     "Producteurs": {
         "table": "ref_producteurs",
-        "columns": ["code_producteur", "cle_producteur", "nom", "siret", "adresse", "code_postal", "ville", "telephone", "email", "nom_contact", "is_active", "notes"],
+        "columns": ["code_producteur", "nom", "code_postal", "ville", "departement", "telephone", "email", "nom_contact", "statut", "acheteur_referent", "global_gap", "is_active", "notes"],
+        "hidden_columns": ["cle_producteur", "siret", "forme_juridique", "adresse", "adresse_complement", "pays", "latitude", "longitude", "prenom_contact", "type_contrat"],
         "primary_key": "id",
-        "editable": ["nom", "siret", "adresse", "code_postal", "ville", "telephone", "email", "nom_contact", "is_active", "notes"],
+        "editable": ["nom", "code_postal", "ville", "departement", "telephone", "email", "nom_contact", "statut", "acheteur_referent", "global_gap", "is_active", "notes"],
         "has_updated_at": True,
+        "filter_columns": ["nom", "departement", "acheteur_referent", "global_gap"],
         "required_fields": ["code_producteur", "nom"]
     },
     
@@ -417,17 +419,17 @@ selected_table = st.selectbox("📋 Table", list(TABLES_CONFIG.keys()), key="tab
 
 st.markdown("---")
 
-# ⭐ NOUVEAU FORMULAIRE SANS st.form() - CORRECTION v5.2
+# ⭐ Formulaire ajout - SANS st.form()
 if st.session_state.get('show_add_form', False):
     st.subheader(f"➕ Ajouter - {selected_table}")
     config = TABLES_CONFIG[selected_table]
     
-    # ⭐ NOUVEAU : Afficher liste champs obligatoires
+    # ⭐ Afficher liste champs obligatoires
     if "required_fields" in config:
         required_fields_str = ", ".join([f.replace('_', ' ').title() for f in config["required_fields"]])
-        st.info(f"📝 Champs obligatoires : **{required_fields_str}**")
+        st.info(f"📌 Champs obligatoires : **{required_fields_str}**")
     
-    # Initialiser new_data dans session_state si pas déjà fait
+    # Initialiser session_state
     if 'new_data' not in st.session_state:
         st.session_state.new_data = {}
     
@@ -470,7 +472,7 @@ if st.session_state.get('show_add_form', False):
             else:
                 st.session_state.new_data[col] = st.text_input(label, key=f"add_{col}")
     
-    # Boutons SANS form
+    # Boutons
     col1, col2 = st.columns([1, 1])
     with col1:
         if st.button("💾 Enregistrer", use_container_width=True, type="primary", key="btn_save_add"):
@@ -500,10 +502,10 @@ if st.session_state.get('show_add_form', False):
                 success, message = add_record(selected_table, filtered_data)
                 if success:
                     st.success(message)
-                    st.snow()  # ⭐ Confettis discrets au lieu de balloons
-                    time.sleep(0.8)  # ⭐ Plus rapide (0.8s au lieu de 1.5s)
+                    st.snow()
+                    time.sleep(0.8)
                     st.session_state.show_add_form = False
-                    st.session_state.pop('new_data', None)  # Nettoyer
+                    st.session_state.pop('new_data', None)
                     st.rerun()
                 else:
                     st.error(message)
@@ -511,7 +513,7 @@ if st.session_state.get('show_add_form', False):
     with col2:
         if st.button("❌ Annuler", use_container_width=True, key="btn_cancel_add"):
             st.session_state.show_add_form = False
-            st.session_state.pop('new_data', None)  # Nettoyer
+            st.session_state.pop('new_data', None)
             st.rerun()
     
     st.markdown("---")
@@ -549,12 +551,13 @@ if not df_full.empty:
         for i, col_name in enumerate(config["filter_columns"]):
             with filter_cols[i]:
                 if col_name in df.columns:
-                    # ⭐ Traitement spécial pour is_bio (boolean)
-                    if col_name == "is_bio":
-                        bio_options = ["Tous", "OUI", "NON"]
+                    # ⭐ Traitement spécial pour boolean (is_bio, global_gap)
+                    if col_name in ["is_bio", "global_gap"]:
+                        bool_options = ["Tous", "OUI", "NON"]
+                        label = "Bio" if col_name == "is_bio" else "Global Gap"
                         filters[col_name] = st.selectbox(
-                            "Bio",
-                            bio_options,
+                            label,
+                            bool_options,
                             key=f"filter_{col_name}"
                         )
                     else:
@@ -568,7 +571,7 @@ if not df_full.empty:
         # Appliquer les filtres
         for col_name, selected_value in filters.items():
             if selected_value != "Tous":
-                if col_name == "is_bio":
+                if col_name in ["is_bio", "global_gap"]:
                     # Filtrer par boolean
                     if selected_value == "OUI":
                         df = df[df[col_name] == True]
