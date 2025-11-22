@@ -500,8 +500,8 @@ if st.session_state.get('show_add_form', False):
                 success, message = add_record(selected_table, filtered_data)
                 if success:
                     st.success(message)
-                    st.balloons()
-                    time.sleep(1.5)
+                    st.snow()  # ⭐ Confettis discrets au lieu de balloons
+                    time.sleep(0.8)  # ⭐ Plus rapide (0.8s au lieu de 1.5s)
                     st.session_state.show_add_form = False
                     st.session_state.pop('new_data', None)  # Nettoyer
                     st.rerun()
