@@ -123,17 +123,22 @@ def get_active_varietes():
     """Récupère les codes variétés actifs depuis ref_varietes"""
     try:
         conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT code_variete FROM ref_varietes WHERE is_active = TRUE ORDER BY code_variete")
-        codes = [row[0] for row in cursor.fetchall()]
-        cursor.close()
+        
+        # Utiliser pandas pour simplifier (déjà importé)
+        query = "SELECT code_variete FROM ref_varietes WHERE is_active = TRUE ORDER BY code_variete"
+        df = pd.read_sql(query, conn)
+        
         conn.close()
         
-        # Si aucun code récupéré, afficher erreur détaillée
+        # Extraire liste de codes
+        codes = df['code_variete'].tolist()
+        
+        # Si aucun code récupéré, afficher erreur
         if not codes:
-            st.error("❌ Erreur chargement variétés : aucune variété active trouvée dans ref_varietes")
+            st.error("❌ Erreur : aucune variété active trouvée dans ref_varietes")
         
         return codes
+        
     except Exception as e:
         st.error(f"❌ Erreur chargement variétés : {str(e)}")
         import traceback
