@@ -3,41 +3,73 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 from database import get_connection
-from components import show_header, show_footer
+from components import show_footer
 from auth import is_authenticated
 import io
 
 st.set_page_config(page_title="Sources - Culture Pom", page_icon="📋", layout="wide")
 
-# CSS custom pour réduire les espacements
+# CSS custom pour réduire FORTEMENT les espacements
 st.markdown("""
 <style>
-    /* Réduire espacement entre sections */
+    /* Réduire espacement général du container */
     .block-container {
-        padding-top: 2rem;
-        padding-bottom: 1rem;
+        padding-top: 1rem !important;
+        padding-bottom: 0.5rem !important;
+        padding-left: 2rem !important;
+        padding-right: 2rem !important;
     }
     
-    /* Réduire espacement autour des titres */
-    h1, h2, h3 {
-        margin-top: 0.5rem;
-        margin-bottom: 0.5rem;
+    /* Réduire espacement autour de TOUS les titres */
+    h1, h2, h3, h4 {
+        margin-top: 0.3rem !important;
+        margin-bottom: 0.3rem !important;
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
     }
     
     /* Réduire espacement entre widgets */
-    .stSelectbox, .stButton {
-        margin-bottom: 0.5rem;
+    .stSelectbox, .stButton, .stCheckbox {
+        margin-bottom: 0.3rem !important;
+        margin-top: 0.3rem !important;
     }
     
     /* Réduire espacement des data_editor */
     .stDataFrame {
-        margin-top: 0.5rem;
-        margin-bottom: 0.5rem;
+        margin-top: 0.5rem !important;
+        margin-bottom: 0.5rem !important;
     }
     
     /* Réduire espacement des métriques */
     [data-testid="stMetricValue"] {
-        font-size: 1.5rem;
+        font-size: 1.4rem !important;
+    }
+    
+    [data-testid="metric-container"] {
+        padding: 0.3rem !important;
+    }
+    
+    /* Réduire espacement markdown (lignes hr) */
+    hr {
+        margin-top: 0.5rem !important;
+        margin-bottom: 0.5rem !important;
+    }
+    
+    /* Réduire espacement colonnes */
+    [data-testid="column"] {
+        padding: 0.2rem !important;
+    }
+    
+    /* Réduire espacement formulaires */
+    .stForm {
+        padding: 0.5rem !important;
+        margin: 0.3rem !important;
+    }
+    
+    /* Réduire espacement subheaders */
+    .stSubheader {
+        margin-top: 0.3rem !important;
+        margin-bottom: 0.3rem !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -46,7 +78,7 @@ if not is_authenticated():
     st.warning("⚠️ Veuillez vous connecter pour accéder à cette page")
     st.stop()
 
-show_header()
+st.title("📋 Gestion des Tables de Référence")
 st.markdown("---")
 
 # ⭐ LISTES DE VALEURS POUR DROPDOWNS
