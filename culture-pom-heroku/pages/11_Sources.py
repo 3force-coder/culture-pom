@@ -14,7 +14,7 @@ st.markdown("""
 <style>
     /* Réduire espacement général du container */
     .block-container {
-        padding-top: 1rem !important;
+        padding-top: 2rem !important;      /* Augmenté pour éviter titre tronqué */
         padding-bottom: 0.5rem !important;
         padding-left: 2rem !important;
         padding-right: 2rem !important;
