@@ -214,7 +214,7 @@ TABLES_CONFIG = {
     "Sites Stockage": {
         "table": "ref_sites_stockage",
         "columns": ["code_site", "code_emplacement", "nom_complet", "adresse", "capacite_max_pallox", "capacite_max_tonnes", "is_active", "notes"],
-        "hidden_columns": ["cle_unique", "type_site"],
+        "hidden_columns": ["cle_unique"],
         "primary_key": "id",
         "editable": ["nom_complet", "adresse", "capacite_max_pallox", "capacite_max_tonnes", "is_active", "notes"],
         "has_updated_at": True,
