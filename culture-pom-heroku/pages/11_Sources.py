@@ -17,6 +17,7 @@ show_header()
 st.title("📋 Gestion des Tables de Référence")
 st.markdown("---")
 
+# ✅ TABLES_CONFIG CORRIGÉ - TOUTES LES COLONNES EXACTES
 TABLES_CONFIG = {
     "Variétés": {
         "table": "ref_varietes",
@@ -25,47 +26,53 @@ TABLES_CONFIG = {
         "editable": ["nom_variete", "type", "utilisation", "couleur_peau", "couleur_chair", "precocite", "is_active", "notes"],
         "has_updated_at": True
     },
+    
     "Plants": {
         "table": "ref_plants",
-        "columns": ["code_plant", "variete", "description", "is_active", "notes"],
+        "columns": ["code_plant", "libelle_long", "code_variete_base", "calibre", "is_bio", "poids_unite", "is_active", "notes"],
         "primary_key": "id",
-        "editable": ["variete", "description", "is_active", "notes"],
+        "editable": ["libelle_long", "code_variete_base", "calibre", "is_bio", "poids_unite", "is_active", "notes"],
         "has_updated_at": True
     },
+    
     "Producteurs": {
         "table": "ref_producteurs",
-        "columns": ["code_producteur", "raison_sociale", "adresse", "commune", "code_postal", "telephone", "email", "contact_principal", "est_bio", "is_active", "notes"],
+        "columns": ["code_producteur", "cle_producteur", "nom", "siret", "adresse", "code_postal", "ville", "telephone", "email", "nom_contact", "is_active", "notes"],
         "primary_key": "id",
-        "editable": ["raison_sociale", "adresse", "commune", "code_postal", "telephone", "email", "contact_principal", "est_bio", "is_active", "notes"],
+        "editable": ["nom", "siret", "adresse", "code_postal", "ville", "telephone", "email", "nom_contact", "is_active", "notes"],
         "has_updated_at": True
     },
+    
     "Sites Stockage": {
         "table": "ref_sites_stockage",
         "columns": ["code_site", "code_emplacement", "nom_complet", "adresse", "capacite_max_pallox", "capacite_max_tonnes", "is_active", "notes"],
         "primary_key": "id",
         "editable": ["nom_complet", "adresse", "capacite_max_pallox", "capacite_max_tonnes", "is_active", "notes"],
         "has_updated_at": True,
-        "auto_cle_unique": True
+        "auto_cle_unique": True  # ⭐ GÉNÉRATION AUTO cle_unique
     },
+    
     "Types Déchets": {
         "table": "ref_types_dechets",
         "columns": ["code", "libelle", "description", "is_active"],
         "primary_key": "id",
         "editable": ["libelle", "description", "is_active"],
-        "has_updated_at": False
+        "has_updated_at": False  # ⭐ PAS de updated_at dans cette table
     },
+    
     "Emballages": {
         "table": "ref_emballages",
-        "columns": ["code_emballage", "type_emballage", "capacite_kg", "is_active", "notes"],
+        "columns": ["code_emballage", "atelier", "poids_unitaire", "unite_poids", "nbr_uvc", "type_produit", "is_active", "notes"],
         "primary_key": "id",
-        "editable": ["type_emballage", "capacite_kg", "is_active", "notes"],
+        "editable": ["atelier", "poids_unitaire", "unite_poids", "nbr_uvc", "type_produit", "is_active", "notes"],
         "has_updated_at": True
     },
+    
     "Produits Commerciaux": {
         "table": "ref_produits_commerciaux",
-        "columns": ["code_produit", "description", "categorie", "prix_vente_kg", "is_active", "notes"],
+        "columns": ["code_produit", "marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "code_variete", "is_bio", "is_active", "notes"],
         "primary_key": "id",
-        "editable": ["description", "categorie", "prix_vente_kg", "is_active", "notes"],
+        "editable": ["marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "code_variete", "is_bio", "is_active", "notes"],
         "has_updated_at": True
     }
 }
@@ -136,6 +143,7 @@ def save_changes(table_name, original_df, edited_df):
                 set_clause = ", ".join([f"{col} = %s" for col in changes.keys()])
                 values = list(changes.values()) + [row_id]
                 
+                # ⭐ Vérifier si la table a updated_at
                 if config.get('has_updated_at', True):
                     update_query = f"UPDATE {config['table']} SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE {config['primary_key']} = %s"
                 else:
@@ -161,6 +169,7 @@ def delete_record(table_name, record_id):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ⭐ Vérifier si la table a updated_at
         if config.get('has_updated_at', True):
             query = f"UPDATE {config['table']} SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE {config['primary_key']} = %s"
         else:
@@ -184,7 +193,7 @@ def add_record(table_name, data):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Générer cle_unique pour Sites Stockage
+        # ⭐ Générer cle_unique pour Sites Stockage
         if config.get('auto_cle_unique'):
             if 'code_site' in data and 'code_emplacement' in data:
                 data['cle_unique'] = f"{data['code_site']}_{data['code_emplacement']}"
@@ -194,6 +203,7 @@ def add_record(table_name, data):
         placeholders = ", ".join(["%s"] * len(columns))
         columns_str = ", ".join(columns)
         
+        # ⭐ Vérifier si la table a updated_at
         if config.get('has_updated_at', True):
             query = f"INSERT INTO {config['table']} ({columns_str}, created_at, updated_at) VALUES ({placeholders}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
         else:
@@ -231,10 +241,12 @@ if st.session_state.get('show_add_form', False):
         col1, col2 = st.columns(2)
         for i, col in enumerate(config['columns']):
             with col1 if i % 2 == 0 else col2:
-                if col in ['is_active', 'est_bio']:
+                if col in ['is_active', 'is_bio', 'global_gap']:
                     new_data[col] = st.checkbox(col.replace('_', ' ').title(), value=True)
-                elif 'capacite' in col or 'prix' in col:
+                elif 'capacite' in col or 'prix' in col or 'poids' in col:
                     new_data[col] = st.number_input(col.replace('_', ' ').title(), min_value=0.0, value=0.0, step=0.1)
+                elif 'nbr' in col:
+                    new_data[col] = st.number_input(col.replace('_', ' ').title(), min_value=0, value=0, step=1)
                 else:
                     new_data[col] = st.text_input(col.replace('_', ' ').title())
         
