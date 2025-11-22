@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime
 from database import get_connection
 from components import show_header, show_footer
-from auth import require_auth
+from auth import is_authenticated
 import io
 
 # Configuration de la page
@@ -14,7 +14,9 @@ st.set_page_config(
 )
 
 # Vérification authentification
-require_auth()
+if not is_authenticated():
+    st.warning("⚠️ Veuillez vous connecter pour accéder à cette page")
+    st.stop()
 
 # Affichage header et footer
 show_header()
