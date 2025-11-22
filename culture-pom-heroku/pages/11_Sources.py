@@ -124,25 +124,65 @@ def get_active_varietes():
     try:
         conn = get_connection()
         
-        # Utiliser pandas pour simplifier (déjà importé)
-        query = "SELECT code_variete FROM ref_varietes WHERE is_active = TRUE ORDER BY code_variete"
-        df = pd.read_sql(query, conn)
+        # DEBUG : Afficher type de connexion
+        st.write(f"🔍 DEBUG: Type connexion = {type(conn)}")
+        
+        # MÉTHODE 1 : Pandas (recommandé)
+        try:
+            query = "SELECT code_variete FROM ref_varietes WHERE is_active = TRUE ORDER BY code_variete"
+            df = pd.read_sql(query, conn)
+            st.write(f"🔍 DEBUG: pd.read_sql OK - {len(df)} lignes")
+            codes = df['code_variete'].tolist()
+        except Exception as e1:
+            st.warning(f"⚠️ pd.read_sql échoué : {e1}")
+            
+            # MÉTHODE 2 : Cursor classique (fallback)
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT code_variete FROM ref_varietes WHERE is_active = TRUE ORDER BY code_variete")
+                
+                # Tester différents formats de retour
+                results = cursor.fetchall()
+                st.write(f"🔍 DEBUG: fetchall OK - {len(results)} lignes")
+                st.write(f"🔍 DEBUG: Premier résultat type = {type(results[0]) if results else 'vide'}")
+                
+                if results:
+                    # Essayer différentes méthodes d'accès
+                    first = results[0]
+                    if isinstance(first, tuple):
+                        codes = [row[0] for row in results]
+                    elif isinstance(first, list):
+                        codes = [row[0] for row in results]
+                    else:
+                        # Peut-être juste une string
+                        codes = [str(row) for row in results]
+                    
+                    st.write(f"🔍 DEBUG: Extraction OK - {len(codes)} codes")
+                else:
+                    codes = []
+                    st.error("❌ fetchall retourne liste vide")
+                
+                cursor.close()
+            except Exception as e2:
+                st.error(f"❌ Cursor aussi échoué : {e2}")
+                codes = []
         
         conn.close()
         
-        # Extraire liste de codes
-        codes = df['code_variete'].tolist()
-        
-        # Si aucun code récupéré, afficher erreur
-        if not codes:
-            st.error("❌ Erreur : aucune variété active trouvée dans ref_varietes")
+        # Afficher résultat
+        if codes:
+            st.success(f"✅ {len(codes)} codes variétés chargés")
+            st.write(f"🔍 DEBUG: Premiers codes = {codes[:5]}")
+        else:
+            st.error("❌ AUCUN CODE RÉCUPÉRÉ")
+            st.info("💡 Vérifier : SELECT COUNT(*) FROM ref_varietes WHERE is_active = TRUE")
         
         return codes
         
     except Exception as e:
-        st.error(f"❌ Erreur chargement variétés : {str(e)}")
+        st.error(f"❌ Erreur get_active_varietes : {str(e)}")
         import traceback
-        st.error(f"Détails : {traceback.format_exc()}")
+        st.error(f"```\n{traceback.format_exc()}\n```")
         return []
 
 def get_varietes_with_existing(df, column_name):
