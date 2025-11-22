@@ -21,58 +21,52 @@ TABLES_CONFIG = {
     "Variétés": {
         "table": "ref_varietes",
         "columns": ["code_variete", "nom_variete", "type", "utilisation", "couleur_peau", "couleur_chair", "precocite", "is_active", "notes"],
-        "display_names": ["Code", "Nom", "Type", "Utilisation", "Peau", "Chair", "Précocité", "Actif", "Notes"],
         "primary_key": "id",
-        "editable": ["nom_variete", "type", "utilisation", "couleur_peau", "couleur_chair", "precocite", "is_active", "notes"]
+        "editable": ["nom_variete", "type", "utilisation", "couleur_peau", "couleur_chair", "precocite", "is_active", "notes"],
+        "has_updated_at": True
     },
     "Plants": {
         "table": "ref_plants",
-        "columns": ["code_plant", "nom_plant", "variete", "description", "is_active", "notes"],
-        "display_names": ["Code", "Nom", "Variété", "Description", "Actif", "Notes"],
+        "columns": ["code_plant", "variete", "description", "is_active", "notes"],
         "primary_key": "id",
-        "editable": ["nom_plant", "variete", "description", "is_active", "notes"]
+        "editable": ["variete", "description", "is_active", "notes"],
+        "has_updated_at": True
     },
     "Producteurs": {
         "table": "ref_producteurs",
         "columns": ["code_producteur", "raison_sociale", "adresse", "commune", "code_postal", "telephone", "email", "contact_principal", "est_bio", "is_active", "notes"],
-        "display_names": ["Code", "Raison Sociale", "Adresse", "Commune", "CP", "Tél", "Email", "Contact", "Bio", "Actif", "Notes"],
         "primary_key": "id",
-        "editable": ["raison_sociale", "adresse", "commune", "code_postal", "telephone", "email", "contact_principal", "est_bio", "is_active", "notes"]
+        "editable": ["raison_sociale", "adresse", "commune", "code_postal", "telephone", "email", "contact_principal", "est_bio", "is_active", "notes"],
+        "has_updated_at": True
     },
     "Sites Stockage": {
         "table": "ref_sites_stockage",
         "columns": ["code_site", "code_emplacement", "nom_complet", "adresse", "capacite_max_pallox", "capacite_max_tonnes", "is_active", "notes"],
-        "display_names": ["Code Site", "Emplacement", "Nom", "Adresse", "Cap. Pallox", "Cap. Tonnes", "Actif", "Notes"],
         "primary_key": "id",
-        "editable": ["code_emplacement", "nom_complet", "adresse", "capacite_max_pallox", "capacite_max_tonnes", "is_active", "notes"]
+        "editable": ["nom_complet", "adresse", "capacite_max_pallox", "capacite_max_tonnes", "is_active", "notes"],
+        "has_updated_at": True,
+        "auto_cle_unique": True
     },
     "Types Déchets": {
         "table": "ref_types_dechets",
         "columns": ["code", "libelle", "description", "is_active"],
-        "display_names": ["Code", "Libellé", "Description", "Actif"],
         "primary_key": "id",
-        "editable": ["libelle", "description", "is_active"]
+        "editable": ["libelle", "description", "is_active"],
+        "has_updated_at": False
     },
     "Emballages": {
         "table": "ref_emballages",
-        "columns": ["code_emballage", "nom_emballage", "type_emballage", "capacite_kg", "is_active", "notes"],
-        "display_names": ["Code", "Nom", "Type", "Capacité (kg)", "Actif", "Notes"],
+        "columns": ["code_emballage", "type_emballage", "capacite_kg", "is_active", "notes"],
         "primary_key": "id",
-        "editable": ["nom_emballage", "type_emballage", "capacite_kg", "is_active", "notes"]
+        "editable": ["type_emballage", "capacite_kg", "is_active", "notes"],
+        "has_updated_at": True
     },
     "Produits Commerciaux": {
         "table": "ref_produits_commerciaux",
-        "columns": ["code_produit", "nom_produit", "description", "categorie", "prix_vente_kg", "is_active", "notes"],
-        "display_names": ["Code", "Nom", "Description", "Catégorie", "Prix €/kg", "Actif", "Notes"],
+        "columns": ["code_produit", "description", "categorie", "prix_vente_kg", "is_active", "notes"],
         "primary_key": "id",
-        "editable": ["nom_produit", "description", "categorie", "prix_vente_kg", "is_active", "notes"]
-    },
-    "Prévisions Ventes": {
-        "table": "previsions_ventes",
-        "columns": ["date_prevision", "code_produit", "quantite_prevue", "notes"],
-        "display_names": ["Date", "Produit", "Quantité", "Notes"],
-        "primary_key": "id",
-        "editable": ["date_prevision", "code_produit", "quantite_prevue", "notes"]
+        "editable": ["description", "categorie", "prix_vente_kg", "is_active", "notes"],
+        "has_updated_at": True
     }
 }
 
@@ -142,7 +136,11 @@ def save_changes(table_name, original_df, edited_df):
                 set_clause = ", ".join([f"{col} = %s" for col in changes.keys()])
                 values = list(changes.values()) + [row_id]
                 
-                update_query = f"UPDATE {config['table']} SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE {config['primary_key']} = %s"
+                if config.get('has_updated_at', True):
+                    update_query = f"UPDATE {config['table']} SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE {config['primary_key']} = %s"
+                else:
+                    update_query = f"UPDATE {config['table']} SET {set_clause} WHERE {config['primary_key']} = %s"
+                
                 cursor.execute(update_query, values)
                 updates += 1
         
@@ -163,12 +161,16 @@ def delete_record(table_name, record_id):
         conn = get_connection()
         cursor = conn.cursor()
         
-        query = f"UPDATE {config['table']} SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE {config['primary_key']} = %s"
+        if config.get('has_updated_at', True):
+            query = f"UPDATE {config['table']} SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE {config['primary_key']} = %s"
+        else:
+            query = f"UPDATE {config['table']} SET is_active = FALSE WHERE {config['primary_key']} = %s"
+        
         cursor.execute(query, (record_id,))
         conn.commit()
         cursor.close()
         conn.close()
-        return True, "✅ Enregistrement supprimé"
+        return True, "✅ Supprimé"
         
     except Exception as e:
         if 'conn' in locals():
@@ -182,17 +184,26 @@ def add_record(table_name, data):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # Générer cle_unique pour Sites Stockage
+        if config.get('auto_cle_unique'):
+            if 'code_site' in data and 'code_emplacement' in data:
+                data['cle_unique'] = f"{data['code_site']}_{data['code_emplacement']}"
+        
         columns = list(data.keys())
         values = [convert_to_native_types(v) for v in data.values()]
         placeholders = ", ".join(["%s"] * len(columns))
         columns_str = ", ".join(columns)
         
-        query = f"INSERT INTO {config['table']} ({columns_str}, created_at, updated_at) VALUES ({placeholders}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        if config.get('has_updated_at', True):
+            query = f"INSERT INTO {config['table']} ({columns_str}, created_at, updated_at) VALUES ({placeholders}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        else:
+            query = f"INSERT INTO {config['table']} ({columns_str}, created_at) VALUES ({placeholders}, CURRENT_TIMESTAMP)"
+        
         cursor.execute(query, values)
         conn.commit()
         cursor.close()
         conn.close()
-        return True, "✅ Enregistrement ajouté"
+        return True, "✅ Ajouté"
         
     except Exception as e:
         if 'conn' in locals():
@@ -205,9 +216,12 @@ with col1:
     selected_table = st.selectbox("📋 Table", list(TABLES_CONFIG.keys()), key="table_selector")
 with col2:
     if st.button("➕ Ajouter", use_container_width=True):
-        st.session_state.show_add_form = True
+        # Toggle l'affichage du formulaire
+        st.session_state.show_add_form = not st.session_state.get('show_add_form', False)
 
-# Formulaire ajout
+st.markdown("---")
+
+# Formulaire ajout - SE DÉPLIE/RÉTRACTE
 if st.session_state.get('show_add_form', False):
     with st.form("add_form"):
         st.subheader(f"➕ Ajouter - {selected_table}")
@@ -217,15 +231,12 @@ if st.session_state.get('show_add_form', False):
         col1, col2 = st.columns(2)
         for i, col in enumerate(config['columns']):
             with col1 if i % 2 == 0 else col2:
-                display_name = config['display_names'][i]
                 if col in ['is_active', 'est_bio']:
-                    new_data[col] = st.checkbox(display_name, value=True)
-                elif 'capacite' in col or 'prix' in col or 'quantite' in col:
-                    new_data[col] = st.number_input(display_name, min_value=0.0, value=0.0, step=0.1)
-                elif 'date' in col:
-                    new_data[col] = st.date_input(display_name)
+                    new_data[col] = st.checkbox(col.replace('_', ' ').title(), value=True)
+                elif 'capacite' in col or 'prix' in col:
+                    new_data[col] = st.number_input(col.replace('_', ' ').title(), min_value=0.0, value=0.0, step=0.1)
                 else:
-                    new_data[col] = st.text_input(display_name)
+                    new_data[col] = st.text_input(col.replace('_', ' ').title())
         
         col1, col2 = st.columns([1, 1])
         with col1:
@@ -242,8 +253,8 @@ if st.session_state.get('show_add_form', False):
             if st.form_submit_button("❌ Annuler", use_container_width=True):
                 st.session_state.show_add_form = False
                 st.rerun()
-
-st.markdown("---")
+    
+    st.markdown("---")
 
 # Charger données
 df = load_table_data(selected_table)
@@ -301,13 +312,7 @@ if not df.empty:
     
     with col1:
         first_col = config['columns'][0]
-        second_col = config['columns'][1] if len(config['columns']) > 1 else None
-        
-        if second_col and second_col in df.columns:
-            options = [f"{row[config['primary_key']]} - {row[first_col]} - {row[second_col]}" for _, row in df.iterrows()]
-        else:
-            options = [f"{row[config['primary_key']]} - {row[first_col]}" for _, row in df.iterrows()]
-        
+        options = [f"{row[config['primary_key']]} - {row[first_col]}" for _, row in df.iterrows()]
         selected_record = st.selectbox("Sélectionner", options, key="delete_selector")
     
     with col2:
@@ -328,7 +333,8 @@ if not df.empty:
     
     with col1:
         csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 CSV", csv, f"{config['table']}_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv", use_container_width=True)
+        st.download_button("📥 CSV", csv, f"{config['table']}_{datetime.now().strftime('%Y%m%d')}.csv", 
+                          "text/csv", use_container_width=True)
     
     with col2:
         buffer = io.BytesIO()
