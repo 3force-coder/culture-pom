@@ -124,45 +124,21 @@ def get_active_varietes():
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        
-        # ✅ MÊME MÉTHODE QUE load_table_data (qui fonctionne)
         cursor.execute("SELECT code_variete FROM ref_varietes WHERE is_active = TRUE ORDER BY code_variete")
-        
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        
-        # Créer DataFrame comme dans load_table_data
         df = pd.DataFrame(rows, columns=['code_variete'])
-        
-        # Extraire liste de codes
-        codes = df['code_variete'].tolist()
-        
-        return codes
-        
+        return df['code_variete'].tolist()
     except Exception as e:
         st.error(f"❌ Erreur chargement variétés : {str(e)}")
         return []
 
 def get_varietes_with_existing(df, column_name):
-    """
-    Récupère codes variétés actifs + valeurs déjà présentes dans le dataframe
-    CRITIQUE : Préserve les valeurs existantes même si variété désactivée
-    """
-    # Codes actifs
-    active_codes = get_active_varietes()
-    
-    # Valeurs déjà présentes dans le df (pour ne pas les perdre)
-    if column_name in df.columns:
-        existing_values = df[column_name].dropna().unique().tolist()
-    else:
-        existing_values = []
-    
-    # Fusionner : existing + active (sans doublons)
-    all_codes = list(set(existing_values + active_codes))
-    all_codes.sort()
-    
-    return all_codes
+    """Récupère variétés actifs + valeurs déjà présentes dans le dataframe"""
+    active = get_active_varietes()
+    existing = df[column_name].dropna().unique().tolist() if column_name in df.columns else []
+    return sorted(list(set(existing + active)))
 
 # ✅ TABLES_CONFIG CORRIGÉ - TOUTES LES COLONNES EXACTES
 TABLES_CONFIG = {
@@ -177,21 +153,23 @@ TABLES_CONFIG = {
             "type": VARIETES_TYPES,
             "utilisation": VARIETES_UTILISATIONS
         },
-        "filter_columns": ["nom_variete", "type", "utilisation"]
+        "filter_columns": ["nom_variete", "type", "utilisation"],
+        "required_fields": ["code_variete", "nom_variete"]  # ⭐ NOUVEAU
     },
     
     "Plants": {
         "table": "ref_plants",
         "columns": ["code_plant", "libelle_long", "code_variete_base", "calibre", "is_bio", "is_active", "notes"],
-        "hidden_columns": ["poids_unite"],  # ⭐ Colonne masquée (100% vide)
+        "hidden_columns": ["poids_unite"],
         "primary_key": "id",
         "editable": ["libelle_long", "code_variete_base", "calibre", "is_bio", "is_active", "notes"],
         "has_updated_at": True,
         "dropdown_fields": {
-            "calibre": PLANTS_CALIBRES,  # ⭐ Liste statique 24 valeurs
-            "code_variete_base": "dynamic_varietes"  # ⭐ Dynamique depuis ref_varietes
+            "calibre": PLANTS_CALIBRES,
+            "code_variete_base": "dynamic_varietes"
         },
-        "filter_columns": ["libelle_long", "code_variete_base", "is_bio"]  # ⭐ 3 filtres
+        "filter_columns": ["libelle_long", "code_variete_base", "is_bio"],
+        "required_fields": ["code_plant", "libelle_long"]  # ⭐ NOUVEAU - champs obligatoires
     },
     
     "Producteurs": {
@@ -199,7 +177,8 @@ TABLES_CONFIG = {
         "columns": ["code_producteur", "cle_producteur", "nom", "siret", "adresse", "code_postal", "ville", "telephone", "email", "nom_contact", "is_active", "notes"],
         "primary_key": "id",
         "editable": ["nom", "siret", "adresse", "code_postal", "ville", "telephone", "email", "nom_contact", "is_active", "notes"],
-        "has_updated_at": True
+        "has_updated_at": True,
+        "required_fields": ["code_producteur", "nom"]  # ⭐ NOUVEAU
     },
     
     "Sites Stockage": {
@@ -208,7 +187,8 @@ TABLES_CONFIG = {
         "primary_key": "id",
         "editable": ["nom_complet", "adresse", "capacite_max_pallox", "capacite_max_tonnes", "is_active", "notes"],
         "has_updated_at": True,
-        "auto_cle_unique": True
+        "auto_cle_unique": True,
+        "required_fields": ["code_site", "code_emplacement", "nom_complet"]  # ⭐ NOUVEAU
     },
     
     "Types Déchets": {
@@ -216,7 +196,8 @@ TABLES_CONFIG = {
         "columns": ["code", "libelle", "description", "is_active"],
         "primary_key": "id",
         "editable": ["libelle", "description", "is_active"],
-        "has_updated_at": False
+        "has_updated_at": False,
+        "required_fields": ["code", "libelle"]  # ⭐ NOUVEAU
     },
     
     "Emballages": {
@@ -224,7 +205,8 @@ TABLES_CONFIG = {
         "columns": ["code_emballage", "atelier", "poids_unitaire", "unite_poids", "nbr_uvc", "type_produit", "is_active", "notes"],
         "primary_key": "id",
         "editable": ["atelier", "poids_unitaire", "unite_poids", "nbr_uvc", "type_produit", "is_active", "notes"],
-        "has_updated_at": True
+        "has_updated_at": True,
+        "required_fields": ["code_emballage"]  # ⭐ NOUVEAU
     },
     
     "Produits Commerciaux": {
@@ -232,7 +214,8 @@ TABLES_CONFIG = {
         "columns": ["code_produit", "marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "code_variete", "is_bio", "is_active", "notes"],
         "primary_key": "id",
         "editable": ["marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "code_variete", "is_bio", "is_active", "notes"],
-        "has_updated_at": True
+        "has_updated_at": True,
+        "required_fields": ["code_produit", "marque", "libelle"]  # ⭐ NOUVEAU
     }
 }
 
@@ -421,7 +404,7 @@ def add_record(table_name, data):
         conn.commit()
         cursor.close()
         conn.close()
-        return True, "✅ Ajouté"
+        return True, "✅ Ajouté avec succès"
         
     except Exception as e:
         if 'conn' in locals():
@@ -433,15 +416,25 @@ selected_table = st.selectbox("📋 Table", list(TABLES_CONFIG.keys()), key="tab
 
 st.markdown("---")
 
-# ⭐ Formulaire ajout - AVEC DROPDOWNS DYNAMIQUES
+# ⭐ Formulaire ajout - AVEC VALIDATION
 if st.session_state.get('show_add_form', False):
     with st.form("add_form"):
         st.subheader(f"➕ Ajouter - {selected_table}")
         config = TABLES_CONFIG[selected_table]
         new_data = {}
         
+        # ⭐ NOUVEAU : Afficher liste champs obligatoires
+        if "required_fields" in config:
+            required_fields_str = ", ".join([f.replace('_', ' ').title() for f in config["required_fields"]])
+            st.info(f"📝 Champs obligatoires : **{required_fields_str}**")
+        
         col1, col2 = st.columns(2)
         for i, col in enumerate(config['columns']):
+            # ⭐ NOUVEAU : Marquer champs obligatoires avec astérisque
+            label = col.replace('_', ' ').title()
+            if "required_fields" in config and col in config["required_fields"]:
+                label = f"{label} *"
+            
             with col1 if i % 2 == 0 else col2:
                 # ⭐ Dropdowns pour champs spécifiques
                 if "dropdown_fields" in config and col in config["dropdown_fields"]:
@@ -452,7 +445,7 @@ if st.session_state.get('show_add_form', False):
                         varietes = get_active_varietes()
                         options = [""] + varietes
                         new_data[col] = st.selectbox(
-                            col.replace('_', ' ').title(),
+                            label,
                             options=options,
                             key=f"add_{col}"
                         )
@@ -460,30 +453,57 @@ if st.session_state.get('show_add_form', False):
                     else:
                         options = [""] + field_config
                         new_data[col] = st.selectbox(
-                            col.replace('_', ' ').title(),
+                            label,
                             options=options,
                             key=f"add_{col}"
                         )
                 elif col in ['is_active', 'is_bio', 'global_gap']:
-                    new_data[col] = st.checkbox(col.replace('_', ' ').title(), value=True)
+                    new_data[col] = st.checkbox(label, value=True)
                 elif 'capacite' in col or 'prix' in col or 'poids' in col:
-                    new_data[col] = st.number_input(col.replace('_', ' ').title(), min_value=0.0, value=0.0, step=0.1)
+                    new_data[col] = st.number_input(label, min_value=0.0, value=0.0, step=0.1)
                 elif 'nbr' in col:
-                    new_data[col] = st.number_input(col.replace('_', ' ').title(), min_value=0, value=0, step=1)
+                    new_data[col] = st.number_input(label, min_value=0, value=0, step=1)
                 else:
-                    new_data[col] = st.text_input(col.replace('_', ' ').title())
+                    new_data[col] = st.text_input(label)
         
         col1, col2 = st.columns([1, 1])
         with col1:
             if st.form_submit_button("💾 Enregistrer", use_container_width=True):
-                filtered_data = {k: v for k, v in new_data.items() if v != '' and v is not None}
-                success, message = add_record(selected_table, filtered_data)
-                if success:
-                    st.success(message)
-                    st.session_state.show_add_form = False
-                    st.rerun()
+                # ⭐ NOUVEAU : VALIDATION EXPLICITE des champs obligatoires
+                missing_fields = []
+                if "required_fields" in config:
+                    for field in config["required_fields"]:
+                        if field not in new_data or not new_data[field] or new_data[field] == '':
+                            missing_fields.append(field.replace('_', ' ').title())
+                
+                if missing_fields:
+                    st.error(f"❌ Champs obligatoires manquants : {', '.join(missing_fields)}")
                 else:
-                    st.error(message)
+                    # ⭐ CORRIGÉ : Ne pas filtrer les False (checkboxes)
+                    # Garder toutes les valeurs sauf chaînes vides et None
+                    filtered_data = {}
+                    for k, v in new_data.items():
+                        # Garder False (checkboxes décochées)
+                        if isinstance(v, bool):
+                            filtered_data[k] = v
+                        # Garder 0 (nombres)
+                        elif isinstance(v, (int, float)) and v == 0:
+                            filtered_data[k] = v
+                        # Exclure chaînes vides et None
+                        elif v != '' and v is not None:
+                            filtered_data[k] = v
+                    
+                    success, message = add_record(selected_table, filtered_data)
+                    if success:
+                        st.success(message)
+                        st.balloons()  # ⭐ NOUVEAU : Effet visuel de succès
+                        # ⭐ AMÉLIORATION : Attendre 2 secondes avant rerun
+                        import time
+                        time.sleep(1.5)
+                        st.session_state.show_add_form = False
+                        st.rerun()
+                    else:
+                        st.error(message)
         with col2:
             if st.form_submit_button("❌ Annuler", use_container_width=True):
                 st.session_state.show_add_form = False
@@ -572,25 +592,17 @@ if not df_full.empty:
         for field, field_config in config["dropdown_fields"].items():
             # ⭐ Dropdown dynamique
             if field_config == "dynamic_varietes":
-                # CRITIQUE : Utiliser df_full (pas df) pour inclure TOUTES les valeurs existantes
                 varietes = get_varietes_with_existing(df_full, field)
                 column_config[field] = st.column_config.SelectboxColumn(
                     field.replace('_', ' ').title(),
                     options=varietes,
                     required=False
                 )
-            # Dropdown statique - AUSSI inclure valeurs existantes
+            # Dropdown statique
             else:
-                # Valeurs existantes dans df_full (TOUTES les lignes)
-                if field in df_full.columns:
-                    existing_values = df_full[field].dropna().unique().tolist()
-                else:
-                    existing_values = []
-                
-                # Fusionner : existing + config (sans doublons)
-                all_options = list(set(existing_values + field_config))
-                all_options.sort()
-                
+                # ⭐ Inclure valeurs existantes aussi pour listes statiques
+                existing = df_full[field].dropna().unique().tolist() if field in df_full.columns else []
+                all_options = sorted(list(set(existing + field_config)))
                 column_config[field] = st.column_config.SelectboxColumn(
                     field.replace('_', ' ').title(),
                     options=all_options,
