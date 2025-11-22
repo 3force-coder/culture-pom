@@ -17,14 +17,43 @@ show_header()
 st.title("📋 Gestion des Tables de Référence")
 st.markdown("---")
 
+# ⭐ LISTES DE VALEURS POUR DROPDOWNS
+VARIETES_TYPES = [
+    "Chair ferme jaune",
+    "Chair ferme rouge",
+    "Fritable entrée de gamme",
+    "Fritable haut de gamme",
+    "Fritable milieu de gamme",
+    "Poly",
+    "Poly jaune",
+    "Poly rouge"
+]
+
+VARIETES_UTILISATIONS = [
+    "Four",
+    "Four/Frites",
+    "Four/Potage",
+    "Four/Potage/Frites",
+    "Four/Purée/Potage",
+    "Four/Purée/Potage/Frites",
+    "Frites",
+    "Vapeur",
+    "Vapeur/Rissolées"
+]
+
 # ✅ TABLES_CONFIG CORRIGÉ - TOUTES LES COLONNES EXACTES
 TABLES_CONFIG = {
     "Variétés": {
         "table": "ref_varietes",
-        "columns": ["code_variete", "nom_variete", "type", "utilisation", "couleur_peau", "couleur_chair", "precocite", "is_active", "notes"],
+        "columns": ["code_variete", "nom_variete", "type", "utilisation", "is_active", "notes"],  # ⭐ Colonnes affichées seulement
+        "hidden_columns": ["couleur_peau", "couleur_chair", "precocite"],  # ⭐ Colonnes cachées mais en DB
         "primary_key": "id",
-        "editable": ["nom_variete", "type", "utilisation", "couleur_peau", "couleur_chair", "precocite", "is_active", "notes"],
-        "has_updated_at": True
+        "editable": ["nom_variete", "type", "utilisation", "is_active", "notes"],
+        "has_updated_at": True,
+        "dropdown_fields": {  # ⭐ Champs avec listes déroulantes
+            "type": VARIETES_TYPES,
+            "utilisation": VARIETES_UTILISATIONS
+        }
     },
     
     "Plants": {
@@ -49,7 +78,7 @@ TABLES_CONFIG = {
         "primary_key": "id",
         "editable": ["nom_complet", "adresse", "capacite_max_pallox", "capacite_max_tonnes", "is_active", "notes"],
         "has_updated_at": True,
-        "auto_cle_unique": True  # ⭐ GÉNÉRATION AUTO cle_unique
+        "auto_cle_unique": True
     },
     
     "Types Déchets": {
@@ -57,7 +86,7 @@ TABLES_CONFIG = {
         "columns": ["code", "libelle", "description", "is_active"],
         "primary_key": "id",
         "editable": ["libelle", "description", "is_active"],
-        "has_updated_at": False  # ⭐ PAS de updated_at dans cette table
+        "has_updated_at": False
     },
     
     "Emballages": {
@@ -84,17 +113,30 @@ def load_table_data(table_name):
         cursor = conn.cursor()
         config = TABLES_CONFIG[table_name]
         
-        columns_str = ", ".join(config["columns"])
+        # ⭐ Charger toutes les colonnes (visibles + cachées) pour modifications
+        all_columns = config["columns"].copy()
+        if "hidden_columns" in config:
+            all_columns.extend(config["hidden_columns"])
+        
+        columns_str = ", ".join(all_columns)
         query = f"SELECT {config['primary_key']}, {columns_str} FROM {config['table']} ORDER BY {config['primary_key']}"
         cursor.execute(query)
         
         rows = cursor.fetchall()
-        columns = [config['primary_key']] + config['columns']
+        columns = [config['primary_key']] + all_columns
         cursor.close()
         conn.close()
         
         df = pd.DataFrame(rows, columns=columns)
-        return df
+        
+        # ⭐ Ne garder que les colonnes visibles pour l'affichage
+        display_columns = [config['primary_key']] + config['columns']
+        df_display = df[display_columns].copy()
+        
+        # Stocker le df complet en session pour les updates
+        st.session_state[f'full_df_{table_name}'] = df
+        
+        return df_display
         
     except Exception as e:
         st.error(f"❌ Erreur : {str(e)}")
@@ -120,6 +162,9 @@ def save_changes(table_name, original_df, edited_df):
         cursor = conn.cursor()
         updates = 0
         
+        # ⭐ Récupérer le df complet avec colonnes cachées
+        full_df = st.session_state.get(f'full_df_{table_name}')
+        
         for idx in edited_df.index:
             if idx not in original_df.index:
                 continue
@@ -127,6 +172,7 @@ def save_changes(table_name, original_df, edited_df):
             row_id = convert_to_native_types(edited_df.loc[idx, config['primary_key']])
             changes = {}
             
+            # Colonnes visibles éditées
             for col in config['editable']:
                 if col not in edited_df.columns or col not in original_df.columns:
                     continue
@@ -143,7 +189,6 @@ def save_changes(table_name, original_df, edited_df):
                 set_clause = ", ".join([f"{col} = %s" for col in changes.keys()])
                 values = list(changes.values()) + [row_id]
                 
-                # ⭐ Vérifier si la table a updated_at
                 if config.get('has_updated_at', True):
                     update_query = f"UPDATE {config['table']} SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE {config['primary_key']} = %s"
                 else:
@@ -169,7 +214,6 @@ def delete_record(table_name, record_id):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ⭐ Vérifier si la table a updated_at
         if config.get('has_updated_at', True):
             query = f"UPDATE {config['table']} SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE {config['primary_key']} = %s"
         else:
@@ -198,12 +242,17 @@ def add_record(table_name, data):
             if 'code_site' in data and 'code_emplacement' in data:
                 data['cle_unique'] = f"{data['code_site']}_{data['code_emplacement']}"
         
+        # ⭐ Ajouter colonnes cachées avec valeurs NULL si besoin
+        if "hidden_columns" in config:
+            for col in config["hidden_columns"]:
+                if col not in data:
+                    data[col] = None
+        
         columns = list(data.keys())
         values = [convert_to_native_types(v) for v in data.values()]
         placeholders = ", ".join(["%s"] * len(columns))
         columns_str = ", ".join(columns)
         
-        # ⭐ Vérifier si la table a updated_at
         if config.get('has_updated_at', True):
             query = f"INSERT INTO {config['table']} ({columns_str}, created_at, updated_at) VALUES ({placeholders}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
         else:
@@ -226,12 +275,11 @@ with col1:
     selected_table = st.selectbox("📋 Table", list(TABLES_CONFIG.keys()), key="table_selector")
 with col2:
     if st.button("➕ Ajouter", use_container_width=True):
-        # Toggle l'affichage du formulaire
         st.session_state.show_add_form = not st.session_state.get('show_add_form', False)
 
 st.markdown("---")
 
-# Formulaire ajout - SE DÉPLIE/RÉTRACTE
+# ⭐ Formulaire ajout - AVEC DROPDOWNS
 if st.session_state.get('show_add_form', False):
     with st.form("add_form"):
         st.subheader(f"➕ Ajouter - {selected_table}")
@@ -241,7 +289,15 @@ if st.session_state.get('show_add_form', False):
         col1, col2 = st.columns(2)
         for i, col in enumerate(config['columns']):
             with col1 if i % 2 == 0 else col2:
-                if col in ['is_active', 'is_bio', 'global_gap']:
+                # ⭐ Dropdowns pour champs spécifiques
+                if "dropdown_fields" in config and col in config["dropdown_fields"]:
+                    options = [""] + config["dropdown_fields"][col]  # Vide en premier
+                    new_data[col] = st.selectbox(
+                        col.replace('_', ' ').title(),
+                        options=options,
+                        key=f"add_{col}"
+                    )
+                elif col in ['is_active', 'is_bio', 'global_gap']:
                     new_data[col] = st.checkbox(col.replace('_', ' ').title(), value=True)
                 elif 'capacite' in col or 'prix' in col or 'poids' in col:
                     new_data[col] = st.number_input(col.replace('_', ' ').title(), min_value=0.0, value=0.0, step=0.1)
@@ -290,6 +346,16 @@ if not df.empty:
     if 'original_df' not in st.session_state:
         st.session_state.original_df = df.copy()
     
+    # ⭐ Configuration colonnes pour data_editor avec dropdowns
+    column_config = {}
+    if "dropdown_fields" in config:
+        for field, options in config["dropdown_fields"].items():
+            column_config[field] = st.column_config.SelectboxColumn(
+                field.replace('_', ' ').title(),
+                options=options,
+                required=False
+            )
+    
     # Tableau
     st.subheader(f"📋 {selected_table}")
     
@@ -298,6 +364,7 @@ if not df.empty:
         use_container_width=True,
         num_rows="fixed",
         disabled=[config['primary_key']],
+        column_config=column_config if column_config else None,
         key=f"editor_{selected_table}"
     )
     
