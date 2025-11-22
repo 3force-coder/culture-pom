@@ -12,7 +12,7 @@ backgroundColor = "#FFFFFF"  # Blanc
 secondaryBackgroundColor = "#F8F9FA"  # Gris très clair
 
 # Couleur texte
-textColor = "#7A7A7A"  # Gris moyen Culture Pom
+textColor = "#54595F"  # Gris moyen Culture Pom
 
 # Police
 font = "sans serif"
