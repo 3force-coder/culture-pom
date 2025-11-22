@@ -452,16 +452,25 @@ if not df_full.empty:
     st.markdown("---")
     st.subheader("🔒 Gestion activation")
     
+    # Utiliser 5 colonnes pour meilleur alignement
     col1, col2, col3 = st.columns([3, 1, 1])
     
     with col1:
         first_col = config['columns'][0]
         # Utiliser df_full pour avoir accès à tous les éléments
         options = [f"{row[config['primary_key']]} - {row[first_col]}" for _, row in df_full.iterrows()]
-        selected_record = st.selectbox("Sélectionner", options, key="activation_selector")
+        selected_record = st.selectbox("Sélectionner", options, key="activation_selector", label_visibility="collapsed")
     
-    with col2:
-        if st.button("🔒 Désactiver", use_container_width=True, type="secondary"):
+    # Ajout d'un espace vide pour aligner les boutons avec la liste
+    st.write("")  # Espace pour alignement visuel
+    
+    col_btn1, col_btn2, col_btn3 = st.columns([3, 1, 1])
+    
+    with col_btn1:
+        st.write("")  # Colonne vide pour alignement
+    
+    with col_btn2:
+        if st.button("🔒 Désactiver", use_container_width=True, type="secondary", key="btn_deactivate"):
             record_id = int(selected_record.split(" - ")[0])
             success, message = delete_record(selected_table, record_id)
             if success:
@@ -471,8 +480,8 @@ if not df_full.empty:
             else:
                 st.error(message)
     
-    with col3:
-        if st.button("🔓 Réactiver", use_container_width=True, type="secondary"):
+    with col_btn3:
+        if st.button("🔓 Réactiver", use_container_width=True, type="secondary", key="btn_reactivate"):
             record_id = int(selected_record.split(" - ")[0])
             success, message = reactivate_record(selected_table, record_id)
             if success:
