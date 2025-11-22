@@ -82,18 +82,29 @@ if not is_authenticated():
 
 # ⭐ FONCTION ANIMATION LOTTIE
 def show_confetti_animation():
-    """Affiche l'animation confetti Lottie via web component"""
+    """Affiche l'animation confetti Lottie via web component - CENTRÉE"""
     confetti_html = """
     <script src="https://unpkg.com/@lottiefiles/dotlottie-wc@0.8.5/dist/dotlottie-wc.js" type="module"></script>
-    <div style="display: flex; justify-content: center; align-items: center;">
+    <div style="
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 9999;
+        pointer-events: none;
+    ">
         <dotlottie-wc 
             src="https://lottie.host/21b8e802-34df-4b54-89ca-4c7843e1da14/AoYf85WPKi.lottie" 
-            style="width: 300px; height: 300px" 
+            style="width: 400px; height: 400px" 
             autoplay>
         </dotlottie-wc>
     </div>
     """
-    components.html(confetti_html, height=320)
+    components.html(confetti_html, height=0)
 
 st.title("📋 Gestion des Tables de Référence")
 st.markdown("---")
@@ -203,6 +214,7 @@ TABLES_CONFIG = {
     "Sites Stockage": {
         "table": "ref_sites_stockage",
         "columns": ["code_site", "code_emplacement", "nom_complet", "adresse", "capacite_max_pallox", "capacite_max_tonnes", "is_active", "notes"],
+        "hidden_columns": ["cle_unique", "type_site"],
         "primary_key": "id",
         "editable": ["nom_complet", "adresse", "capacite_max_pallox", "capacite_max_tonnes", "is_active", "notes"],
         "has_updated_at": True,
