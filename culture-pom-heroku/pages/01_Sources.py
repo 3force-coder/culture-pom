@@ -13,10 +13,10 @@ from streamlit_lottie import st_lottie
 
 st.set_page_config(page_title="Sources - Culture Pom", page_icon="ðŸ“‹", layout="wide")
 
-# CSS custom pour rÃ©duire FORTEMENT les espacements
+# CSS custom pour réduire FORTEMENT les espacements
 st.markdown("""
 <style>
-    /* RÃ©duire espacement gÃ©nÃ©ral du container */
+    /* Réduire espacement général du container */
     .block-container {
         padding-top: 2rem !important;
         padding-bottom: 0.5rem !important;
@@ -24,7 +24,7 @@ st.markdown("""
         padding-right: 2rem !important;
     }
     
-    /* RÃ©duire espacement autour de TOUS les titres */
+    /* Réduire espacement autour de TOUS les titres */
     h1, h2, h3, h4 {
         margin-top: 0.3rem !important;
         margin-bottom: 0.3rem !important;
@@ -32,19 +32,19 @@ st.markdown("""
         padding-bottom: 0 !important;
     }
     
-    /* RÃ©duire espacement entre widgets */
+    /* Réduire espacement entre widgets */
     .stSelectbox, .stButton, .stCheckbox {
         margin-bottom: 0.3rem !important;
         margin-top: 0.3rem !important;
     }
     
-    /* RÃ©duire espacement des data_editor */
+    /* Réduire espacement des data_editor */
     .stDataFrame {
         margin-top: 0.5rem !important;
         margin-bottom: 0.5rem !important;
     }
     
-    /* RÃ©duire espacement des mÃ©triques */
+    /* Réduire espacement des métriques */
     [data-testid="stMetricValue"] {
         font-size: 1.4rem !important;
     }
@@ -53,24 +53,24 @@ st.markdown("""
         padding: 0.3rem !important;
     }
     
-    /* RÃ©duire espacement markdown (lignes hr) */
+    /* Réduire espacement markdown (lignes hr) */
     hr {
         margin-top: 0.5rem !important;
         margin-bottom: 0.5rem !important;
     }
     
-    /* RÃ©duire espacement colonnes */
+    /* Réduire espacement colonnes */
     [data-testid="column"] {
         padding: 0.2rem !important;
     }
     
-    /* RÃ©duire espacement formulaires */
+    /* Réduire espacement formulaires */
     .stForm {
         padding: 0.5rem !important;
         margin: 0.3rem !important;
     }
     
-    /* RÃ©duire espacement subheaders */
+    /* Réduire espacement subheaders */
     .stSubheader {
         margin-top: 0.3rem !important;
         margin-bottom: 0.3rem !important;
@@ -79,32 +79,45 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 if not is_authenticated():
-    st.warning("âš ï¸ Veuillez vous connecter pour accÃ©der Ã  cette page")
+    st.warning("âš ï¸ Veuillez vous connecter pour accéder Ã  cette page")
     st.stop()
 
-# â­ FONCTION CHARGEMENT ANIMATION LOTTIE
+# ⭐ FONCTION CHARGEMENT ANIMATION LOTTIE
 def load_lottie_file(filepath: str):
     """Charge une animation Lottie depuis un fichier local"""
     try:
-        with open(filepath, "r") as f:
-            return json.load(f)
-    except:
+        # Essayer plusieurs emplacements possibles
+        possible_paths = [
+            filepath,
+            os.path.join(os.path.dirname(__file__), "confetti_animation.json"),
+            os.path.join("pages", "confetti_animation.json"),
+            "confetti_animation.json",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "confetti_animation.json")
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        
+        return None
+    except Exception as e:
         return None
 
 # Charger l'animation confetti (fichier dans le mÃªme dossier que le script)
 LOTTIE_PATH = os.path.join(os.path.dirname(__file__), "confetti_animation.json")
 LOTTIE_CONFETTI = load_lottie_file(LOTTIE_PATH)
 
-st.title("ðŸ“‹ Gestion des Tables de RÃ©fÃ©rence")
+st.title("ðŸ“‹ Gestion des Tables de Référence")
 st.markdown("---")
 
-# â­ LISTES DE VALEURS POUR DROPDOWNS
+# ⭐ LISTES DE VALEURS POUR DROPDOWNS
 
-# VariÃ©tÃ©s
+# Variétés
 VARIETES_TYPES = [
     "Chair ferme jaune",
     "Chair ferme rouge",
-    "Fritable entrÃ©e de gamme",
+    "Fritable entrée de gamme",
     "Fritable haut de gamme",
     "Fritable milieu de gamme",
     "Poly",
@@ -117,11 +130,11 @@ VARIETES_UTILISATIONS = [
     "Four/Frites",
     "Four/Potage",
     "Four/Potage/Frites",
-    "Four/PurÃ©e/Potage",
-    "Four/PurÃ©e/Potage/Frites",
+    "Four/Purée/Potage",
+    "Four/Purée/Potage/Frites",
     "Frites",
     "Vapeur",
-    "Vapeur/RissolÃ©es"
+    "Vapeur/Rissolées"
 ]
 
 # Plants
@@ -137,7 +150,7 @@ PLANTS_CALIBRES = [
 ]
 
 def get_active_varietes():
-    """RÃ©cupÃ¨re les codes variÃ©tÃ©s actifs depuis ref_varietes"""
+    """Récupère les codes variétés actifs depuis ref_varietes"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -148,18 +161,18 @@ def get_active_varietes():
         df = pd.DataFrame(rows, columns=['code_variete'])
         return df['code_variete'].tolist()
     except Exception as e:
-        st.error(f"âŒ Erreur chargement variÃ©tÃ©s : {str(e)}")
+        st.error(f"âŒ Erreur chargement variétés : {str(e)}")
         return []
 
 def get_varietes_with_existing(df, column_name):
-    """RÃ©cupÃ¨re variÃ©tÃ©s actifs + valeurs dÃ©jÃ  prÃ©sentes dans le dataframe"""
+    """Récupère variétés actifs + valeurs déjÃ  présentes dans le dataframe"""
     active = get_active_varietes()
     existing = df[column_name].dropna().unique().tolist() if column_name in df.columns else []
     return sorted(list(set(existing + active)))
 
-# âœ… TABLES_CONFIG CORRIGÃ‰ - TOUTES LES COLONNES EXACTES
+# ✅ TABLES_CONFIG CORRIGÃ‰ - TOUTES LES COLONNES EXACTES
 TABLES_CONFIG = {
-    "VariÃ©tÃ©s": {
+    "Variétés": {
         "table": "ref_varietes",
         "columns": ["code_variete", "nom_variete", "type", "utilisation", "is_active", "notes"],
         "hidden_columns": ["couleur_peau", "couleur_chair", "precocite"],
@@ -211,7 +224,7 @@ TABLES_CONFIG = {
         "required_fields": ["code_site", "code_emplacement", "nom_complet"]
     },
     
-    "Types DÃ©chets": {
+    "Types Déchets": {
         "table": "ref_types_dechets",
         "columns": ["code", "libelle", "description", "is_active"],
         "primary_key": "id",
@@ -240,20 +253,20 @@ TABLES_CONFIG = {
 }
 
 def load_table_data(table_name, show_inactive=False):
-    """Charge les donnÃ©es d'une table"""
+    """Charge les données d'une table"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         config = TABLES_CONFIG[table_name]
         
-        # â­ Charger toutes les colonnes (visibles + cachÃ©es) pour modifications
+        # ⭐ Charger toutes les colonnes (visibles + cachées) pour modifications
         all_columns = config["columns"].copy()
         if "hidden_columns" in config:
             all_columns.extend(config["hidden_columns"])
         
         columns_str = ", ".join(all_columns)
         
-        # â­ Filtrer par is_active si show_inactive = False
+        # ⭐ Filtrer par is_active si show_inactive = False
         where_clause = ""
         if not show_inactive and 'is_active' in all_columns:
             where_clause = " WHERE is_active = TRUE"
@@ -268,13 +281,13 @@ def load_table_data(table_name, show_inactive=False):
         
         df = pd.DataFrame(rows, columns=columns)
         
-        # â­ CALCULER dÃ©partement automatiquement depuis code_postal (2 premiers caractÃ¨res)
+        # ⭐ CALCULER département automatiquement depuis code_postal (2 premiers caractères)
         if 'code_postal' in df.columns and 'departement' in df.columns:
             df['departement'] = df['code_postal'].apply(
                 lambda x: str(x)[:2] if pd.notna(x) and str(x).strip() != '' else None
             )
         
-        # â­ Ne garder que les colonnes visibles pour l'affichage
+        # ⭐ Ne garder que les colonnes visibles pour l'affichage
         display_columns = [config['primary_key']] + config['columns']
         df_display = df[display_columns].copy()
         
@@ -307,7 +320,7 @@ def save_changes(table_name, original_df, edited_df):
         cursor = conn.cursor()
         updates = 0
         
-        # â­ RÃ©cupÃ©rer le df complet avec colonnes cachÃ©es
+        # ⭐ Récupérer le df complet avec colonnes cachées
         full_df = st.session_state.get(f'full_df_{table_name}')
         
         for idx in edited_df.index:
@@ -317,7 +330,7 @@ def save_changes(table_name, original_df, edited_df):
             row_id = convert_to_native_types(edited_df.loc[idx, config['primary_key']])
             changes = {}
             
-            # Colonnes visibles Ã©ditÃ©es
+            # Colonnes visibles éditées
             for col in config['editable']:
                 if col not in edited_df.columns or col not in original_df.columns:
                     continue
@@ -345,31 +358,31 @@ def save_changes(table_name, original_df, edited_df):
         conn.commit()
         cursor.close()
         conn.close()
-        return True, f"âœ… {updates} enregistrement(s) mis Ã  jour"
+        return True, f"✅ {updates} enregistrement(s) mis Ã  jour"
         
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
         
-        # â­ RENDRE LES ERREURS COMPRÃ‰HENSIBLES
+        # ⭐ RENDRE LES ERREURS COMPRÃ‰HENSIBLES
         error_msg = str(e).lower()
         
-        # Erreur : Code/clÃ© dÃ©jÃ  existant
+        # Erreur : Code/clé déjÃ  existant
         if "duplicate key" in error_msg or "unique constraint" in error_msg:
             if "code_producteur" in error_msg:
-                return False, "âŒ Ce code producteur est dÃ©jÃ  utilisÃ© par un autre enregistrement."
+                return False, "âŒ Ce code producteur est déjÃ  utilisé par un autre enregistrement."
             elif "code_plant" in error_msg:
-                return False, "âŒ Ce code plant est dÃ©jÃ  utilisÃ© par un autre enregistrement."
+                return False, "âŒ Ce code plant est déjÃ  utilisé par un autre enregistrement."
             elif "code_variete" in error_msg:
-                return False, "âŒ Ce code variÃ©tÃ© est dÃ©jÃ  utilisÃ© par un autre enregistrement."
+                return False, "âŒ Ce code variété est déjÃ  utilisé par un autre enregistrement."
             elif "code_site" in error_msg:
-                return False, "âŒ Ce code site est dÃ©jÃ  utilisÃ© par un autre enregistrement."
+                return False, "âŒ Ce code site est déjÃ  utilisé par un autre enregistrement."
             elif "code_emballage" in error_msg:
-                return False, "âŒ Ce code emballage est dÃ©jÃ  utilisÃ© par un autre enregistrement."
+                return False, "âŒ Ce code emballage est déjÃ  utilisé par un autre enregistrement."
             elif "code_produit" in error_msg:
-                return False, "âŒ Ce code produit est dÃ©jÃ  utilisÃ© par un autre enregistrement."
+                return False, "âŒ Ce code produit est déjÃ  utilisé par un autre enregistrement."
             else:
-                return False, "âŒ Cette valeur est dÃ©jÃ  utilisÃ©e. Impossible de modifier."
+                return False, "âŒ Cette valeur est déjÃ  utilisée. Impossible de modifier."
         
         # Erreur : Champ obligatoire manquant
         elif "not null" in error_msg or "null value" in error_msg:
@@ -380,7 +393,7 @@ def save_changes(table_name, original_df, edited_df):
             return False, f"âŒ Erreur : {str(e)}"
 
 def delete_record(table_name, record_id):
-    """DÃ©sactive un enregistrement (soft delete)"""
+    """Désactive un enregistrement (soft delete)"""
     try:
         config = TABLES_CONFIG[table_name]
         conn = get_connection()
@@ -395,7 +408,7 @@ def delete_record(table_name, record_id):
         conn.commit()
         cursor.close()
         conn.close()
-        return True, "âœ… DÃ©sactivÃ©"
+        return True, "✅ Désactivé"
         
     except Exception as e:
         if 'conn' in locals():
@@ -403,7 +416,7 @@ def delete_record(table_name, record_id):
         return False, f"âŒ Erreur : {str(e)}"
 
 def reactivate_record(table_name, record_id):
-    """RÃ©active un enregistrement"""
+    """Réactive un enregistrement"""
     try:
         config = TABLES_CONFIG[table_name]
         conn = get_connection()
@@ -418,7 +431,7 @@ def reactivate_record(table_name, record_id):
         conn.commit()
         cursor.close()
         conn.close()
-        return True, "âœ… RÃ©activÃ©"
+        return True, "✅ Réactivé"
         
     except Exception as e:
         if 'conn' in locals():
@@ -432,12 +445,12 @@ def add_record(table_name, data):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # â­ GÃ©nÃ©rer cle_unique pour Sites Stockage
+        # ⭐ Générer cle_unique pour Sites Stockage
         if config.get('auto_cle_unique'):
             if 'code_site' in data and 'code_emplacement' in data:
                 data['cle_unique'] = f"{data['code_site']}_{data['code_emplacement']}"
         
-        # â­ Ajouter colonnes cachÃ©es avec valeurs NULL si besoin
+        # ⭐ Ajouter colonnes cachées avec valeurs NULL si besoin
         if "hidden_columns" in config:
             for col in config["hidden_columns"]:
                 if col not in data:
@@ -457,52 +470,52 @@ def add_record(table_name, data):
         conn.commit()
         cursor.close()
         conn.close()
-        return True, "âœ… AjoutÃ© avec succÃ¨s"
+        return True, "✅ Ajouté avec succès"
         
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
         
-        # â­ RENDRE LES ERREURS COMPRÃ‰HENSIBLES
+        # ⭐ RENDRE LES ERREURS COMPRÃ‰HENSIBLES
         error_msg = str(e).lower()
         
-        # Erreur : Code/clÃ© dÃ©jÃ  existant
+        # Erreur : Code/clé déjÃ  existant
         if "duplicate key" in error_msg or "unique constraint" in error_msg:
             # Extraire le nom du champ
             if "code_producteur" in error_msg:
-                return False, "âŒ Ce code producteur est dÃ©jÃ  utilisÃ©. Merci de choisir un autre code."
+                return False, "âŒ Ce code producteur est déjÃ  utilisé. Merci de choisir un autre code."
             elif "code_plant" in error_msg:
-                return False, "âŒ Ce code plant est dÃ©jÃ  utilisÃ©. Merci de choisir un autre code."
+                return False, "âŒ Ce code plant est déjÃ  utilisé. Merci de choisir un autre code."
             elif "code_variete" in error_msg:
-                return False, "âŒ Ce code variÃ©tÃ© est dÃ©jÃ  utilisÃ©. Merci de choisir un autre code."
+                return False, "âŒ Ce code variété est déjÃ  utilisé. Merci de choisir un autre code."
             elif "code_site" in error_msg:
-                return False, "âŒ Ce code site est dÃ©jÃ  utilisÃ©. Merci de choisir un autre code."
+                return False, "âŒ Ce code site est déjÃ  utilisé. Merci de choisir un autre code."
             elif "code_emballage" in error_msg:
-                return False, "âŒ Ce code emballage est dÃ©jÃ  utilisÃ©. Merci de choisir un autre code."
+                return False, "âŒ Ce code emballage est déjÃ  utilisé. Merci de choisir un autre code."
             elif "code_produit" in error_msg:
-                return False, "âŒ Ce code produit est dÃ©jÃ  utilisÃ©. Merci de choisir un autre code."
+                return False, "âŒ Ce code produit est déjÃ  utilisé. Merci de choisir un autre code."
             else:
-                return False, "âŒ Cette valeur est dÃ©jÃ  utilisÃ©e. Merci de choisir une autre valeur."
+                return False, "âŒ Cette valeur est déjÃ  utilisée. Merci de choisir une autre valeur."
         
         # Erreur : Champ obligatoire manquant
         elif "not null" in error_msg or "null value" in error_msg:
-            return False, "âŒ Un champ obligatoire est manquant. Veuillez vÃ©rifier votre saisie."
+            return False, "âŒ Un champ obligatoire est manquant. Veuillez vérifier votre saisie."
         
         # Autres erreurs (afficher message technique)
         else:
             return False, f"âŒ Erreur : {str(e)}"
 
-# Interface - SÃ©lection table
+# Interface - Sélection table
 selected_table = st.selectbox("ðŸ“‹ Table", list(TABLES_CONFIG.keys()), key="table_selector")
 
 st.markdown("---")
 
-# â­ Formulaire ajout - SANS st.form()
+# ⭐ Formulaire ajout - SANS st.form()
 if st.session_state.get('show_add_form', False):
-    st.subheader(f"âž• Ajouter - {selected_table}")
+    st.subheader(f"➕ Ajouter - {selected_table}")
     config = TABLES_CONFIG[selected_table]
     
-    # â­ Afficher liste champs obligatoires
+    # ⭐ Afficher liste champs obligatoires
     if "required_fields" in config:
         required_fields_str = ", ".join([f.replace('_', ' ').title() for f in config["required_fields"]])
         st.info(f"ðŸ“Œ Champs obligatoires : **{required_fields_str}**")
@@ -514,17 +527,17 @@ if st.session_state.get('show_add_form', False):
     col1, col2 = st.columns(2)
     
     for i, col in enumerate(config['columns']):
-        # â­ Marquer champs obligatoires avec astÃ©risque
+        # ⭐ Marquer champs obligatoires avec astérisque
         label = col.replace('_', ' ').title()
         if "required_fields" in config and col in config["required_fields"]:
             label = f"{label} *"
         
         with col1 if i % 2 == 0 else col2:
-            # â­ Dropdowns pour champs spÃ©cifiques
+            # ⭐ Dropdowns pour champs spécifiques
             if "dropdown_fields" in config and col in config["dropdown_fields"]:
                 field_config = config["dropdown_fields"][col]
                 
-                # â­ Dropdown dynamique pour code_variete_base
+                # ⭐ Dropdown dynamique pour code_variete_base
                 if field_config == "dynamic_varietes":
                     varietes = get_active_varietes()
                     options = [""] + varietes
@@ -554,7 +567,7 @@ if st.session_state.get('show_add_form', False):
     col1, col2 = st.columns([1, 1])
     with col1:
         if st.button("ðŸ’¾ Enregistrer", use_container_width=True, type="primary", key="btn_save_add"):
-            # â­ VALIDATION EXPLICITE des champs obligatoires
+            # ⭐ VALIDATION EXPLICITE des champs obligatoires
             missing_fields = []
             if "required_fields" in config:
                 for field in config["required_fields"]:
@@ -564,23 +577,23 @@ if st.session_state.get('show_add_form', False):
             if missing_fields:
                 st.error(f"âŒ Champs obligatoires manquants : {', '.join(missing_fields)}")
             else:
-                # â­ Filtrer les donnÃ©es
+                # ⭐ Filtrer les données
                 filtered_data = {}
                 for k, v in st.session_state.new_data.items():
-                    # Garder False (checkboxes dÃ©cochÃ©es)
+                    # Garder False (checkboxes décochées)
                     if isinstance(v, bool):
                         filtered_data[k] = v
                     # Garder 0 (nombres)
                     elif isinstance(v, (int, float)) and v == 0:
                         filtered_data[k] = v
-                    # Exclure chaÃ®nes vides et None
+                    # Exclure chaînes vides et None
                     elif v != '' and v is not None:
                         filtered_data[k] = v
                 
                 success, message = add_record(selected_table, filtered_data)
                 if success:
                     st.success(message)
-                    # â­ Animation confettis Lottie
+                    # ⭐ Animation confettis Lottie
                     if LOTTIE_CONFETTI:
                         # Créer colonnes pour centrer l'animation
                         col1, col2, col3 = st.columns([1, 2, 1])
@@ -588,7 +601,7 @@ if st.session_state.get('show_add_form', False):
                             st_lottie(LOTTIE_CONFETTI, height=400, key="confetti_success")
                         time.sleep(2)
                     else:
-                        # Fallback si fichier non trouvÃ©
+                        # Fallback si fichier non trouvé
                         st.balloons()
                         time.sleep(1.5)
                     st.session_state.show_add_form = False
@@ -605,29 +618,29 @@ if st.session_state.get('show_add_form', False):
     
     st.markdown("---")
 
-# â­ Toggle pour afficher/masquer les inactifs
-show_inactive = st.checkbox("ðŸ‘ï¸ Afficher les Ã©lÃ©ments inactifs", value=False, key=f"show_inactive_{selected_table}")
+# ⭐ Toggle pour afficher/masquer les inactifs
+show_inactive = st.checkbox("ðŸ‘ï¸ Afficher les éléments inactifs", value=False, key=f"show_inactive_{selected_table}")
 
-# Charger donnÃ©es avec filtre
+# Charger données avec filtre
 df_full = load_table_data(selected_table, show_inactive=show_inactive)
 
 if not df_full.empty:
     config = TABLES_CONFIG[selected_table]
     
-    # MÃ©triques (sur donnÃ©es complÃ¨tes avant filtrage)
+    # Métriques (sur données complètes avant filtrage)
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("ðŸ“Š Total", len(df_full))
     with col2:
         actifs = df_full['is_active'].sum() if 'is_active' in df_full.columns else len(df_full)
-        st.metric("âœ… Actifs", actifs)
+        st.metric("✅ Actifs", actifs)
     with col3:
         inactifs = len(df_full) - actifs if 'is_active' in df_full.columns else 0
         st.metric("âŒ Inactifs", inactifs)
     
     st.markdown("---")
     
-    # â­ FILTRES (colonnes les plus importantes)
+    # ⭐ FILTRES (colonnes les plus importantes)
     df = df_full.copy()  # Copie pour filtrage
     
     if "filter_columns" in config:
@@ -638,7 +651,7 @@ if not df_full.empty:
         for i, col_name in enumerate(config["filter_columns"]):
             with filter_cols[i]:
                 if col_name in df.columns:
-                    # â­ Traitement spÃ©cial pour boolean (is_bio, global_gap)
+                    # ⭐ Traitement spécial pour boolean (is_bio, global_gap)
                     if col_name in ["is_bio", "global_gap"]:
                         bool_options = ["Tous", "OUI", "NON"]
                         label = "Bio" if col_name == "is_bio" else "Global Gap"
@@ -667,26 +680,26 @@ if not df_full.empty:
                 else:
                     df = df[df[col_name].astype(str) == selected_value]
         
-        # Afficher nombre de rÃ©sultats filtrÃ©s
+        # Afficher nombre de résultats filtrés
         if len(df) != len(df_full):
-            st.info(f"ðŸ” {len(df)} rÃ©sultat(s) aprÃ¨s filtrage (sur {len(df_full)} total)")
+            st.info(f"ðŸ” {len(df)} résultat(s) après filtrage (sur {len(df_full)} total)")
         
         st.markdown("---")
     
-    # â­ En-tÃªte table avec bouton Ajouter alignÃ© Ã  droite
+    # ⭐ En-tÃªte table avec bouton Ajouter aligné Ã  droite
     col_title, col_button = st.columns([4, 1])
     with col_title:
         st.subheader(f"ðŸ“‹ {selected_table}")
     with col_button:
-        if st.button("âž• Ajouter", use_container_width=True, type="primary"):
+        if st.button("➕ Ajouter", use_container_width=True, type="primary"):
             st.session_state.show_add_form = not st.session_state.get('show_add_form', False)
             st.rerun()
     
-    # â­ Configuration colonnes pour data_editor avec dropdowns
+    # ⭐ Configuration colonnes pour data_editor avec dropdowns
     column_config = {}
     if "dropdown_fields" in config:
         for field, field_config in config["dropdown_fields"].items():
-            # â­ Dropdown dynamique
+            # ⭐ Dropdown dynamique
             if field_config == "dynamic_varietes":
                 varietes = get_varietes_with_existing(df_full, field)
                 column_config[field] = st.column_config.SelectboxColumn(
@@ -696,7 +709,7 @@ if not df_full.empty:
                 )
             # Dropdown statique
             else:
-                # â­ Inclure valeurs existantes aussi pour listes statiques
+                # ⭐ Inclure valeurs existantes aussi pour listes statiques
                 existing = df_full[field].dropna().unique().tolist() if field in df_full.columns else []
                 all_options = sorted(list(set(existing + field_config)))
                 column_config[field] = st.column_config.SelectboxColumn(
@@ -735,7 +748,7 @@ if not df_full.empty:
             st.session_state.pop('original_df', None)
             st.rerun()
     
-    # DÃ©sactivation / RÃ©activation
+    # Désactivation / Réactivation
     st.markdown("---")
     st.subheader("ðŸ”’ Gestion activation")
     
@@ -743,16 +756,16 @@ if not df_full.empty:
     first_col = config['columns'][0]
     options = [f"{row[config['primary_key']]} - {row[first_col]}" for _, row in df_full.iterrows()]
     selected_record = st.selectbox(
-        f"SÃ©lectionner un Ã©lÃ©ment Ã  activer/dÃ©sactiver",
+        f"Sélectionner un élément Ã  activer/désactiver",
         options,
         key="activation_selector"
     )
     
-    # Boutons centrÃ©s en dessous
+    # Boutons centrés en dessous
     col_space1, col_btn1, col_btn2, col_space2 = st.columns([1, 1, 1, 1])
     
     with col_btn1:
-        if st.button("ðŸ”’ DÃ©sactiver", use_container_width=True, type="secondary", key="btn_deactivate"):
+        if st.button("ðŸ”’ Désactiver", use_container_width=True, type="secondary", key="btn_deactivate"):
             record_id = int(selected_record.split(" - ")[0])
             success, message = delete_record(selected_table, record_id)
             if success:
@@ -763,7 +776,7 @@ if not df_full.empty:
                 st.error(message)
     
     with col_btn2:
-        if st.button("ðŸ”“ RÃ©activer", use_container_width=True, type="secondary", key="btn_reactivate"):
+        if st.button("ðŸ”“ Réactiver", use_container_width=True, type="secondary", key="btn_reactivate"):
             record_id = int(selected_record.split(" - ")[0])
             success, message = reactivate_record(selected_table, record_id)
             if success:
@@ -790,6 +803,6 @@ if not df_full.empty:
         st.download_button("ðŸ“¥ Excel", buffer.getvalue(), f"{config['table']}_{datetime.now().strftime('%Y%m%d')}.xlsx",
                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 else:
-    st.warning(f"âš ï¸ Aucune donnÃ©e pour {selected_table}")
+    st.warning(f"âš ï¸ Aucune donnée pour {selected_table}")
 
 show_footer()
