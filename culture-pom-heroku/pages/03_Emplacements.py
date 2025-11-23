@@ -181,6 +181,262 @@ def get_lot_mouvements(lot_id, limit=10):
         return pd.DataFrame()
 
 # ============================================================================
+# FONCTIONS ACTIONS SUR EMPLACEMENTS
+# ============================================================================
+
+def add_emplacement(lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock="PRINCIPAL"):
+    """Ajoute un nouvel emplacement pour un lot"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Insérer l'emplacement
+        query = """
+        INSERT INTO stock_emplacements 
+        (lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock, is_active, created_at, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        RETURNING id
+        """
+        
+        cursor.execute(query, (lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock))
+        emplacement_id = cursor.fetchone()['id']
+        
+        # Enregistrer le mouvement
+        mouvement_query = """
+        INSERT INTO stock_mouvements
+        (lot_id, type_mouvement, site_apres, quantite_mouvement, description, created_at, created_by)
+        VALUES (%s, 'AJOUT', %s, %s, %s, CURRENT_TIMESTAMP, %s)
+        """
+        
+        description = f"Ajout emplacement {site_stockage}/{emplacement_stockage}"
+        created_by = st.session_state.get('username', 'system')
+        
+        cursor.execute(mouvement_query, (lot_id, f"{site_stockage}/{emplacement_stockage}", nombre_unites, description, created_by))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, f"✅ Emplacement ajouté avec succès (ID: {emplacement_id})"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+def update_emplacement(emplacement_id, nombre_unites=None, poids_total_kg=None):
+    """Modifie la quantité d'un emplacement"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Récupérer les anciennes valeurs
+        cursor.execute("SELECT lot_id, nombre_unites, poids_total_kg, site_stockage, emplacement_stockage FROM stock_emplacements WHERE id = %s", (emplacement_id,))
+        old_data = cursor.fetchone()
+        
+        if not old_data:
+            return False, "❌ Emplacement introuvable"
+        
+        # Préparer les mises à jour
+        updates = []
+        values = []
+        
+        if nombre_unites is not None:
+            updates.append("nombre_unites = %s")
+            values.append(nombre_unites)
+        
+        if poids_total_kg is not None:
+            updates.append("poids_total_kg = %s")
+            values.append(poids_total_kg)
+        
+        if not updates:
+            return False, "❌ Aucune modification à apporter"
+        
+        updates.append("updated_at = CURRENT_TIMESTAMP")
+        values.append(emplacement_id)
+        
+        # Mettre à jour
+        query = f"UPDATE stock_emplacements SET {', '.join(updates)} WHERE id = %s"
+        cursor.execute(query, values)
+        
+        # Enregistrer le mouvement
+        description = f"Modification {old_data['site_stockage']}/{old_data['emplacement_stockage']}"
+        if nombre_unites is not None:
+            description += f" : {old_data['nombre_unites']} → {nombre_unites} pallox"
+        
+        mouvement_query = """
+        INSERT INTO stock_mouvements
+        (lot_id, type_mouvement, site_apres, quantite_mouvement, description, created_at, created_by)
+        VALUES (%s, 'MODIFICATION', %s, %s, %s, CURRENT_TIMESTAMP, %s)
+        """
+        
+        created_by = st.session_state.get('username', 'system')
+        cursor.execute(mouvement_query, (
+            old_data['lot_id'], 
+            f"{old_data['site_stockage']}/{old_data['emplacement_stockage']}", 
+            nombre_unites or old_data['nombre_unites'],
+            description, 
+            created_by
+        ))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, "✅ Emplacement modifié avec succès"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+def delete_emplacement(emplacement_id):
+    """Supprime (soft delete) un emplacement"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Récupérer les infos pour le mouvement
+        cursor.execute("SELECT lot_id, nombre_unites, site_stockage, emplacement_stockage FROM stock_emplacements WHERE id = %s", (emplacement_id,))
+        data = cursor.fetchone()
+        
+        if not data:
+            return False, "❌ Emplacement introuvable"
+        
+        # Soft delete
+        cursor.execute("UPDATE stock_emplacements SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s", (emplacement_id,))
+        
+        # Enregistrer le mouvement
+        description = f"Suppression {data['site_stockage']}/{data['emplacement_stockage']}"
+        
+        mouvement_query = """
+        INSERT INTO stock_mouvements
+        (lot_id, type_mouvement, site_avant, quantite_mouvement, description, created_at, created_by)
+        VALUES (%s, 'SUPPRESSION', %s, %s, %s, CURRENT_TIMESTAMP, %s)
+        """
+        
+        created_by = st.session_state.get('username', 'system')
+        cursor.execute(mouvement_query, (
+            data['lot_id'],
+            f"{data['site_stockage']}/{data['emplacement_stockage']}",
+            data['nombre_unites'],
+            description,
+            created_by
+        ))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, "✅ Emplacement supprimé avec succès"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+def transfer_emplacement(emplacement_source_id, site_destination, emplacement_destination, quantite_transfert, poids_transfert):
+    """Transfère une quantité de pallox d'un emplacement vers un autre"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Récupérer l'emplacement source
+        cursor.execute("""
+            SELECT lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock
+            FROM stock_emplacements 
+            WHERE id = %s AND is_active = TRUE
+        """, (emplacement_source_id,))
+        
+        source = cursor.fetchone()
+        
+        if not source:
+            return False, "❌ Emplacement source introuvable"
+        
+        # Validation : quantité suffisante ?
+        if source['nombre_unites'] < quantite_transfert:
+            return False, f"❌ Quantité insuffisante (disponible: {source['nombre_unites']} pallox)"
+        
+        if source['poids_total_kg'] < poids_transfert:
+            return False, f"❌ Poids insuffisant (disponible: {source['poids_total_kg']:.1f} kg)"
+        
+        # 1. Diminuer l'emplacement source
+        new_nb_source = source['nombre_unites'] - quantite_transfert
+        new_poids_source = source['poids_total_kg'] - poids_transfert
+        
+        if new_nb_source > 0:
+            # Mettre à jour
+            cursor.execute("""
+                UPDATE stock_emplacements 
+                SET nombre_unites = %s, poids_total_kg = %s, updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (new_nb_source, new_poids_source, emplacement_source_id))
+        else:
+            # Vider complètement (soft delete)
+            cursor.execute("""
+                UPDATE stock_emplacements 
+                SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (emplacement_source_id,))
+        
+        # 2. Chercher ou créer l'emplacement destination
+        cursor.execute("""
+            SELECT id, nombre_unites, poids_total_kg
+            FROM stock_emplacements
+            WHERE lot_id = %s AND site_stockage = %s AND emplacement_stockage = %s AND is_active = TRUE
+        """, (source['lot_id'], site_destination, emplacement_destination))
+        
+        destination = cursor.fetchone()
+        
+        if destination:
+            # Augmenter l'emplacement destination existant
+            new_nb_dest = destination['nombre_unites'] + quantite_transfert
+            new_poids_dest = destination['poids_total_kg'] + poids_transfert
+            
+            cursor.execute("""
+                UPDATE stock_emplacements
+                SET nombre_unites = %s, poids_total_kg = %s, updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (new_nb_dest, new_poids_dest, destination['id']))
+        else:
+            # Créer nouvel emplacement destination
+            cursor.execute("""
+                INSERT INTO stock_emplacements
+                (lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock, is_active, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, (source['lot_id'], site_destination, emplacement_destination, quantite_transfert, poids_transfert, source['type_stock']))
+        
+        # 3. Enregistrer le mouvement
+        description = f"Transfert {source['site_stockage']}/{source['emplacement_stockage']} → {site_destination}/{emplacement_destination}"
+        
+        mouvement_query = """
+        INSERT INTO stock_mouvements
+        (lot_id, type_mouvement, site_avant, site_apres, quantite_mouvement, description, created_at, created_by)
+        VALUES (%s, 'TRANSFERT', %s, %s, %s, %s, CURRENT_TIMESTAMP, %s)
+        """
+        
+        created_by = st.session_state.get('username', 'system')
+        cursor.execute(mouvement_query, (
+            source['lot_id'],
+            f"{source['site_stockage']}/{source['emplacement_stockage']}",
+            f"{site_destination}/{emplacement_destination}",
+            quantite_transfert,
+            description,
+            created_by
+        ))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, f"✅ Transfert effectué : {quantite_transfert} pallox ({poids_transfert:.1f} kg)"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+# ============================================================================
 # INTERFACE
 # ============================================================================
 
@@ -310,6 +566,65 @@ for lot_data in lots_data:
         
         st.markdown("---")
         
+        # ⭐ BOUTON AJOUTER EMPLACEMENT
+        col_add, col_space = st.columns([1, 3])
+        
+        with col_add:
+            if st.button(f"➕ Ajouter Emplacement", key=f"btn_add_empl_{lot_data['lot_id']}", use_container_width=True, type="primary"):
+                st.session_state[f'show_add_form_{lot_data["lot_id"]}'] = not st.session_state.get(f'show_add_form_{lot_data["lot_id"]}', False)
+                st.rerun()
+        
+        # ⭐ FORMULAIRE AJOUT EMPLACEMENT
+        if st.session_state.get(f'show_add_form_{lot_data["lot_id"]}', False):
+            st.markdown("#### ➕ Nouvel Emplacement")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                new_site = st.text_input("Site de stockage *", key=f"new_site_{lot_data['lot_id']}")
+                new_nombre_unites = st.number_input("Nombre de pallox *", min_value=0, value=0, step=1, key=f"new_nb_{lot_data['lot_id']}")
+            
+            with col2:
+                new_emplacement = st.text_input("Emplacement *", key=f"new_empl_{lot_data['lot_id']}")
+                new_poids = st.number_input("Poids total (kg) *", min_value=0.0, value=0.0, step=100.0, key=f"new_poids_{lot_data['lot_id']}")
+            
+            new_type = st.selectbox(
+                "Type de stock",
+                options=["PRINCIPAL", "SECONDAIRE", "RESERVE"],
+                key=f"new_type_{lot_data['lot_id']}"
+            )
+            
+            col_save, col_cancel = st.columns(2)
+            
+            with col_save:
+                if st.button("💾 Enregistrer", key=f"btn_save_add_{lot_data['lot_id']}", use_container_width=True, type="primary"):
+                    # Validation
+                    if not new_site or not new_emplacement or new_nombre_unites <= 0 or new_poids <= 0:
+                        st.error("❌ Tous les champs obligatoires doivent être remplis avec des valeurs > 0")
+                    else:
+                        success, message = add_emplacement(
+                            lot_data['lot_id'],
+                            new_site,
+                            new_emplacement,
+                            new_nombre_unites,
+                            new_poids,
+                            new_type
+                        )
+                        
+                        if success:
+                            st.success(message)
+                            st.session_state[f'show_add_form_{lot_data["lot_id"]}'] = False
+                            st.rerun()
+                        else:
+                            st.error(message)
+            
+            with col_cancel:
+                if st.button("❌ Annuler", key=f"btn_cancel_add_{lot_data['lot_id']}", use_container_width=True):
+                    st.session_state[f'show_add_form_{lot_data["lot_id"]}'] = False
+                    st.rerun()
+            
+            st.markdown("---")
+        
         # Tableau emplacements
         if not emplacements_df.empty:
             display_df = emplacements_df[['site_stockage', 'emplacement_stockage', 'nombre_unites', 'poids_total_kg', 'type_stock']].copy()
@@ -330,6 +645,173 @@ for lot_data in lots_data:
                 use_container_width=True,
                 hide_index=True
             )
+            
+            # ⭐ ACTIONS SUR EMPLACEMENTS
+            st.markdown("#### ⚙️ Actions sur les emplacements")
+            
+            # Dropdown pour sélectionner l'emplacement
+            emplacement_options = []
+            for idx, row in emplacements_df.iterrows():
+                label = f"{row['site_stockage']} / {row['emplacement_stockage']} ({int(row['nombre_unites'])} pallox)"
+                emplacement_options.append((row['id'], label))
+            
+            if emplacement_options:
+                selected_empl = st.selectbox(
+                    "Sélectionner un emplacement",
+                    options=[opt[0] for opt in emplacement_options],
+                    format_func=lambda x: next(opt[1] for opt in emplacement_options if opt[0] == x),
+                    key=f"select_empl_{lot_data['lot_id']}"
+                )
+                
+                # Récupérer les données de l'emplacement sélectionné
+                empl_data = emplacements_df[emplacements_df['id'] == selected_empl].iloc[0]
+                
+                # Boutons d'actions
+                col_modify, col_transfer, col_delete, col_space = st.columns([1, 1, 1, 1])
+                
+                with col_modify:
+                    if st.button("✏️ Modifier", key=f"btn_modify_{lot_data['lot_id']}", use_container_width=True, type="secondary"):
+                        st.session_state[f'show_modify_form_{lot_data["lot_id"]}'] = not st.session_state.get(f'show_modify_form_{lot_data["lot_id"]}', False)
+                        st.session_state[f'show_transfer_form_{lot_data["lot_id"]}'] = False
+                        st.session_state[f'selected_empl_id_{lot_data["lot_id"]}'] = selected_empl
+                        st.rerun()
+                
+                with col_transfer:
+                    if st.button("🔄 Transférer", key=f"btn_transfer_{lot_data['lot_id']}", use_container_width=True, type="secondary"):
+                        st.session_state[f'show_transfer_form_{lot_data["lot_id"]}'] = not st.session_state.get(f'show_transfer_form_{lot_data["lot_id"]}', False)
+                        st.session_state[f'show_modify_form_{lot_data["lot_id"]}'] = False
+                        st.session_state[f'selected_empl_id_{lot_data["lot_id"]}'] = selected_empl
+                        st.rerun()
+                
+                with col_delete:
+                    if st.button("🗑️ Supprimer", key=f"btn_delete_{lot_data['lot_id']}", use_container_width=True, type="secondary"):
+                        if st.session_state.get(f'confirm_delete_{lot_data["lot_id"]}_{selected_empl}', False):
+                            success, message = delete_emplacement(selected_empl)
+                            if success:
+                                st.success(message)
+                                st.session_state.pop(f'confirm_delete_{lot_data["lot_id"]}_{selected_empl}', None)
+                                st.rerun()
+                            else:
+                                st.error(message)
+                        else:
+                            st.session_state[f'confirm_delete_{lot_data["lot_id"]}_{selected_empl}'] = True
+                            st.rerun()
+                
+                # Message de confirmation suppression
+                if st.session_state.get(f'confirm_delete_{lot_data["lot_id"]}_{selected_empl}', False):
+                    st.warning(f"⚠️ Confirmer la suppression de {empl_data['site_stockage']} / {empl_data['emplacement_stockage']} ? Cliquez à nouveau sur 'Supprimer'")
+                
+                # ⭐ FORMULAIRE MODIFICATION
+                if st.session_state.get(f'show_modify_form_{lot_data["lot_id"]}', False) and st.session_state.get(f'selected_empl_id_{lot_data["lot_id"]}') == selected_empl:
+                    st.markdown("##### ✏️ Modifier l'emplacement")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        mod_nombre_unites = st.number_input(
+                            "Nombre de pallox",
+                            min_value=0,
+                            value=int(empl_data['nombre_unites']),
+                            step=1,
+                            key=f"mod_nb_{lot_data['lot_id']}"
+                        )
+                    
+                    with col2:
+                        mod_poids = st.number_input(
+                            "Poids total (kg)",
+                            min_value=0.0,
+                            value=float(empl_data['poids_total_kg']),
+                            step=100.0,
+                            key=f"mod_poids_{lot_data['lot_id']}"
+                        )
+                    
+                    col_save, col_cancel = st.columns(2)
+                    
+                    with col_save:
+                        if st.button("💾 Enregistrer", key=f"btn_save_mod_{lot_data['lot_id']}", use_container_width=True, type="primary"):
+                            success, message = update_emplacement(
+                                selected_empl,
+                                nombre_unites=mod_nombre_unites,
+                                poids_total_kg=mod_poids
+                            )
+                            
+                            if success:
+                                st.success(message)
+                                st.session_state[f'show_modify_form_{lot_data["lot_id"]}'] = False
+                                st.rerun()
+                            else:
+                                st.error(message)
+                    
+                    with col_cancel:
+                        if st.button("❌ Annuler", key=f"btn_cancel_mod_{lot_data['lot_id']}", use_container_width=True):
+                            st.session_state[f'show_modify_form_{lot_data["lot_id"]}'] = False
+                            st.rerun()
+                
+                # ⭐ FORMULAIRE TRANSFERT
+                if st.session_state.get(f'show_transfer_form_{lot_data["lot_id"]}', False) and st.session_state.get(f'selected_empl_id_{lot_data["lot_id"]}') == selected_empl:
+                    st.markdown("##### 🔄 Transférer des pallox")
+                    
+                    st.info(f"📍 Source : **{empl_data['site_stockage']} / {empl_data['emplacement_stockage']}** - Disponible : {int(empl_data['nombre_unites'])} pallox ({empl_data['poids_total_kg']:.1f} kg)")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        transfer_site = st.text_input("Site destination *", key=f"transfer_site_{lot_data['lot_id']}")
+                        transfer_quantite = st.number_input(
+                            "Quantité à transférer (pallox) *",
+                            min_value=1,
+                            max_value=int(empl_data['nombre_unites']),
+                            value=min(1, int(empl_data['nombre_unites'])),
+                            step=1,
+                            key=f"transfer_qty_{lot_data['lot_id']}"
+                        )
+                    
+                    with col2:
+                        transfer_emplacement = st.text_input("Emplacement destination *", key=f"transfer_empl_{lot_data['lot_id']}")
+                        transfer_poids = st.number_input(
+                            "Poids à transférer (kg) *",
+                            min_value=0.0,
+                            max_value=float(empl_data['poids_total_kg']),
+                            value=min(1000.0, float(empl_data['poids_total_kg'])),
+                            step=100.0,
+                            key=f"transfer_poids_{lot_data['lot_id']}"
+                        )
+                    
+                    col_save, col_cancel = st.columns(2)
+                    
+                    with col_save:
+                        if st.button("🚚 Transférer", key=f"btn_save_transfer_{lot_data['lot_id']}", use_container_width=True, type="primary"):
+                            # Validation
+                            if not transfer_site or not transfer_emplacement:
+                                st.error("❌ Site et emplacement destination sont obligatoires")
+                            elif transfer_quantite <= 0 or transfer_poids <= 0:
+                                st.error("❌ Quantité et poids doivent être > 0")
+                            elif transfer_quantite > empl_data['nombre_unites']:
+                                st.error(f"❌ Quantité trop élevée (max: {int(empl_data['nombre_unites'])} pallox)")
+                            elif transfer_poids > empl_data['poids_total_kg']:
+                                st.error(f"❌ Poids trop élevé (max: {empl_data['poids_total_kg']:.1f} kg)")
+                            else:
+                                success, message = transfer_emplacement(
+                                    selected_empl,
+                                    transfer_site,
+                                    transfer_emplacement,
+                                    transfer_quantite,
+                                    transfer_poids
+                                )
+                                
+                                if success:
+                                    st.success(message)
+                                    st.session_state[f'show_transfer_form_{lot_data["lot_id"]}'] = False
+                                    st.rerun()
+                                else:
+                                    st.error(message)
+                    
+                    with col_cancel:
+                        if st.button("❌ Annuler", key=f"btn_cancel_transfer_{lot_data['lot_id']}", use_container_width=True):
+                            st.session_state[f'show_transfer_form_{lot_data["lot_id"]}'] = False
+                            st.rerun()
+            
+            st.markdown("---")
             
             # Historique (5 derniers mouvements seulement)
             st.markdown("**📜 Historique récent**")
