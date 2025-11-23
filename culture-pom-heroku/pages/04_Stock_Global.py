@@ -135,6 +135,13 @@ def get_stock_par_site():
                 'total_pallox': 'Total Pallox',
                 'total_poids_kg': 'Poids (kg)'
             })
+            
+            # Forcer la conversion en types numériques
+            df['Nb Emplacements'] = pd.to_numeric(df['Nb Emplacements'], errors='coerce').fillna(0).astype(int)
+            df['Nb Lots'] = pd.to_numeric(df['Nb Lots'], errors='coerce').fillna(0).astype(int)
+            df['Total Pallox'] = pd.to_numeric(df['Total Pallox'], errors='coerce').fillna(0).astype(int)
+            df['Poids (kg)'] = pd.to_numeric(df['Poids (kg)'], errors='coerce').fillna(0)
+            
             # Conversion poids en tonnes
             df['Poids (T)'] = df['Poids (kg)'] / 1000
             df = df.drop(columns=['Poids (kg)'])
@@ -185,6 +192,13 @@ def get_stock_par_variete():
                 'total_pallox': 'Total Pallox',
                 'total_poids_kg': 'Poids (kg)'
             })
+            
+            # Forcer la conversion en types numériques
+            df['Nb Lots'] = pd.to_numeric(df['Nb Lots'], errors='coerce').fillna(0).astype(int)
+            df['Nb Emplacements'] = pd.to_numeric(df['Nb Emplacements'], errors='coerce').fillna(0).astype(int)
+            df['Total Pallox'] = pd.to_numeric(df['Total Pallox'], errors='coerce').fillna(0).astype(int)
+            df['Poids (kg)'] = pd.to_numeric(df['Poids (kg)'], errors='coerce').fillna(0)
+            
             # Conversion poids en tonnes
             df['Poids (T)'] = df['Poids (kg)'] / 1000
             df = df.drop(columns=['Poids (kg)'])
@@ -235,6 +249,13 @@ def get_stock_par_producteur():
                 'total_pallox': 'Total Pallox',
                 'total_poids_kg': 'Poids (kg)'
             })
+            
+            # Forcer la conversion en types numériques
+            df['Nb Lots'] = pd.to_numeric(df['Nb Lots'], errors='coerce').fillna(0).astype(int)
+            df['Nb Emplacements'] = pd.to_numeric(df['Nb Emplacements'], errors='coerce').fillna(0).astype(int)
+            df['Total Pallox'] = pd.to_numeric(df['Total Pallox'], errors='coerce').fillna(0).astype(int)
+            df['Poids (kg)'] = pd.to_numeric(df['Poids (kg)'], errors='coerce').fillna(0)
+            
             # Conversion poids en tonnes
             df['Poids (T)'] = df['Poids (kg)'] / 1000
             df = df.drop(columns=['Poids (kg)'])
