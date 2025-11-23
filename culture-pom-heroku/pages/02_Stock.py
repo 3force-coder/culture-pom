@@ -1015,73 +1015,49 @@ if not df.empty:
         )
     }
     
-    # ⭐ DATA EDITOR AVEC SÉLECTION ADAPTATIVE (selon version Streamlit)
-    from packaging import version
+    # ⭐ AJOUTER COLONNE CHECKBOX POUR SÉLECTION (Solution Streamlit 1.51.0)
+    # Créer une copie avec colonne Select au début
+    df_with_select = display_df.copy()
+    df_with_select.insert(0, "Select", False)
     
-    # Détecter la version de Streamlit
-    streamlit_version = version.parse(st.__version__)
+    # Configuration de la colonne Select
+    column_config["Select"] = st.column_config.CheckboxColumn(
+        "☑",
+        help="Cochez pour sélectionner le lot et voir ses emplacements",
+        default=False,
+        width="small"
+    )
     
-    # Préparer les paramètres du data_editor
-    editor_params = {
-        "data": display_df,
-        "use_container_width": True,
-        "num_rows": "fixed",
-        "disabled": ['id', 'code_lot_interne', 'poids_total_brut_kg', 'valeur_lot_euro', 'age_jours'],
-        "column_config": column_config,
-        "key": "stock_editor"
-    }
-    
-    # ⭐ Ajouter selection_mode SEULEMENT si Streamlit >= 1.35.0
-    if streamlit_version >= version.parse("1.35.0"):
-        try:
-            # Tenter d'ajouter selection_mode
-            editor_params["selection_mode"] = "multi-row"
-            st.info(f"✅ Mode sélection activé (Streamlit {st.__version__})")
-        except:
-            st.warning(f"⚠️ selection_mode non supporté sur Streamlit {st.__version__}")
-    else:
-        st.warning(f"⚠️ Streamlit {st.__version__} < 1.35.0 : sélection multi-row non disponible")
-    
-    # Créer le data_editor
-    try:
-        edited_df = st.data_editor(**editor_params)
-    except TypeError as e:
-        # Si selection_mode cause une erreur, retirer et réessayer
-        if "selection_mode" in str(e):
-            st.error(f"❌ Erreur avec selection_mode : {e}")
-            editor_params.pop("selection_mode", None)
-            edited_df = st.data_editor(**editor_params)
-            st.warning("⚠️ Data editor chargé SANS sélection multi-row")
-        else:
-            raise e
+    # DATA EDITOR avec colonne checkbox
+    edited_df = st.data_editor(
+        df_with_select,
+        use_container_width=True,
+        num_rows="fixed",
+        disabled=['id', 'code_lot_interne', 'poids_total_brut_kg', 'valeur_lot_euro', 'age_jours'],
+        column_config=column_config,
+        key="stock_editor"
+    )
     
     # ⭐ STOCKER edited_df dans session_state pour le bouton Enregistrer
-    st.session_state.edited_stock_df = edited_df
+    # Retirer la colonne Select pour les sauvegardes
+    edited_df_for_save = edited_df.drop('Select', axis=1) if 'Select' in edited_df.columns else edited_df
+    st.session_state.edited_stock_df = edited_df_for_save
     
-    # ⭐ RÉCUPÉRER LES LIGNES SÉLECTIONNÉES (si disponible)
+    # ⭐ RÉCUPÉRER LES LOTS SÉLECTIONNÉS via la colonne Select
     selected_lot_ids = []
     
-    if "selection_mode" in editor_params and "stock_editor" in st.session_state:
-        try:
-            # Streamlit 1.35+ stocke la sélection dans session_state.key.selection
-            editor_state = st.session_state.stock_editor
+    if 'Select' in edited_df.columns:
+        # Filtrer les lignes où Select = True
+        selected_rows = edited_df[edited_df['Select'] == True]
+        
+        if len(selected_rows) > 0:
+            # Récupérer les IDs
+            selected_lot_ids = selected_rows['id'].tolist()
             
-            if isinstance(editor_state, dict) and "selection" in editor_state:
-                selection = editor_state["selection"]
-                
-                if isinstance(selection, dict) and "rows" in selection:
-                    selected_rows = selection["rows"]
-                    
-                    if selected_rows and len(selected_rows) > 0:
-                        # Récupérer les IDs des lots sélectionnés
-                        selected_lot_ids = [int(edited_df.iloc[row]['id']) for row in selected_rows if row < len(edited_df)]
-                        
-                        # Limiter à 10 lots max
-                        if len(selected_lot_ids) > 10:
-                            st.warning("⚠️ Vous avez sélectionné plus de 10 lots. Seuls les 10 premiers seront affichés.")
-                            selected_lot_ids = selected_lot_ids[:10]
-        except Exception as e:
-            st.error(f"❌ Erreur récupération sélection : {e}")
+            # Limiter à 10 lots max
+            if len(selected_lot_ids) > 10:
+                st.warning("⚠️ Vous avez sélectionné plus de 10 lots. Seuls les 10 premiers seront affichés.")
+                selected_lot_ids = selected_lot_ids[:10]
     
     # Stocker dans session_state
     st.session_state.selected_lots_for_emplacements = selected_lot_ids
@@ -1089,9 +1065,6 @@ if not df.empty:
     # Afficher info sélection
     if len(selected_lot_ids) > 0:
         st.success(f"✅ {len(selected_lot_ids)} lot(s) sélectionné(s) pour voir les emplacements")
-    elif "selection_mode" not in editor_params:
-        # Si selection_mode n'est pas disponible, afficher message alternatif
-        st.info("💡 La sélection multi-lots via checkboxes nécessite Streamlit >= 1.35.0. Version actuelle : " + st.__version__)
     
     # ⭐ DÉTECTION CHANGEMENTS (Auto-save) - VERSION CORRIGÉE
     changes_detected = False
@@ -1105,10 +1078,10 @@ if not df.empty:
             
             # Vérifier colonne par colonne
             for col in editable_cols:
-                if col in st.session_state.original_stock_df.columns and col in edited_df.columns:
+                if col in st.session_state.original_stock_df.columns and col in edited_df_for_save.columns:
                     # Comparer les valeurs (en ignorant NaN)
                     orig_vals = st.session_state.original_stock_df[col].fillna('')
-                    edit_vals = edited_df[col].fillna('')
+                    edit_vals = edited_df_for_save[col].fillna('')
                     
                     if not orig_vals.equals(edit_vals):
                         changes_detected = True
