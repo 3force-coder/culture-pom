@@ -746,17 +746,24 @@ for lot_data in lots_data:
         
         # Tableau emplacements
         if not emplacements_df.empty:
-            # Afficher : Site, Emplacement, Pallox, Type conditionnement, Poids, Lavé, Grenailles, Type stock
-            display_df = emplacements_df[['site_stockage', 'emplacement_stockage', 'nombre_unites', 'type_conditionnement', 'poids_total_kg', 'est_lave', 'est_grenailles', 'type_stock']].copy()
+            # Formatter poids en tonnes AVANT de sélectionner les colonnes
+            emplacements_df['poids_total_t'] = emplacements_df['poids_total_kg'].apply(
+                lambda x: f"{x/1000:.1f} T" if pd.notna(x) else "N/A"
+            )
             
-            # Formatter poids
-            if 'poids_total_kg' in display_df.columns:
-                display_df['poids_total_t'] = display_df['poids_total_kg'].apply(
-                    lambda x: f"{x/1000:.1f} T" if pd.notna(x) else "N/A"
-                )
-                display_df = display_df.drop('poids_total_kg', axis=1)
+            # Afficher : Site, Emplacement, Pallox, Type conditionnement, Poids (T), Lavé, Grenailles, Type stock
+            display_df = emplacements_df[[
+                'site_stockage', 
+                'emplacement_stockage', 
+                'nombre_unites', 
+                'type_conditionnement', 
+                'poids_total_t',  # ⭐ Poids en tonnes (déjà formaté)
+                'est_lave', 
+                'est_grenailles', 
+                'type_stock'
+            ]].copy()
             
-            # Renommer colonnes
+            # Renommer colonnes (dans le BON ordre)
             display_df.columns = ['Site', 'Emplacement', 'Pallox', 'Type Cond.', 'Poids', 'Lavé', 'Grenailles', 'Type']
             
             # Afficher tableau
