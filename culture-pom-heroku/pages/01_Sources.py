@@ -172,10 +172,10 @@ def get_varietes_with_existing(df, column_name):
 TABLES_CONFIG = {
     "Variétés": {
         "table": "ref_varietes",
-        "columns": ["code_variete", "nom_variete", "type", "utilisation", "is_active", "notes"],
-        "hidden_columns": ["couleur_peau", "couleur_chair", "precocite"],
+        "columns": ["code_variete", "nom_variete", "type", "utilisation", "notes"],
+        "hidden_columns": ["couleur_peau", "couleur_chair", "precocite", "is_active"],
         "primary_key": "id",
-        "editable": ["nom_variete", "type", "utilisation", "is_active", "notes"],
+        "editable": ["nom_variete", "type", "utilisation", "notes"],
         "has_updated_at": True,
         "dropdown_fields": {
             "type": VARIETES_TYPES,
@@ -187,10 +187,10 @@ TABLES_CONFIG = {
     
     "Plants": {
         "table": "ref_plants",
-        "columns": ["code_plant", "libelle_long", "code_variete_base", "calibre", "is_bio", "is_active", "notes"],
-        "hidden_columns": ["poids_unite"],
+        "columns": ["code_plant", "libelle_long", "code_variete_base", "calibre", "is_bio", "notes"],
+        "hidden_columns": ["poids_unite", "is_active"],
         "primary_key": "id",
-        "editable": ["libelle_long", "code_variete_base", "calibre", "is_bio", "is_active", "notes"],
+        "editable": ["libelle_long", "code_variete_base", "calibre", "is_bio", "notes"],
         "has_updated_at": True,
         "dropdown_fields": {
             "calibre": PLANTS_CALIBRES,
@@ -202,10 +202,10 @@ TABLES_CONFIG = {
     
     "Producteurs": {
         "table": "ref_producteurs",
-        "columns": ["code_producteur", "nom", "code_postal", "ville", "departement", "telephone", "email", "nom_contact", "statut", "acheteur_referent", "global_gap", "is_active", "notes"],
-        "hidden_columns": ["cle_producteur", "siret", "forme_juridique", "adresse", "adresse_complement", "pays", "latitude", "longitude", "prenom_contact", "type_contrat"],
+        "columns": ["code_producteur", "nom", "code_postal", "ville", "departement", "telephone", "email", "nom_contact", "statut", "acheteur_referent", "global_gap", "notes"],
+        "hidden_columns": ["cle_producteur", "siret", "forme_juridique", "adresse", "adresse_complement", "pays", "latitude", "longitude", "prenom_contact", "type_contrat", "is_active"],
         "primary_key": "id",
-        "editable": ["nom", "code_postal", "ville", "telephone", "email", "nom_contact", "statut", "acheteur_referent", "global_gap", "is_active", "notes"],
+        "editable": ["nom", "code_postal", "ville", "telephone", "email", "nom_contact", "statut", "acheteur_referent", "global_gap", "notes"],
         "has_updated_at": True,
         "filter_columns": ["nom", "departement", "acheteur_referent", "global_gap"],
         "required_fields": ["code_producteur", "nom"]
@@ -213,10 +213,10 @@ TABLES_CONFIG = {
     
     "Sites Stockage": {
         "table": "ref_sites_stockage",
-        "columns": ["code_site", "code_emplacement", "nom_complet", "adresse", "capacite_max_pallox", "capacite_max_tonnes", "is_active", "notes"],
-        "hidden_columns": ["cle_unique"],
+        "columns": ["code_site", "code_emplacement", "nom_complet", "adresse", "capacite_max_pallox", "capacite_max_tonnes", "notes"],
+        "hidden_columns": ["cle_unique", "is_active"],
         "primary_key": "id",
-        "editable": ["nom_complet", "adresse", "capacite_max_pallox", "capacite_max_tonnes", "is_active", "notes"],
+        "editable": ["nom_complet", "adresse", "capacite_max_pallox", "capacite_max_tonnes", "notes"],
         "has_updated_at": True,
         "auto_cle_unique": True,
         "required_fields": ["code_site", "code_emplacement", "nom_complet"]
@@ -224,29 +224,43 @@ TABLES_CONFIG = {
     
     "Types Déchets": {
         "table": "ref_types_dechets",
-        "columns": ["code", "libelle", "description", "is_active"],
+        "columns": ["code", "libelle", "description"],
+        "hidden_columns": ["is_active"],
         "primary_key": "id",
-        "editable": ["libelle", "description", "is_active"],
+        "editable": ["libelle", "description"],
         "has_updated_at": False,
         "required_fields": ["code", "libelle"]
     },
     
     "Emballages": {
         "table": "ref_emballages",
-        "columns": ["code_emballage", "atelier", "poids_unitaire", "unite_poids", "nbr_uvc", "type_produit", "is_active", "notes"],
+        "columns": ["code_emballage", "atelier", "poids", "nbr_uvc", "type_produit", "sur_emballage"],
+        "hidden_columns": ["notes", "is_active", "poids_unitaire", "unite_poids"],
         "primary_key": "id",
-        "editable": ["atelier", "poids_unitaire", "unite_poids", "nbr_uvc", "type_produit", "is_active", "notes"],
+        "editable": ["atelier", "nbr_uvc", "type_produit", "sur_emballage"],
         "has_updated_at": True,
-        "required_fields": ["code_emballage"]
+        "filter_columns": ["poids", "atelier", "type_produit"],
+        "required_fields": ["code_emballage"],
+        "calculated_columns": {
+            "poids": ["poids_unitaire", "unite_poids"]
+        }
     },
     
     "Produits Commerciaux": {
         "table": "ref_produits_commerciaux",
-        "columns": ["code_produit", "marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "code_variete", "is_bio", "is_active", "notes"],
+        "columns": ["code_produit", "marque", "libelle", "poids", "type_produit", "code_variete"],
+        "hidden_columns": ["is_bio", "notes", "is_active", "poids_unitaire", "unite_poids"],
         "primary_key": "id",
-        "editable": ["marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "code_variete", "is_bio", "is_active", "notes"],
+        "editable": ["marque", "libelle", "type_produit", "code_variete"],
         "has_updated_at": True,
-        "required_fields": ["code_produit", "marque", "libelle"]
+        "dropdown_fields": {
+            "code_variete": "dynamic_varietes"
+        },
+        "filter_columns": ["poids", "marque", "type_produit"],
+        "required_fields": ["code_produit", "marque", "libelle"],
+        "calculated_columns": {
+            "poids": ["poids_unitaire", "unite_poids"]
+        }
     }
 }
 
@@ -262,18 +276,21 @@ def load_table_data(table_name, show_inactive=False):
         if "hidden_columns" in config:
             all_columns.extend(config["hidden_columns"])
         
-        columns_str = ", ".join(all_columns)
+        # ⭐ Retirer les colonnes calculées de la requête SQL
+        sql_columns = [col for col in all_columns if col not in config.get("calculated_columns", {})]
+        
+        columns_str = ", ".join(sql_columns)
         
         # ⭐ Filtrer par is_active si show_inactive = False
         where_clause = ""
-        if not show_inactive and 'is_active' in all_columns:
+        if not show_inactive and 'is_active' in sql_columns:
             where_clause = " WHERE is_active = TRUE"
         
         query = f"SELECT {config['primary_key']}, {columns_str} FROM {config['table']}{where_clause} ORDER BY {config['primary_key']}"
         cursor.execute(query)
         
         rows = cursor.fetchall()
-        columns = [config['primary_key']] + all_columns
+        columns = [config['primary_key']] + sql_columns
         cursor.close()
         conn.close()
         
@@ -284,6 +301,17 @@ def load_table_data(table_name, show_inactive=False):
             df['departement'] = df['code_postal'].apply(
                 lambda x: str(x)[:2] if pd.notna(x) and str(x).strip() != '' else None
             )
+        
+        # ⭐ CALCULER colonnes Poids (poids_unitaire + unite_poids)
+        if "calculated_columns" in config and "poids" in config["calculated_columns"]:
+            source_cols = config["calculated_columns"]["poids"]
+            if all(col in df.columns for col in source_cols):
+                df['poids'] = df.apply(
+                    lambda row: f"{row[source_cols[0]]} {row[source_cols[1]]}" 
+                    if pd.notna(row[source_cols[0]]) and pd.notna(row[source_cols[1]]) 
+                    else "", 
+                    axis=1
+                )
         
         # ⭐ Ne garder que les colonnes visibles pour l'affichage
         display_columns = [config['primary_key']] + config['columns']
@@ -330,6 +358,10 @@ def save_changes(table_name, original_df, edited_df):
             
             # Colonnes visibles éditées
             for col in config['editable']:
+                # ⭐ Ignorer colonnes calculées
+                if col in config.get("calculated_columns", {}):
+                    continue
+                    
                 if col not in edited_df.columns or col not in original_df.columns:
                     continue
                 
@@ -451,8 +483,12 @@ def add_record(table_name, data):
         # ⭐ Ajouter colonnes cachées avec valeurs NULL si besoin
         if "hidden_columns" in config:
             for col in config["hidden_columns"]:
-                if col not in data:
+                if col not in data and col != "is_active":
                     data[col] = None
+        
+        # ⭐ Ajouter is_active = TRUE par défaut
+        if "is_active" in config.get("hidden_columns", []):
+            data["is_active"] = True
         
         columns = list(data.keys())
         values = [convert_to_native_types(v) for v in data.values()]
@@ -525,6 +561,10 @@ if st.session_state.get('show_add_form', False):
     col1, col2 = st.columns(2)
     
     for i, col in enumerate(config['columns']):
+        # ⭐ Ignorer colonnes calculées dans le formulaire
+        if col in config.get("calculated_columns", {}):
+            continue
+            
         # ⭐ Marquer champs obligatoires avec astérisque
         label = col.replace('_', ' ').title()
         if "required_fields" in config and col in config["required_fields"]:
@@ -535,7 +575,7 @@ if st.session_state.get('show_add_form', False):
             if "dropdown_fields" in config and col in config["dropdown_fields"]:
                 field_config = config["dropdown_fields"][col]
                 
-                # ⭐ Dropdown dynamique pour code_variete_base
+                # ⭐ Dropdown dynamique pour code_variete
                 if field_config == "dynamic_varietes":
                     varietes = get_active_varietes()
                     options = [""] + varietes
@@ -552,7 +592,7 @@ if st.session_state.get('show_add_form', False):
                         options=options,
                         key=f"add_{col}"
                     )
-            elif col in ['is_active', 'is_bio', 'global_gap']:
+            elif col in ['is_bio', 'global_gap']:
                 st.session_state.new_data[col] = st.checkbox(label, value=True, key=f"add_{col}")
             elif 'capacite' in col or 'prix' in col or 'poids' in col:
                 st.session_state.new_data[col] = st.number_input(label, min_value=0.0, value=0.0, step=0.1, key=f"add_{col}")
@@ -617,15 +657,24 @@ df_full = load_table_data(selected_table, show_inactive=show_inactive)
 if not df_full.empty:
     config = TABLES_CONFIG[selected_table]
     
+    # Récupérer le df complet avec is_active pour les métriques
+    full_df_with_inactive = st.session_state.get(f'full_df_{selected_table}')
+    
     # Métriques (sur données complètes avant filtrage)
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("📊 Total", len(df_full))
     with col2:
-        actifs = df_full['is_active'].sum() if 'is_active' in df_full.columns else len(df_full)
+        if full_df_with_inactive is not None and 'is_active' in full_df_with_inactive.columns:
+            actifs = full_df_with_inactive['is_active'].sum()
+        else:
+            actifs = len(df_full)
         st.metric("✅ Actifs", actifs)
     with col3:
-        inactifs = len(df_full) - actifs if 'is_active' in df_full.columns else 0
+        if full_df_with_inactive is not None and 'is_active' in full_df_with_inactive.columns:
+            inactifs = len(full_df_with_inactive) - actifs
+        else:
+            inactifs = 0
         st.metric("❌ Inactifs", inactifs)
     
     st.markdown("---")
@@ -651,7 +700,7 @@ if not df_full.empty:
                             key=f"filter_{col_name}"
                         )
                     else:
-                        unique_values = ["Tous"] + sorted([str(v) for v in df[col_name].dropna().unique()])
+                        unique_values = ["Tous"] + sorted([str(v) for v in df[col_name].dropna().unique() if str(v).strip() != ''])
                         filters[col_name] = st.selectbox(
                             col_name.replace('_', ' ').title(),
                             unique_values,
@@ -688,10 +737,11 @@ if not df_full.empty:
     # ⭐ Configuration colonnes pour data_editor avec dropdowns
     column_config = {}
     if "dropdown_fields" in config:
+        full_df_for_dropdown = st.session_state.get(f'full_df_{selected_table}', df_full)
         for field, field_config in config["dropdown_fields"].items():
             # ⭐ Dropdown dynamique
             if field_config == "dynamic_varietes":
-                varietes = get_varietes_with_existing(df_full, field)
+                varietes = get_varietes_with_existing(full_df_for_dropdown, field)
                 column_config[field] = st.column_config.SelectboxColumn(
                     field.replace('_', ' ').title(),
                     options=varietes,
@@ -700,7 +750,7 @@ if not df_full.empty:
             # Dropdown statique
             else:
                 # ⭐ Inclure valeurs existantes aussi pour listes statiques
-                existing = df_full[field].dropna().unique().tolist() if field in df_full.columns else []
+                existing = full_df_for_dropdown[field].dropna().unique().tolist() if field in full_df_for_dropdown.columns else []
                 all_options = sorted(list(set(existing + field_config)))
                 column_config[field] = st.column_config.SelectboxColumn(
                     field.replace('_', ' ').title(),
@@ -717,7 +767,7 @@ if not df_full.empty:
         df,
         use_container_width=True,
         num_rows="fixed",
-        disabled=[config['primary_key']],
+        disabled=[config['primary_key']] + list(config.get("calculated_columns", {}).keys()),
         column_config=column_config if column_config else None,
         key=f"editor_{selected_table}"
     )
@@ -742,9 +792,12 @@ if not df_full.empty:
     st.markdown("---")
     st.subheader("🔒 Gestion activation")
     
+    # Utiliser le df complet avec is_active pour la gestion
+    full_df_for_activation = st.session_state.get(f'full_df_{selected_table}', df_full)
+    
     # Dropdown pleine largeur
     first_col = config['columns'][0]
-    options = [f"{row[config['primary_key']]} - {row[first_col]}" for _, row in df_full.iterrows()]
+    options = [f"{row[config['primary_key']]} - {row[first_col]}" for _, row in full_df_for_activation.iterrows()]
     selected_record = st.selectbox(
         f"Sélectionner un élément à activer/désactiver",
         options,
