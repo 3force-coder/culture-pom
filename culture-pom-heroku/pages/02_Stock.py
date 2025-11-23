@@ -5,8 +5,7 @@ from datetime import datetime, date
 import time
 from database import get_connection
 from components import show_footer
-from auth import is_authenticated
-from roles import is_admin
+from auth import is_authenticated, is_admin
 import io
 import streamlit.components.v1 as components
 
