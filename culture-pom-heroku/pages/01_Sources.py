@@ -82,35 +82,18 @@ if not is_authenticated():
 
 # ⭐ FONCTION ANIMATION LOTTIE
 def show_confetti_animation():
-    """Affiche l'animation confetti Lottie via web component - CENTRÉE avec auto-reload"""
+    """Affiche l'animation confetti Lottie via web component"""
     confetti_html = """
     <script src="https://unpkg.com/@lottiefiles/dotlottie-wc@0.8.5/dist/dotlottie-wc.js" type="module"></script>
-    <div style="
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100vw;
-        height: 100vh;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        z-index: 9999;
-        pointer-events: none;
-    ">
+    <div style="display: flex; justify-content: center; align-items: center;">
         <dotlottie-wc 
             src="https://lottie.host/21b8e802-34df-4b54-89ca-4c7843e1da14/AoYf85WPKi.lottie" 
-            style="width: 400px; height: 400px" 
+            style="width: 300px; height: 300px" 
             autoplay>
         </dotlottie-wc>
     </div>
-    <script>
-        // Recharger la page après 2.5 secondes
-        setTimeout(function() {
-            window.parent.location.reload();
-        }, 2500);
-    </script>
     """
-    components.html(confetti_html, height=600)
+    components.html(confetti_html, height=320)
 
 st.title("📋 Gestion des Tables de Référence")
 st.markdown("---")
@@ -500,6 +483,11 @@ def add_record(table_name, data):
             if 'code_site' in data and 'code_emplacement' in data:
                 data['cle_unique'] = f"{data['code_site']}_{data['code_emplacement']}"
         
+        # ⭐ Retirer les colonnes calculées (n'existent pas en DB)
+        if "calculated_columns" in config:
+            for calc_col in config["calculated_columns"].keys():
+                data.pop(calc_col, None)
+        
         # ⭐ Ajouter colonnes cachées avec valeurs NULL si besoin
         if "hidden_columns" in config:
             for col in config["hidden_columns"]:
@@ -581,6 +569,10 @@ if st.session_state.get('show_add_form', False):
     col1, col2 = st.columns(2)
     
     for i, col in enumerate(config['columns']):
+        # ⭐ Ignorer colonnes calculées dans le formulaire
+        if col in config.get("calculated_columns", {}):
+            continue
+            
         # ⭐ Marquer champs obligatoires avec astérisque
         label = col.replace('_', ' ').title()
         if "required_fields" in config and col in config["required_fields"]:
@@ -600,9 +592,30 @@ if st.session_state.get('show_add_form', False):
                         options=options,
                         key=f"add_{col}"
                     )
-                # ⭐ Champ texte libre pour dynamic_from_db (permet nouvelles valeurs)
+                # ⭐ Dropdown depuis DB avec option "Autre"
                 elif field_config == "dynamic_from_db":
-                    st.session_state.new_data[col] = st.text_input(label, key=f"add_{col}")
+                    # Récupérer valeurs existantes
+                    full_df_for_form = st.session_state.get(f'full_df_{selected_table}')
+                    if full_df_for_form is not None and col in full_df_for_form.columns:
+                        existing_values = get_unique_values_from_column(full_df_for_form, col)
+                    else:
+                        existing_values = []
+                    
+                    options = [""] + existing_values + ["➕ Saisir nouvelle valeur"]
+                    selected = st.selectbox(
+                        label,
+                        options=options,
+                        key=f"add_{col}_select"
+                    )
+                    
+                    # Si "Autre", afficher champ texte
+                    if selected == "➕ Saisir nouvelle valeur":
+                        st.session_state.new_data[col] = st.text_input(
+                            f"Nouvelle valeur pour {label}",
+                            key=f"add_{col}_new"
+                        )
+                    else:
+                        st.session_state.new_data[col] = selected
                 # Dropdown statique
                 else:
                     options = [""] + field_config
@@ -650,10 +663,12 @@ if st.session_state.get('show_add_form', False):
                 success, message = add_record(selected_table, filtered_data)
                 if success:
                     st.success(message)
-                    # ⭐ Animation confettis Lottie (web component) avec auto-reload
+                    # ⭐ Animation confettis Lottie
                     show_confetti_animation()
+                    time.sleep(2)
                     st.session_state.show_add_form = False
                     st.session_state.pop('new_data', None)
+                    st.rerun()
                 else:
                     st.error(message)
     
