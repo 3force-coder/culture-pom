@@ -184,29 +184,22 @@ def get_lot_mouvements(lot_id, limit=10):
 # INTERFACE
 # ============================================================================
 
-# Récupérer lot_id depuis query params
-query_params = st.query_params
-lot_id = query_params.get("lot_id")
+# ⭐ Récupérer les IDs des lots sélectionnés depuis session_state
+selected_lot_ids = st.session_state.get('selected_lots_for_emplacements', [])
 
-if not lot_id:
+if not selected_lot_ids:
     st.error("❌ Aucun lot sélectionné")
-    if st.button("← Retour à la liste des lots"):
+    st.info("💡 Veuillez cocher un ou plusieurs lots dans la page Stock, puis cliquer sur 'Voir Emplacements'")
+    if st.button("← Retour à la liste des lots", use_container_width=True):
         st.switch_page("pages/02_Stock.py")
     st.stop()
 
-# Convertir en entier
+# Vérifier que ce sont bien des entiers
 try:
-    lot_id = int(lot_id)
+    selected_lot_ids = [int(lot_id) for lot_id in selected_lot_ids]
 except:
-    st.error("❌ ID de lot invalide")
-    st.stop()
-
-# Charger infos lot
-lot_info = get_lot_info(lot_id)
-
-if not lot_info:
-    st.error("❌ Lot introuvable")
-    if st.button("← Retour à la liste des lots"):
+    st.error("❌ IDs de lots invalides")
+    if st.button("← Retour à la liste des lots", use_container_width=True):
         st.switch_page("pages/02_Stock.py")
     st.stop()
 
@@ -217,8 +210,11 @@ if not lot_info:
 col_title, col_back = st.columns([4, 1])
 
 with col_title:
-    st.title(f"📦 Emplacements du Lot")
-    st.caption(f"**{lot_info['code_lot_interne']}** - {lot_info['nom_usage']}")
+    nb_lots = len(selected_lot_ids)
+    if nb_lots == 1:
+        st.title(f"📦 Emplacements du Lot")
+    else:
+        st.title(f"📦 Emplacements de {nb_lots} Lots")
 
 with col_back:
     if st.button("← Retour Stock", use_container_width=True):
@@ -227,167 +223,157 @@ with col_back:
 st.markdown("---")
 
 # ============================================================================
-# VUE D'ENSEMBLE
+# VUE D'ENSEMBLE CONSOLIDÉE (tous les lots)
 # ============================================================================
 
-st.subheader("📊 Vue d'ensemble")
+st.subheader("📊 Vue Consolidée")
 
-# KPIs
+# Calculer totaux pour tous les lots
+total_lots = len(selected_lot_ids)
+total_pallox_global = 0
+total_tonnage_global = 0
+total_emplacements_global = 0
+
+# Charger données de tous les lots
+lots_data = []
+
+for lot_id in selected_lot_ids:
+    lot_info = get_lot_info(lot_id)
+    if lot_info:
+        emplacements_df = get_lot_emplacements(lot_id)
+        
+        nb_emplacements = len(emplacements_df)
+        total_pallox = emplacements_df['nombre_unites'].sum() if not emplacements_df.empty else 0
+        total_tonnage = (emplacements_df['poids_total_kg'].sum() / 1000) if not emplacements_df.empty and 'poids_total_kg' in emplacements_df.columns else 0
+        
+        lots_data.append({
+            'lot_id': lot_id,
+            'lot_info': lot_info,
+            'emplacements_df': emplacements_df,
+            'nb_emplacements': nb_emplacements,
+            'total_pallox': total_pallox,
+            'total_tonnage': total_tonnage
+        })
+        
+        total_pallox_global += total_pallox
+        total_tonnage_global += total_tonnage
+        total_emplacements_global += nb_emplacements
+
+# KPIs Consolidés
 col1, col2, col3, col4 = st.columns(4)
 
-# Calculer totaux depuis emplacements
-emplacements_df = get_lot_emplacements(lot_id)
-nb_emplacements = len(emplacements_df)
-total_pallox = emplacements_df['nombre_unites'].sum() if not emplacements_df.empty else 0
-total_tonnage = (emplacements_df['poids_total_kg'].sum() / 1000) if not emplacements_df.empty and 'poids_total_kg' in emplacements_df.columns else 0
-
 with col1:
-    st.metric("📦 Total Pallox", f"{int(total_pallox)}")
+    st.metric("📦 Total Lots", total_lots)
 
 with col2:
-    st.metric("⚖️ Total Tonnage", f"{total_tonnage:.1f} T")
+    st.metric("📦 Total Pallox", f"{int(total_pallox_global)}")
 
 with col3:
-    st.metric("📍 Nb Emplacements", nb_emplacements)
+    st.metric("⚖️ Total Tonnage", f"{total_tonnage_global:.1f} T")
 
 with col4:
-    statut_display = f"{lot_info['statut_icone']} {lot_info['statut_libelle']}" if lot_info['statut_icone'] else lot_info['statut_libelle']
-    st.metric("🏷️ Statut", statut_display)
+    st.metric("📍 Total Emplacements", total_emplacements_global)
 
 st.markdown("---")
 
 # ============================================================================
-# INFORMATIONS LOT
+# DÉTAIL PAR LOT (Vue Compacte avec Expanders)
 # ============================================================================
 
-st.subheader("📋 Informations du Lot")
+st.subheader("📍 Détail par Lot")
 
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.write(f"**Code Lot** : {lot_info['code_lot_interne']}")
-    st.write(f"**Nom d'usage** : {lot_info['nom_usage']}")
-    st.write(f"**Variété** : {lot_info['nom_variete'] or 'N/A'}")
-
-with col2:
-    st.write(f"**Producteur** : {lot_info['nom_producteur'] or 'N/A'}")
-    st.write(f"**Date entrée** : {lot_info['date_entree_stock'].strftime('%d/%m/%Y') if lot_info['date_entree_stock'] else 'N/A'}")
-    st.write(f"**Âge** : {lot_info['age_jours']} jours")
-
-with col3:
-    st.write(f"**Pallox total** : {lot_info['nombre_unites']}")
-    poids_display = f"{lot_info['poids_total_brut_kg'] / 1000:.1f} T" if lot_info['poids_total_brut_kg'] else "N/A"
-    st.write(f"**Poids brut** : {poids_display}")
-    valeur_display = f"{lot_info['valeur_lot_euro']:,.0f} €" if lot_info['valeur_lot_euro'] else "N/A"
-    st.write(f"**Valeur** : {valeur_display}")
+for lot_data in lots_data:
+    lot_info = lot_data['lot_info']
+    emplacements_df = lot_data['emplacements_df']
+    
+    # ⭐ EXPANDER POUR CHAQUE LOT
+    with st.expander(
+        f"🔽 {lot_info['code_lot_interne']} - {lot_info['nom_usage']} "
+        f"({int(lot_data['total_pallox'])} pallox, {lot_data['total_tonnage']:.1f}T)",
+        expanded=True if len(lots_data) <= 3 else False
+    ):
+        
+        # Infos lot (compact - 2 colonnes)
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write(f"**Variété** : {lot_info['nom_variete'] or 'N/A'}")
+            st.write(f"**Producteur** : {lot_info['nom_producteur'] or 'N/A'}")
+            st.write(f"**Âge** : {lot_info['age_jours']} jours")
+        
+        with col2:
+            statut_display = f"{lot_info['statut_icone']} {lot_info['statut_libelle']}" if lot_info['statut_icone'] else lot_info['statut_libelle'] or "N/A"
+            st.write(f"**Statut** : {statut_display}")
+            valeur_display = f"{lot_info['valeur_lot_euro']:,.0f} €" if lot_info['valeur_lot_euro'] else "N/A"
+            st.write(f"**Valeur** : {valeur_display}")
+            st.write(f"**Emplacements** : {lot_data['nb_emplacements']}")
+        
+        st.markdown("---")
+        
+        # Tableau emplacements
+        if not emplacements_df.empty:
+            display_df = emplacements_df[['site_stockage', 'emplacement_stockage', 'nombre_unites', 'poids_total_kg', 'type_stock']].copy()
+            
+            # Formatter poids
+            if 'poids_total_kg' in display_df.columns:
+                display_df['poids_total_t'] = display_df['poids_total_kg'].apply(
+                    lambda x: f"{x/1000:.1f} T" if pd.notna(x) else "N/A"
+                )
+                display_df = display_df.drop('poids_total_kg', axis=1)
+            
+            # Renommer colonnes
+            display_df.columns = ['Site', 'Emplacement', 'Pallox', 'Poids', 'Type']
+            
+            # Afficher tableau
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Historique (5 derniers mouvements seulement)
+            st.markdown("**📜 Historique récent**")
+            mouvements_df = get_lot_mouvements(lot_data['lot_id'], limit=5)
+            
+            if not mouvements_df.empty:
+                display_mouvements = mouvements_df.copy()
+                
+                display_mouvements['Date'] = pd.to_datetime(display_mouvements['created_at']).dt.strftime('%d/%m %H:%M')
+                
+                type_labels = {
+                    'CREATION_LOT': '🆕 Création',
+                    'TRANSFERT_DEPART': '🚚 Départ',
+                    'TRANSFERT_ARRIVEE': '📥 Arrivée',
+                    'DIVISION_LOT': '✂️ Division',
+                    'LAVAGE': '🧼 Lavage',
+                    'AJUSTEMENT_MANUEL': '✏️ Ajustement',
+                    'VENTE': '💰 Vente',
+                    'PERTE': '⚠️ Perte'
+                }
+                display_mouvements['Type'] = display_mouvements['type_mouvement'].map(type_labels)
+                
+                display_mouvements['Trajet'] = display_mouvements.apply(
+                    lambda row: f"{row['site_avant'] or '-'} → {row['site_apres'] or '-'}",
+                    axis=1
+                )
+                
+                final_df = display_mouvements[['Date', 'Type', 'Trajet']]
+                
+                st.dataframe(
+                    final_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=150
+                )
+            else:
+                st.caption("Aucun mouvement enregistré")
+        else:
+            st.warning("⚠️ Aucun emplacement trouvé pour ce lot")
 
 st.markdown("---")
 
 # ============================================================================
-# DÉTAIL EMPLACEMENTS
-# ============================================================================
-
-st.subheader("📍 Détail des Emplacements")
-
-if emplacements_df.empty:
-    st.warning("⚠️ Aucun emplacement trouvé pour ce lot")
-else:
-    # Préparer affichage
-    display_df = emplacements_df[['site_stockage', 'emplacement_stockage', 'nombre_unites', 'poids_total_kg', 'type_stock']].copy()
-    
-    # Formatter poids
-    if 'poids_total_kg' in display_df.columns:
-        display_df['poids_total_t'] = display_df['poids_total_kg'].apply(
-            lambda x: f"{x/1000:.1f} T" if pd.notna(x) else "N/A"
-        )
-        display_df = display_df.drop('poids_total_kg', axis=1)
-    
-    # Renommer colonnes
-    display_df.columns = ['Site', 'Emplacement', 'Pallox', 'Poids', 'Type']
-    
-    # Afficher tableau
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True
-    )
-    
-    # Stats rapides
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        sites_uniques = display_df['Site'].nunique()
-        st.info(f"📍 **{sites_uniques}** site(s) de stockage")
-    
-    with col2:
-        bruts = len(display_df[display_df['Type'] == 'BRUT'])
-        st.info(f"📦 **{bruts}** emplacement(s) brut")
-    
-    with col3:
-        transit = len(display_df[display_df['Type'] == 'EN_TRANSIT'])
-        if transit > 0:
-            st.warning(f"🚚 **{transit}** emplacement(s) en transit")
-
-st.markdown("---")
-
-# ============================================================================
-# HISTORIQUE MOUVEMENTS
-# ============================================================================
-
-st.subheader("📜 Historique des Mouvements (10 derniers)")
-
-mouvements_df = get_lot_mouvements(lot_id, limit=10)
-
-if mouvements_df.empty:
-    st.info("ℹ️ Aucun mouvement enregistré pour ce lot")
-else:
-    # Préparer affichage
-    display_mouvements = mouvements_df.copy()
-    
-    # Formatter date
-    display_mouvements['Date'] = pd.to_datetime(display_mouvements['created_at']).dt.strftime('%d/%m %H:%M')
-    
-    # Formatter type mouvement
-    type_labels = {
-        'CREATION_LOT': '🆕 Création',
-        'TRANSFERT_DEPART': '🚚 Départ',
-        'TRANSFERT_ARRIVEE': '📥 Arrivée',
-        'DIVISION_LOT': '✂️ Division',
-        'LAVAGE': '🧼 Lavage',
-        'AJUSTEMENT_MANUEL': '✏️ Ajustement',
-        'VENTE': '💰 Vente',
-        'PERTE': '⚠️ Perte'
-    }
-    display_mouvements['Type'] = display_mouvements['type_mouvement'].map(type_labels)
-    
-    # Formatter trajet
-    display_mouvements['Trajet'] = display_mouvements.apply(
-        lambda row: f"{row['site_avant'] or '-'} → {row['site_apres'] or '-'}",
-        axis=1
-    )
-    
-    # Formatter quantité
-    display_mouvements['Quantité'] = display_mouvements['quantite_mouvement'].apply(
-        lambda x: f"{'+' if x > 0 else ''}{x} P" if pd.notna(x) else "N/A"
-    )
-    
-    # Formatter utilisateur
-    display_mouvements['Par'] = display_mouvements['created_by'].fillna('Système')
-    
-    # Sélectionner colonnes finales
-    final_df = display_mouvements[['Date', 'Type', 'Trajet', 'Quantité', 'Par']]
-    
-    # Afficher tableau
-    st.dataframe(
-        final_df,
-        use_container_width=True,
-        hide_index=True
-    )
-
-st.markdown("---")
-
-# ============================================================================
-# ACTIONS
+# ACTIONS RAPIDES
 # ============================================================================
 
 st.subheader("⚡ Actions Rapides")
@@ -403,7 +389,7 @@ with col2:
         st.info("🚧 Fonctionnalité disponible en Phase C (Historique Stock)")
 
 with col3:
-    if st.button("✏️ Modifier Lot", use_container_width=True):
+    if st.button("← Retour à la Liste", use_container_width=True):
         st.switch_page("pages/02_Stock.py")
 
 # Footer
