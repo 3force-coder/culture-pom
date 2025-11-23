@@ -267,8 +267,8 @@ def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg,
         """, (lot_id,))
         lot_info = cursor.fetchone()
         
-        # Calculer temps estimé
-        temps_estime = (poids_brut_kg / 1000) / capacite_th  # heures
+        # Calculer temps estimé (conversion Decimal en float)
+        temps_estime = (float(poids_brut_kg) / 1000) / float(capacite_th)  # heures
         
         # Insérer job
         created_by = st.session_state.get('username', 'system')
@@ -633,87 +633,177 @@ with tab2:
 
 with tab3:
     st.subheader("➕ Créer un Job de Lavage")
+    st.markdown("*Sélectionnez un lot BRUT dans le tableau ci-dessous*")
     
     # Charger lots disponibles
     lots_dispo = get_lots_bruts_disponibles()
     
     if not lots_dispo.empty:
-        # Sélection lot
-        lot_options = [""] + [
-            f"{row['code_lot_interne']} - {row['variete']} - {row['site_stockage']}/{row['emplacement_stockage']} ({int(row['nombre_unites'])} pallox)"
-            for _, row in lots_dispo.iterrows()
-        ]
+        # Filtres
+        col1, col2 = st.columns(2)
         
-        selected_lot_str = st.selectbox("Lot à laver *", options=lot_options, key="select_lot")
+        with col1:
+            varietes_disponibles = ["Tous"] + sorted(lots_dispo['variete'].dropna().unique().tolist())
+            filtre_variete = st.selectbox("Filtrer par variété", varietes_disponibles, key="filtre_var_create")
         
-        if selected_lot_str:
-            # Extraire index du lot
-            lot_idx = lot_options.index(selected_lot_str) - 1
-            lot_data = lots_dispo.iloc[lot_idx]
+        with col2:
+            sites_disponibles = ["Tous"] + sorted(lots_dispo['site_stockage'].dropna().unique().tolist())
+            filtre_site = st.selectbox("Filtrer par site", sites_disponibles, key="filtre_site_create")
+        
+        # Appliquer filtres
+        lots_filtres = lots_dispo.copy()
+        if filtre_variete != "Tous":
+            lots_filtres = lots_filtres[lots_filtres['variete'] == filtre_variete]
+        if filtre_site != "Tous":
+            lots_filtres = lots_filtres[lots_filtres['site_stockage'] == filtre_site]
+        
+        if not lots_filtres.empty:
+            st.markdown("---")
+            st.markdown(f"**{len(lots_filtres)} lot(s) disponible(s)**")
             
-            col1, col2 = st.columns(2)
+            # Créer DataFrame pour affichage
+            df_display = lots_filtres[[
+                'lot_id', 'emplacement_id', 'code_lot_interne', 'variete', 
+                'site_stockage', 'emplacement_stockage', 'nombre_unites', 
+                'poids_total_kg', 'type_conditionnement'
+            ]].copy()
             
-            with col1:
-                quantite = st.slider(
-                    "Quantité à laver (pallox) *",
-                    min_value=1,
-                    max_value=int(lot_data['nombre_unites']),
-                    value=min(5, int(lot_data['nombre_unites'])),
-                    key="quantite"
-                )
-                
-                date_prevue = st.date_input(
-                    "Date prévue *",
-                    value=datetime.now().date(),
-                    key="date_prevue"
-                )
+            df_display['poids_total_kg'] = df_display['poids_total_kg'].round(0)
             
-            with col2:
-                lignes = get_lignes_lavage()
-                ligne_options = [f"{l['code']} - {l['libelle']} ({l['capacite_th']}T/h)" for l in lignes]
-                selected_ligne = st.selectbox("Ligne de lavage *", options=ligne_options, key="ligne")
-                
-                # Calculer poids et temps
-                if lot_data['type_conditionnement'] == 'Pallox':
-                    poids_unitaire = 1900
-                elif lot_data['type_conditionnement'] == 'Petit Pallox':
-                    poids_unitaire = 1200
-                elif lot_data['type_conditionnement'] == 'Big Bag':
-                    poids_unitaire = 1600
-                else:
-                    poids_unitaire = 1900
-                
-                poids_brut = quantite * poids_unitaire
-                
-                ligne_idx = ligne_options.index(selected_ligne)
-                capacite = lignes[ligne_idx]['capacite_th']
-                temps_estime = (poids_brut / 1000) / capacite
-                
-                st.metric("Poids brut à laver", f"{poids_brut:.0f} kg ({poids_brut/1000:.1f} T)")
-                st.metric("Temps estimé", f"{temps_estime:.1f} heures")
+            df_display = df_display.rename(columns={
+                'code_lot_interne': 'Code Lot',
+                'variete': 'Variété',
+                'site_stockage': 'Site',
+                'emplacement_stockage': 'Emplacement',
+                'nombre_unites': 'Pallox',
+                'poids_total_kg': 'Poids (kg)',
+                'type_conditionnement': 'Type'
+            })
             
-            notes = st.text_area("Notes (optionnel)", key="notes_create")
+            # Configuration colonnes
+            column_config = {
+                "Code Lot": st.column_config.TextColumn("Code Lot", width="large"),
+                "Variété": st.column_config.TextColumn("Variété", width="medium"),
+                "Site": st.column_config.TextColumn("Site", width="medium"),
+                "Emplacement": st.column_config.TextColumn("Emplacement", width="medium"),
+                "Pallox": st.column_config.NumberColumn("Pallox", format="%d"),
+                "Poids (kg)": st.column_config.NumberColumn("Poids (kg)", format="%.0f"),
+                "Type": st.column_config.TextColumn("Type", width="small")
+            }
             
-            if st.button("✅ Créer le Job", type="primary", use_container_width=True):
-                ligne_code = lignes[ligne_idx]['code']
+            # Data editor avec sélection
+            selection = st.data_editor(
+                df_display[['Code Lot', 'Variété', 'Site', 'Emplacement', 'Pallox', 'Poids (kg)', 'Type']],
+                column_config=column_config,
+                use_container_width=True,
+                hide_index=True,
+                disabled=True,
+                key="lots_table_create"
+            )
+            
+            st.markdown("---")
+            st.markdown("##### 👇 Cliquer sur une ligne ci-dessus pour sélectionner le lot")
+            
+            # Utiliser on_select si disponible, sinon boutons par ligne
+            for idx, row in df_display.iterrows():
+                col_btn, col_info = st.columns([1, 4])
                 
-                success, message = create_job_lavage(
-                    lot_data['lot_id'],
-                    lot_data['emplacement_id'],
-                    quantite,
-                    poids_brut,
-                    date_prevue,
-                    ligne_code,
-                    capacite,
-                    notes
-                )
+                with col_btn:
+                    if st.button(f"✅ Sélectionner", key=f"select_lot_{idx}", use_container_width=True):
+                        st.session_state['selected_lot_idx'] = idx
+                        st.session_state['show_create_form'] = True
+                        st.rerun()
                 
-                if success:
-                    st.success(message)
-                    st.balloons()
-                    st.rerun()
-                else:
-                    st.error(message)
+                with col_info:
+                    st.text(f"{row['Code Lot']} - {row['Variété']} - {row['Site']}/{row['Emplacement']} ({int(row['Pallox'])} pallox)")
+            
+            # Formulaire de création si lot sélectionné
+            if st.session_state.get('show_create_form', False) and 'selected_lot_idx' in st.session_state:
+                st.markdown("---")
+                st.markdown("### 📋 Créer le Job de Lavage")
+                
+                idx = st.session_state['selected_lot_idx']
+                lot_data = lots_dispo.iloc[idx]
+                
+                # Infos lot
+                st.info(f"**Lot sélectionné** : {lot_data['code_lot_interne']} - {lot_data['variete']} - {lot_data['site_stockage']}/{lot_data['emplacement_stockage']}")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    quantite = st.slider(
+                        "Quantité à laver (pallox) *",
+                        min_value=1,
+                        max_value=int(lot_data['nombre_unites']),
+                        value=min(5, int(lot_data['nombre_unites'])),
+                        key="quantite_create"
+                    )
+                    
+                    date_prevue = st.date_input(
+                        "Date prévue *",
+                        value=datetime.now().date(),
+                        key="date_prevue_create"
+                    )
+                
+                with col2:
+                    lignes = get_lignes_lavage()
+                    ligne_options = [f"{l['code']} - {l['libelle']} ({l['capacite_th']}T/h)" for l in lignes]
+                    selected_ligne = st.selectbox("Ligne de lavage *", options=ligne_options, key="ligne_create")
+                    
+                    # Calculer poids et temps
+                    if lot_data['type_conditionnement'] == 'Pallox':
+                        poids_unitaire = 1900
+                    elif lot_data['type_conditionnement'] == 'Petit Pallox':
+                        poids_unitaire = 1200
+                    elif lot_data['type_conditionnement'] == 'Big Bag':
+                        poids_unitaire = 1600
+                    else:
+                        poids_unitaire = 1900
+                    
+                    poids_brut = quantite * poids_unitaire
+                    
+                    ligne_idx = ligne_options.index(selected_ligne)
+                    capacite = float(lignes[ligne_idx]['capacite_th'])
+                    temps_estime = (poids_brut / 1000) / capacite
+                    
+                    st.metric("Poids brut à laver", f"{poids_brut:,.0f} kg ({poids_brut/1000:.1f} T)")
+                    st.metric("Temps estimé", f"{temps_estime:.1f} heures")
+                
+                notes = st.text_area("Notes (optionnel)", key="notes_create_form")
+                
+                col_save, col_cancel = st.columns(2)
+                
+                with col_save:
+                    if st.button("✅ Créer le Job", type="primary", use_container_width=True, key="btn_create_job"):
+                        ligne_code = lignes[ligne_idx]['code']
+                        
+                        success, message = create_job_lavage(
+                            lot_data['lot_id'],
+                            lot_data['emplacement_id'],
+                            quantite,
+                            poids_brut,
+                            date_prevue,
+                            ligne_code,
+                            capacite,
+                            notes
+                        )
+                        
+                        if success:
+                            st.success(message)
+                            st.balloons()
+                            st.session_state.pop('show_create_form', None)
+                            st.session_state.pop('selected_lot_idx', None)
+                            st.rerun()
+                        else:
+                            st.error(message)
+                
+                with col_cancel:
+                    if st.button("❌ Annuler", use_container_width=True, key="btn_cancel_create"):
+                        st.session_state.pop('show_create_form', None)
+                        st.session_state.pop('selected_lot_idx', None)
+                        st.rerun()
+        else:
+            st.warning(f"⚠️ Aucun lot disponible avec les filtres : {filtre_variete} / {filtre_site}")
     else:
         st.warning("⚠️ Aucun lot BRUT disponible pour lavage")
 
