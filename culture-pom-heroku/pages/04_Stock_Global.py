@@ -125,9 +125,16 @@ def get_stock_par_site():
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=[
-                'Site', 'Nb Emplacements', 'Nb Lots', 'Total Pallox', 'Poids (kg)'
-            ])
+            # Créer DataFrame directement depuis les dictionnaires
+            df = pd.DataFrame(rows)
+            # Renommer les colonnes
+            df = df.rename(columns={
+                'site_stockage': 'Site',
+                'nb_emplacements': 'Nb Emplacements',
+                'nb_lots': 'Nb Lots',
+                'total_pallox': 'Total Pallox',
+                'total_poids_kg': 'Poids (kg)'
+            })
             # Conversion poids en tonnes
             df['Poids (T)'] = df['Poids (kg)'] / 1000
             df = df.drop(columns=['Poids (kg)'])
@@ -168,9 +175,16 @@ def get_stock_par_variete():
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=[
-                'Variété', 'Nb Lots', 'Nb Emplacements', 'Total Pallox', 'Poids (kg)'
-            ])
+            # Créer DataFrame directement depuis les dictionnaires
+            df = pd.DataFrame(rows)
+            # Renommer les colonnes
+            df = df.rename(columns={
+                'variete': 'Variété',
+                'nb_lots': 'Nb Lots',
+                'nb_emplacements': 'Nb Emplacements',
+                'total_pallox': 'Total Pallox',
+                'total_poids_kg': 'Poids (kg)'
+            })
             # Conversion poids en tonnes
             df['Poids (T)'] = df['Poids (kg)'] / 1000
             df = df.drop(columns=['Poids (kg)'])
@@ -211,9 +225,16 @@ def get_stock_par_producteur():
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=[
-                'Producteur', 'Nb Lots', 'Nb Emplacements', 'Total Pallox', 'Poids (kg)'
-            ])
+            # Créer DataFrame directement depuis les dictionnaires
+            df = pd.DataFrame(rows)
+            # Renommer les colonnes
+            df = df.rename(columns={
+                'producteur': 'Producteur',
+                'nb_lots': 'Nb Lots',
+                'nb_emplacements': 'Nb Emplacements',
+                'total_pallox': 'Total Pallox',
+                'total_poids_kg': 'Poids (kg)'
+            })
             # Conversion poids en tonnes
             df['Poids (T)'] = df['Poids (kg)'] / 1000
             df = df.drop(columns=['Poids (kg)'])
