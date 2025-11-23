@@ -1164,5 +1164,27 @@ if not df.empty:
 
 else:
     st.warning("⚠️ Aucun lot trouvé")
+    
+# ============================================================================
+# VOIR EMPLACEMENTS DÉTAILLÉS
+# ============================================================================
 
+st.markdown("---")
+st.subheader("🔍 Voir Emplacements Détaillés")
+
+if not df.empty:
+    lot_options = [f"{row['id']} - {row['code_lot_interne']} ({row['nom_usage']})" 
+                   for _, row in df.iterrows()]
+    
+    selected_lot = st.selectbox(
+        "Sélectionner un lot",
+        lot_options,
+        key="select_lot_emplacements"
+    )
+    
+    if st.button("👁️ Voir les Emplacements", use_container_width=True, type="primary"):
+        lot_id = int(selected_lot.split(" - ")[0])
+        st.query_params['lot_id'] = lot_id
+        st.switch_page("pages/03_Emplacements.py")
+        
 show_footer()
