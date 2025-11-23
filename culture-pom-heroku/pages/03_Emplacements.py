@@ -168,6 +168,7 @@ def get_lot_emplacements(lot_id):
             nombre_unites,
             poids_total_kg,
             type_stock,
+            type_conditionnement,
             is_active,
             created_at,
             updated_at
@@ -184,7 +185,7 @@ def get_lot_emplacements(lot_id):
         if rows:
             df = pd.DataFrame(rows, columns=[
                 'id', 'site_stockage', 'emplacement_stockage', 
-                'nombre_unites', 'poids_total_kg', 'type_stock',
+                'nombre_unites', 'poids_total_kg', 'type_stock', 'type_conditionnement',
                 'is_active', 'created_at', 'updated_at'
             ])
             return df
@@ -399,7 +400,7 @@ def delete_emplacement(emplacement_id):
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
-def transfer_emplacement(emplacement_source_id, site_destination, emplacement_destination, quantite_transfert, poids_transfert):
+def transfer_emplacement(emplacement_source_id, site_destination, emplacement_destination, quantite_transfert, poids_transfert, type_conditionnement=None):
     """Transfère une quantité de pallox d'un emplacement vers un autre"""
     try:
         conn = get_connection()
@@ -407,7 +408,7 @@ def transfer_emplacement(emplacement_source_id, site_destination, emplacement_de
         
         # Récupérer l'emplacement source
         cursor.execute("""
-            SELECT lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock
+            SELECT lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock, type_conditionnement
             FROM stock_emplacements 
             WHERE id = %s AND is_active = TRUE
         """, (emplacement_source_id,))
@@ -452,6 +453,9 @@ def transfer_emplacement(emplacement_source_id, site_destination, emplacement_de
         
         destination = cursor.fetchone()
         
+        # Utiliser type_conditionnement du formulaire ou celui de la source
+        type_cond_final = type_conditionnement if type_conditionnement else source.get('type_conditionnement')
+        
         if destination:
             # Augmenter l'emplacement destination existant
             new_nb_dest = destination['nombre_unites'] + quantite_transfert
@@ -466,9 +470,9 @@ def transfer_emplacement(emplacement_source_id, site_destination, emplacement_de
             # Créer nouvel emplacement destination
             cursor.execute("""
                 INSERT INTO stock_emplacements
-                (lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock, is_active, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """, (source['lot_id'], site_destination, emplacement_destination, quantite_transfert, poids_transfert, source['type_stock']))
+                (lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock, type_conditionnement, is_active, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, (source['lot_id'], site_destination, emplacement_destination, quantite_transfert, poids_transfert, source['type_stock'], type_cond_final))
         
         # 3. Enregistrer le mouvement
         description = f"Transfert {source['site_stockage']}/{source['emplacement_stockage']} → {site_destination}/{emplacement_destination}"
@@ -634,13 +638,13 @@ for lot_data in lots_data:
         col_add, col_space = st.columns([1, 3])
         
         with col_add:
-            if st.button(f"➕ Ajouter Emplacement", key=f"btn_add_empl_{lot_data['lot_id']}", use_container_width=True, type="primary"):
+            if st.button(f"➕ Ajouter du stock sur le lot", key=f"btn_add_empl_{lot_data['lot_id']}", use_container_width=True, type="primary"):
                 st.session_state[f'show_add_form_{lot_data["lot_id"]}'] = not st.session_state.get(f'show_add_form_{lot_data["lot_id"]}', False)
                 st.rerun()
         
         # ⭐ FORMULAIRE AJOUT EMPLACEMENT
         if st.session_state.get(f'show_add_form_{lot_data["lot_id"]}', False):
-            st.markdown("#### ➕ Nouvel Emplacement")
+            st.markdown("#### ➕ Ajouter du stock sur le lot")
             
             # Charger les sites disponibles
             sites_disponibles = get_sites_stockage()
@@ -734,7 +738,8 @@ for lot_data in lots_data:
         
         # Tableau emplacements
         if not emplacements_df.empty:
-            display_df = emplacements_df[['site_stockage', 'emplacement_stockage', 'nombre_unites', 'poids_total_kg', 'type_stock']].copy()
+            # Afficher : Site, Emplacement, Pallox, Type conditionnement, Poids, Type stock
+            display_df = emplacements_df[['site_stockage', 'emplacement_stockage', 'nombre_unites', 'type_conditionnement', 'poids_total_kg', 'type_stock']].copy()
             
             # Formatter poids
             if 'poids_total_kg' in display_df.columns:
@@ -743,8 +748,8 @@ for lot_data in lots_data:
                 )
                 display_df = display_df.drop('poids_total_kg', axis=1)
             
-            # Renommer colonnes
-            display_df.columns = ['Site', 'Emplacement', 'Pallox', 'Poids', 'Type']
+            # Renommer colonnes - Site, Emplacement, Pallox, Type Cond., Poids, Type Stock
+            display_df.columns = ['Site', 'Emplacement', 'Pallox', 'Type Cond.', 'Poids', 'Type']
             
             # Afficher tableau
             st.dataframe(
@@ -871,6 +876,14 @@ for lot_data in lots_data:
                             options=[""] + sites_disponibles,
                             key=f"transfer_site_{lot_data['lot_id']}"
                         )
+                        
+                        # Type de conditionnement (même logique que ajout)
+                        transfer_type_conditionnement = st.selectbox(
+                            "Type de conditionnement *",
+                            options=["", "Pallox", "Petit Pallox", "Big Bag"],
+                            key=f"transfer_type_cond_{lot_data['lot_id']}"
+                        )
+                        
                         transfer_quantite = st.number_input(
                             "Quantité à transférer (pallox) *",
                             min_value=1,
@@ -893,35 +906,42 @@ for lot_data in lots_data:
                             options=empl_dest_options,
                             key=f"transfer_empl_{lot_data['lot_id']}"
                         )
-                        transfer_poids = st.number_input(
-                            "Poids à transférer (kg) *",
-                            min_value=0.0,
-                            max_value=float(empl_data['poids_total_kg']),
-                            value=min(1000.0, float(empl_data['poids_total_kg'])),
-                            step=100.0,
-                            key=f"transfer_poids_{lot_data['lot_id']}"
-                        )
+                        
+                        # Calcul automatique du poids total selon type conditionnement
+                        transfer_poids_unitaire = 0
+                        if transfer_type_conditionnement == "Pallox":
+                            transfer_poids_unitaire = 1900
+                        elif transfer_type_conditionnement == "Petit Pallox":
+                            transfer_poids_unitaire = 1200
+                        elif transfer_type_conditionnement == "Big Bag":
+                            transfer_poids_unitaire = 1600
+                        
+                        transfer_poids_calcule = transfer_poids_unitaire * transfer_quantite
+                        
+                        # Afficher le poids calculé (non éditable)
+                        st.metric("Poids à transférer", f"{transfer_poids_calcule} kg")
                     
                     col_save, col_cancel = st.columns(2)
                     
                     with col_save:
                         if st.button("🚚 Transférer", key=f"btn_save_transfer_{lot_data['lot_id']}", use_container_width=True, type="primary"):
                             # Validation
-                            if not transfer_site or not transfer_emplacement:
-                                st.error("❌ Site et emplacement destination sont obligatoires")
-                            elif transfer_quantite <= 0 or transfer_poids <= 0:
-                                st.error("❌ Quantité et poids doivent être > 0")
+                            if not transfer_site or not transfer_emplacement or not transfer_type_conditionnement:
+                                st.error("❌ Site, emplacement et type de conditionnement sont obligatoires")
+                            elif transfer_quantite <= 0:
+                                st.error("❌ Quantité doit être > 0")
                             elif transfer_quantite > empl_data['nombre_unites']:
                                 st.error(f"❌ Quantité trop élevée (max: {int(empl_data['nombre_unites'])} pallox)")
-                            elif transfer_poids > empl_data['poids_total_kg']:
-                                st.error(f"❌ Poids trop élevé (max: {empl_data['poids_total_kg']:.1f} kg)")
+                            elif transfer_poids_calcule > empl_data['poids_total_kg']:
+                                st.error(f"❌ Poids calculé trop élevé (max: {empl_data['poids_total_kg']:.1f} kg)")
                             else:
                                 success, message = transfer_emplacement(
                                     selected_empl,
                                     transfer_site,
                                     transfer_emplacement,
                                     transfer_quantite,
-                                    transfer_poids
+                                    transfer_poids_calcule,
+                                    transfer_type_conditionnement
                                 )
                                 
                                 if success:
