@@ -111,20 +111,17 @@ def get_lot_info(lot_id):
             l.id,
             l.code_lot_interne,
             l.nom_usage,
-            v.nom_variete,
+            COALESCE(v.nom_variete, l.code_variete) as nom_variete,
             p.nom as nom_producteur,
             l.date_entree_stock,
             l.nombre_unites,
             l.poids_total_brut_kg,
             l.valeur_lot_euro,
-            s.libelle as statut_libelle,
-            s.couleur_hexa as statut_couleur,
-            s.icone_emoji as statut_icone,
+            l.statut as statut_libelle,
             COALESCE((CURRENT_DATE - l.date_entree_stock::DATE), 0) as age_jours
         FROM lots_bruts l
         LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
         LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
-        LEFT JOIN ref_statuts s ON l.statut_id = s.id
         WHERE l.id = %s
         """
         
@@ -145,8 +142,6 @@ def get_lot_info(lot_id):
                 'poids_total_brut_kg': result['poids_total_brut_kg'],
                 'valeur_lot_euro': result['valeur_lot_euro'],
                 'statut_libelle': result['statut_libelle'],
-                'statut_couleur': result['statut_couleur'],
-                'statut_icone': result['statut_icone'],
                 'age_jours': int(result['age_jours']) if result['age_jours'] else 0
             }
         return None
@@ -630,7 +625,10 @@ for lot_data in lots_data:
             st.write(f"**Âge** : {lot_info['age_jours']} jours")
         
         with col2:
-            statut_display = f"{lot_info['statut_icone']} {lot_info['statut_libelle']}" if lot_info['statut_icone'] else lot_info['statut_libelle'] or "N/A"
+            statut_display = lot_info['statut_libelle'] or "N/A"
+            # Ajouter emoji selon le statut
+            if statut_display == "EN_STOCK":
+                statut_display = "📦 En stock"
             st.write(f"**Statut** : {statut_display}")
             valeur_display = f"{lot_info['valeur_lot_euro']:,.0f} €" if lot_info['valeur_lot_euro'] else "N/A"
             st.write(f"**Valeur** : {valeur_display}")
