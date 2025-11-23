@@ -204,10 +204,14 @@ def get_lot_mouvements(lot_id, limit=10):
         query = """
         SELECT 
             type_mouvement,
-            site_avant,
-            site_apres,
-            quantite_mouvement,
-            description,
+            site_origine,
+            emplacement_origine,
+            site_destination,
+            emplacement_destination,
+            quantite,
+            type_conditionnement,
+            poids_kg,
+            notes,
             created_at,
             created_by
         FROM stock_mouvements
@@ -222,10 +226,7 @@ def get_lot_mouvements(lot_id, limit=10):
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=[
-                'type_mouvement', 'site_avant', 'site_apres',
-                'quantite_mouvement', 'description', 'created_at', 'created_by'
-            ])
+            df = pd.DataFrame(rows)
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -1009,24 +1010,31 @@ for lot_data in lots_data:
                     'TRANSFERT_ARRIVEE': '📥 Arrivée',
                     'DIVISION_LOT': '✂️ Division',
                     'LAVAGE': '🧼 Lavage',
+                    'LAVAGE_BRUT_REDUIT': '🧼 Lavage (Brut réduit)',
+                    'LAVAGE_CREATION_LAVE': '✨ Lavage (Création Lavé)',
+                    'LAVAGE_CREATION_GRENAILLES': '🌾 Lavage (Création Grenailles)',
                     'AJUSTEMENT_MANUEL': '✏️ Ajustement',
                     'VENTE': '💰 Vente',
                     'PERTE': '⚠️ Perte'
                 }
                 display_mouvements['Type'] = display_mouvements['type_mouvement'].map(type_labels)
                 
+                # Trajet : origine → destination
                 display_mouvements['Trajet'] = display_mouvements.apply(
-                    lambda row: f"{row['site_avant'] or '-'} → {row['site_apres'] or '-'}",
+                    lambda row: f"{row['site_origine'] or '-'}/{row['emplacement_origine'] or '-'} → {row['site_destination'] or '-'}/{row['emplacement_destination'] or '-'}",
                     axis=1
                 )
                 
-                final_df = display_mouvements[['Date', 'Type', 'Trajet']]
+                # Info : notes (contient numéro de job pour lavages)
+                display_mouvements['Info'] = display_mouvements['notes'].fillna('-')
+                
+                final_df = display_mouvements[['Date', 'Type', 'Trajet', 'Info']]
                 
                 st.dataframe(
                     final_df,
                     use_container_width=True,
                     hide_index=True,
-                    height=150
+                    height=200
                 )
             else:
                 st.caption("Aucun mouvement enregistré")
