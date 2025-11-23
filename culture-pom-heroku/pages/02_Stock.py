@@ -983,19 +983,34 @@ if not df.empty:
         key="stock_editor"
     )
     
-    # ⭐ DÉTECTION CHANGEMENTS (Auto-save)
+    # ⭐ DÉTECTION CHANGEMENTS (Auto-save) - VERSION CORRIGÉE
     changes_detected = False
     try:
-        # Comparer seulement les colonnes communes (exclure 'id' si présent)
-        common_cols = [col for col in st.session_state.original_stock_df.columns if col in edited_df.columns and col != 'id']
-        if not st.session_state.original_stock_df[common_cols].equals(edited_df[common_cols]):
-            changes_detected = True
-    except:
-        pass
+        if 'original_stock_df' in st.session_state:
+            # Colonnes éditables (celles qui peuvent vraiment changer)
+            editable_cols = ['nom_usage', 'nom_variete', 'nom_producteur', 'site_stockage', 
+                           'emplacement_stockage', 'nombre_unites', 'poids_unitaire_kg', 
+                           'calibre_min', 'calibre_max', 'type_conditionnement', 
+                           'prix_achat_euro_tonne', 'statut']
+            
+            # Vérifier colonne par colonne
+            for col in editable_cols:
+                if col in st.session_state.original_stock_df.columns and col in edited_df.columns:
+                    # Comparer les valeurs (en ignorant NaN)
+                    orig_vals = st.session_state.original_stock_df[col].fillna('')
+                    edit_vals = edited_df[col].fillna('')
+                    
+                    if not orig_vals.equals(edit_vals):
+                        changes_detected = True
+                        break
+    except Exception as e:
+        # Debug : afficher l'erreur
+        st.caption(f"Debug détection: {str(e)}")
     
     # ⭐ ALERTE si modifications non sauvegardées
     if changes_detected:
-        st.warning("⚠️ **Modifications non sauvegardées détectées** - Pensez à cliquer sur 💾 Enregistrer pour ne pas perdre vos modifications")
+        st.error("🚫 **MODIFICATIONS NON SAUVEGARDÉES !**")
+        st.warning("⚠️ Vous avez modifié des données. **Cliquez sur 💾 Enregistrer** avant de quitter cette page ou vous perdrez vos modifications !")
     
     # Boutons
     col1, col2 = st.columns([1, 5])
