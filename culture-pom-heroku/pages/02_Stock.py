@@ -409,7 +409,7 @@ if st.session_state.get('show_add_form', False):
     types_cond_list = get_unique_values_from_db("lots_bruts", "type_conditionnement")
     
     # ⭐ Afficher champs obligatoires
-    st.info("📌 Champs obligatoires : **Code Lot Interne, Nom Usage, Variété, Producteur, Site, Emplacement, Nombre Unités, Poids Unitaire**")
+    st.info("📌 Champs obligatoires : **Code Lot Interne, Nom Usage, Variété, Producteur, Site, Emplacement, Nombre Unités, Poids Unitaire, Tare Achat**")
     
     # ⭐ Initialiser session_state pour formulaire
     if 'new_lot_data' not in st.session_state:
@@ -493,21 +493,24 @@ if st.session_state.get('show_add_form', False):
             help="Défaut: 1900 kg (pallox standard)"
         )
         
-        # Type conditionnement
-        type_cond_options = [""] + types_cond_list + ["➕ Saisir nouvelle valeur"]
-        type_cond_selected = st.selectbox(
-            "Type Conditionnement",
-            options=type_cond_options,
-            key="add_type_cond_select"
+        # Tare achat - OBLIGATOIRE (défaut 22%)
+        st.session_state.new_lot_data['tare_achat_pct'] = st.number_input(
+            "Tare Achat (%) *",
+            min_value=0.0,
+            max_value=100.0,
+            value=22.0,
+            step=0.5,
+            key="add_tare_achat",
+            help="Tare d'achat en % (défaut: 22%)"
         )
         
-        if type_cond_selected == "➕ Saisir nouvelle valeur":
-            st.session_state.new_lot_data['type_conditionnement'] = st.text_input(
-                "Nouveau type",
-                key="add_type_cond_new"
-            )
-        else:
-            st.session_state.new_lot_data['type_conditionnement'] = type_cond_selected
+        # Type conditionnement - Dropdown depuis DB
+        type_cond_options = [""] + types_cond_list
+        st.session_state.new_lot_data['type_conditionnement'] = st.selectbox(
+            "Type Conditionnement",
+            options=type_cond_options,
+            key="add_type_cond"
+        )
         
         # Calibres
         st.session_state.new_lot_data['calibre_min'] = st.number_input(
@@ -570,6 +573,8 @@ if st.session_state.get('show_add_form', False):
                 missing_fields.append("Nombre Unités")
             if not st.session_state.new_lot_data.get('poids_unitaire_kg') or st.session_state.new_lot_data.get('poids_unitaire_kg') == 0:
                 missing_fields.append("Poids Unitaire")
+            if st.session_state.new_lot_data.get('tare_achat_pct') is None:
+                missing_fields.append("Tare Achat")
             
             if missing_fields:
                 st.error(f"❌ Champs obligatoires manquants : {', '.join(missing_fields)}")
@@ -702,6 +707,13 @@ if not df.empty:
     with col_button:
         if st.button("➕ Ajouter", use_container_width=True, type="primary"):
             st.session_state.show_add_form = not st.session_state.get('show_add_form', False)
+            if st.session_state.show_add_form:
+                # Forcer scroll en haut avec JavaScript
+                st.markdown("""
+                <script>
+                    window.parent.document.querySelector('section.main').scrollTo(0, 0);
+                </script>
+                """, unsafe_allow_html=True)
             st.rerun()
     
     # Colonnes à afficher
