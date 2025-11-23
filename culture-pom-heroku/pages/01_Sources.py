@@ -168,6 +168,15 @@ def get_varietes_with_existing(df, column_name):
     existing = df[column_name].dropna().unique().tolist() if column_name in df.columns else []
     return sorted(list(set(existing + active)))
 
+def get_unique_values_from_column(df, column_name):
+    """Récupère toutes les valeurs uniques d'une colonne depuis le dataframe"""
+    if column_name not in df.columns:
+        return []
+    values = df[column_name].dropna().unique().tolist()
+    # Filtrer les chaînes vides
+    values = [str(v) for v in values if str(v).strip() != '']
+    return sorted(list(set(values)))
+
 # ✅ TABLES_CONFIG CORRIGÉ - TOUTES LES COLONNES EXACTES
 TABLES_CONFIG = {
     "Variétés": {
@@ -232,35 +241,38 @@ TABLES_CONFIG = {
         "required_fields": ["code", "libelle"]
     },
     
-    "Emballages": {
+    "Code Emballage": {
         "table": "ref_emballages",
-        "columns": ["code_emballage", "atelier", "poids", "nbr_uvc", "type_produit", "sur_emballage"],
-        "hidden_columns": ["notes", "is_active", "poids_unitaire", "unite_poids"],
+        "columns": ["code_emballage", "atelier", "poids_unitaire", "unite_poids", "nbr_uvc", "type_produit", "sur_emballage"],
+        "hidden_columns": ["notes", "is_active"],
         "primary_key": "id",
-        "editable": ["atelier", "nbr_uvc", "type_produit", "sur_emballage"],
+        "editable": ["atelier", "poids_unitaire", "unite_poids", "nbr_uvc", "type_produit", "sur_emballage"],
         "has_updated_at": True,
-        "filter_columns": ["poids", "atelier", "type_produit"],
-        "required_fields": ["code_emballage"],
-        "calculated_columns": {
-            "poids": ["poids_unitaire", "unite_poids"]
-        }
+        "dropdown_fields": {
+            "atelier": "dynamic_from_db",
+            "unite_poids": "dynamic_from_db",
+            "type_produit": "dynamic_from_db",
+            "sur_emballage": "dynamic_from_db"
+        },
+        "filter_columns": ["atelier", "type_produit"],
+        "required_fields": ["code_emballage"]
     },
     
     "Produits Commerciaux": {
         "table": "ref_produits_commerciaux",
-        "columns": ["code_produit", "marque", "libelle", "poids", "type_produit", "code_variete"],
-        "hidden_columns": ["is_bio", "notes", "is_active", "poids_unitaire", "unite_poids"],
+        "columns": ["code_produit", "marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "code_variete"],
+        "hidden_columns": ["is_bio", "notes", "is_active"],
         "primary_key": "id",
-        "editable": ["marque", "libelle", "type_produit", "code_variete"],
+        "editable": ["marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "code_variete"],
         "has_updated_at": True,
         "dropdown_fields": {
+            "marque": "dynamic_from_db",
+            "unite_poids": "dynamic_from_db",
+            "type_produit": "dynamic_from_db",
             "code_variete": "dynamic_varietes"
         },
-        "filter_columns": ["poids", "marque", "type_produit"],
-        "required_fields": ["code_produit", "marque", "libelle"],
-        "calculated_columns": {
-            "poids": ["poids_unitaire", "unite_poids"]
-        }
+        "filter_columns": ["marque", "type_produit"],
+        "required_fields": ["code_produit", "marque", "libelle"]
     }
 }
 
@@ -276,21 +288,18 @@ def load_table_data(table_name, show_inactive=False):
         if "hidden_columns" in config:
             all_columns.extend(config["hidden_columns"])
         
-        # ⭐ Retirer les colonnes calculées de la requête SQL
-        sql_columns = [col for col in all_columns if col not in config.get("calculated_columns", {})]
-        
-        columns_str = ", ".join(sql_columns)
+        columns_str = ", ".join(all_columns)
         
         # ⭐ Filtrer par is_active si show_inactive = False
         where_clause = ""
-        if not show_inactive and 'is_active' in sql_columns:
+        if not show_inactive and 'is_active' in all_columns:
             where_clause = " WHERE is_active = TRUE"
         
         query = f"SELECT {config['primary_key']}, {columns_str} FROM {config['table']}{where_clause} ORDER BY {config['primary_key']}"
         cursor.execute(query)
         
         rows = cursor.fetchall()
-        columns = [config['primary_key']] + sql_columns
+        columns = [config['primary_key']] + all_columns
         cursor.close()
         conn.close()
         
@@ -301,17 +310,6 @@ def load_table_data(table_name, show_inactive=False):
             df['departement'] = df['code_postal'].apply(
                 lambda x: str(x)[:2] if pd.notna(x) and str(x).strip() != '' else None
             )
-        
-        # ⭐ CALCULER colonnes Poids (poids_unitaire + unite_poids)
-        if "calculated_columns" in config and "poids" in config["calculated_columns"]:
-            source_cols = config["calculated_columns"]["poids"]
-            if all(col in df.columns for col in source_cols):
-                df['poids'] = df.apply(
-                    lambda row: f"{row[source_cols[0]]} {row[source_cols[1]]}" 
-                    if pd.notna(row[source_cols[0]]) and pd.notna(row[source_cols[1]]) 
-                    else "", 
-                    axis=1
-                )
         
         # ⭐ Ne garder que les colonnes visibles pour l'affichage
         display_columns = [config['primary_key']] + config['columns']
@@ -358,10 +356,6 @@ def save_changes(table_name, original_df, edited_df):
             
             # Colonnes visibles éditées
             for col in config['editable']:
-                # ⭐ Ignorer colonnes calculées
-                if col in config.get("calculated_columns", {}):
-                    continue
-                    
                 if col not in edited_df.columns or col not in original_df.columns:
                     continue
                 
@@ -561,10 +555,6 @@ if st.session_state.get('show_add_form', False):
     col1, col2 = st.columns(2)
     
     for i, col in enumerate(config['columns']):
-        # ⭐ Ignorer colonnes calculées dans le formulaire
-        if col in config.get("calculated_columns", {}):
-            continue
-            
         # ⭐ Marquer champs obligatoires avec astérisque
         label = col.replace('_', ' ').title()
         if "required_fields" in config and col in config["required_fields"]:
@@ -584,6 +574,9 @@ if st.session_state.get('show_add_form', False):
                         options=options,
                         key=f"add_{col}"
                     )
+                # ⭐ Champ texte libre pour dynamic_from_db (permet nouvelles valeurs)
+                elif field_config == "dynamic_from_db":
+                    st.session_state.new_data[col] = st.text_input(label, key=f"add_{col}")
                 # Dropdown statique
                 else:
                     options = [""] + field_config
@@ -739,7 +732,7 @@ if not df_full.empty:
     if "dropdown_fields" in config:
         full_df_for_dropdown = st.session_state.get(f'full_df_{selected_table}', df_full)
         for field, field_config in config["dropdown_fields"].items():
-            # ⭐ Dropdown dynamique
+            # ⭐ Dropdown dynamique depuis ref_varietes
             if field_config == "dynamic_varietes":
                 varietes = get_varietes_with_existing(full_df_for_dropdown, field)
                 column_config[field] = st.column_config.SelectboxColumn(
@@ -747,6 +740,15 @@ if not df_full.empty:
                     options=varietes,
                     required=False
                 )
+            # ⭐ Dropdown depuis valeurs existantes de la colonne
+            elif field_config == "dynamic_from_db":
+                unique_values = get_unique_values_from_column(full_df_for_dropdown, field)
+                if unique_values:
+                    column_config[field] = st.column_config.SelectboxColumn(
+                        field.replace('_', ' ').title(),
+                        options=unique_values,
+                        required=False
+                    )
             # Dropdown statique
             else:
                 # ⭐ Inclure valeurs existantes aussi pour listes statiques
@@ -767,7 +769,7 @@ if not df_full.empty:
         df,
         use_container_width=True,
         num_rows="fixed",
-        disabled=[config['primary_key']] + list(config.get("calculated_columns", {}).keys()),
+        disabled=[config['primary_key']],
         column_config=column_config if column_config else None,
         key=f"editor_{selected_table}"
     )
