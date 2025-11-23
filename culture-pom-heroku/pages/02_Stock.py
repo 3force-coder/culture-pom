@@ -9,6 +9,22 @@ from auth import is_authenticated, is_admin
 import io
 import streamlit.components.v1 as components
 
+# ⭐ FONCTION SIDEBAR USER INFO
+def show_user_info():
+    """Affiche les infos utilisateur dans la sidebar"""
+    if st.session_state.get('authenticated', False):
+        with st.sidebar:
+            st.markdown("---")
+            st.write(f"👤 {st.session_state.get('name', 'Utilisateur')}")
+            st.caption(f"📧 {st.session_state.get('email', '')}")
+            st.caption(f"🔑 {st.session_state.get('role', 'USER')}")
+            st.markdown("---")
+            
+            if st.button("🚪 Déconnexion", use_container_width=True, key="btn_logout_sidebar"):
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
+                st.rerun()
+
 st.set_page_config(page_title="Stock - Culture Pom", page_icon="📦", layout="wide")
 
 # CSS custom pour réduire FORTEMENT les espacements
@@ -65,6 +81,9 @@ st.markdown("""
 if not is_authenticated():
     st.warning("⚠️ Veuillez vous connecter pour accéder à cette page")
     st.stop()
+
+# ⭐ Afficher bloc utilisateur dans sidebar
+show_user_info()
 
 st.title("📦 Gestion du Stock de Lots")
 st.markdown("---")
@@ -963,6 +982,20 @@ if not df.empty:
         column_config=column_config,
         key="stock_editor"
     )
+    
+    # ⭐ DÉTECTION CHANGEMENTS (Auto-save)
+    changes_detected = False
+    try:
+        # Comparer seulement les colonnes communes (exclure 'id' si présent)
+        common_cols = [col for col in st.session_state.original_stock_df.columns if col in edited_df.columns and col != 'id']
+        if not st.session_state.original_stock_df[common_cols].equals(edited_df[common_cols]):
+            changes_detected = True
+    except:
+        pass
+    
+    # ⭐ ALERTE si modifications non sauvegardées
+    if changes_detected:
+        st.warning("⚠️ **Modifications non sauvegardées détectées** - Pensez à cliquer sur 💾 Enregistrer pour ne pas perdre vos modifications")
     
     # Boutons
     col1, col2 = st.columns([1, 5])
