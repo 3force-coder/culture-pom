@@ -50,6 +50,56 @@ show_user_info()
 # FONCTIONS
 # ============================================================================
 
+def get_sites_stockage():
+    """Récupère la liste des sites de stockage depuis ref_sites_stockage"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        query = """
+        SELECT DISTINCT code_site 
+        FROM ref_sites_stockage 
+        WHERE is_active = TRUE 
+        ORDER BY code_site
+        """
+        
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if rows:
+            return [row['code_site'] for row in rows]
+        return []
+    except Exception as e:
+        st.error(f"❌ Erreur chargement sites : {str(e)}")
+        return []
+
+def get_emplacements_by_site(code_site):
+    """Récupère les emplacements d'un site depuis ref_sites_stockage"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        query = """
+        SELECT code_emplacement, nom_complet
+        FROM ref_sites_stockage 
+        WHERE code_site = %s AND is_active = TRUE 
+        ORDER BY code_emplacement
+        """
+        
+        cursor.execute(query, (code_site,))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if rows:
+            return [(row['code_emplacement'], row['nom_complet']) for row in rows]
+        return []
+    except Exception as e:
+        st.error(f"❌ Erreur chargement emplacements : {str(e)}")
+        return []
+
 def get_lot_info(lot_id):
     """Récupère les informations complètes d'un lot"""
     try:
@@ -542,11 +592,11 @@ for lot_data in lots_data:
     lot_info = lot_data['lot_info']
     emplacements_df = lot_data['emplacements_df']
     
-    # ⭐ EXPANDER POUR CHAQUE LOT
+    # ⭐ EXPANDER POUR CHAQUE LOT - Fermé par défaut pour meilleure lisibilité
     with st.expander(
         f"🔽 {lot_info['code_lot_interne']} - {lot_info['nom_usage']} "
         f"({int(lot_data['total_pallox'])} pallox, {lot_data['total_tonnage']:.1f}T)",
-        expanded=True if len(lots_data) <= 3 else False
+        expanded=False
     ):
         
         # Infos lot (compact - 2 colonnes)
@@ -578,50 +628,71 @@ for lot_data in lots_data:
         if st.session_state.get(f'show_add_form_{lot_data["lot_id"]}', False):
             st.markdown("#### ➕ Nouvel Emplacement")
             
-            col1, col2 = st.columns(2)
+            # Charger les sites disponibles
+            sites_disponibles = get_sites_stockage()
             
-            with col1:
-                new_site = st.text_input("Site de stockage *", key=f"new_site_{lot_data['lot_id']}")
-                new_nombre_unites = st.number_input("Nombre de pallox *", min_value=0, value=0, step=1, key=f"new_nb_{lot_data['lot_id']}")
-            
-            with col2:
-                new_emplacement = st.text_input("Emplacement *", key=f"new_empl_{lot_data['lot_id']}")
-                new_poids = st.number_input("Poids total (kg) *", min_value=0.0, value=0.0, step=100.0, key=f"new_poids_{lot_data['lot_id']}")
-            
-            new_type = st.selectbox(
-                "Type de stock",
-                options=["PRINCIPAL", "SECONDAIRE", "RESERVE"],
-                key=f"new_type_{lot_data['lot_id']}"
-            )
-            
-            col_save, col_cancel = st.columns(2)
-            
-            with col_save:
-                if st.button("💾 Enregistrer", key=f"btn_save_add_{lot_data['lot_id']}", use_container_width=True, type="primary"):
-                    # Validation
-                    if not new_site or not new_emplacement or new_nombre_unites <= 0 or new_poids <= 0:
-                        st.error("❌ Tous les champs obligatoires doivent être remplis avec des valeurs > 0")
+            if not sites_disponibles:
+                st.warning("⚠️ Aucun site de stockage trouvé dans les références. Veuillez d'abord ajouter des sites dans la page Sources.")
+            else:
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    new_site = st.selectbox(
+                        "Site de stockage *",
+                        options=[""] + sites_disponibles,
+                        key=f"new_site_{lot_data['lot_id']}"
+                    )
+                    new_nombre_unites = st.number_input("Nombre de pallox *", min_value=0, value=0, step=1, key=f"new_nb_{lot_data['lot_id']}")
+                
+                with col2:
+                    # Charger emplacements pour le site sélectionné
+                    if new_site:
+                        emplacements_disponibles = get_emplacements_by_site(new_site)
+                        empl_options = [""] + [e[0] for e in emplacements_disponibles]
                     else:
-                        success, message = add_emplacement(
-                            lot_data['lot_id'],
-                            new_site,
-                            new_emplacement,
-                            new_nombre_unites,
-                            new_poids,
-                            new_type
-                        )
-                        
-                        if success:
-                            st.success(message)
-                            st.session_state[f'show_add_form_{lot_data["lot_id"]}'] = False
-                            st.rerun()
+                        empl_options = [""]
+                    
+                    new_emplacement = st.selectbox(
+                        "Emplacement *",
+                        options=empl_options,
+                        key=f"new_empl_{lot_data['lot_id']}"
+                    )
+                    new_poids = st.number_input("Poids total (kg) *", min_value=0.0, value=0.0, step=100.0, key=f"new_poids_{lot_data['lot_id']}")
+                
+                new_type = st.selectbox(
+                    "Type de stock",
+                    options=["PRINCIPAL", "SECONDAIRE", "RESERVE"],
+                    key=f"new_type_{lot_data['lot_id']}"
+                )
+                
+                col_save, col_cancel = st.columns(2)
+                
+                with col_save:
+                    if st.button("💾 Enregistrer", key=f"btn_save_add_{lot_data['lot_id']}", use_container_width=True, type="primary"):
+                        # Validation
+                        if not new_site or not new_emplacement or new_nombre_unites <= 0 or new_poids <= 0:
+                            st.error("❌ Tous les champs obligatoires doivent être remplis avec des valeurs > 0")
                         else:
-                            st.error(message)
-            
-            with col_cancel:
-                if st.button("❌ Annuler", key=f"btn_cancel_add_{lot_data['lot_id']}", use_container_width=True):
-                    st.session_state[f'show_add_form_{lot_data["lot_id"]}'] = False
-                    st.rerun()
+                            success, message = add_emplacement(
+                                lot_data['lot_id'],
+                                new_site,
+                                new_emplacement,
+                                new_nombre_unites,
+                                new_poids,
+                                new_type
+                            )
+                            
+                            if success:
+                                st.success(message)
+                                st.session_state[f'show_add_form_{lot_data["lot_id"]}'] = False
+                                st.rerun()
+                            else:
+                                st.error(message)
+                
+                with col_cancel:
+                    if st.button("❌ Annuler", key=f"btn_cancel_add_{lot_data['lot_id']}", use_container_width=True):
+                        st.session_state[f'show_add_form_{lot_data["lot_id"]}'] = False
+                        st.rerun()
             
             st.markdown("---")
         
@@ -753,10 +824,17 @@ for lot_data in lots_data:
                     
                     st.info(f"📍 Source : **{empl_data['site_stockage']} / {empl_data['emplacement_stockage']}** - Disponible : {int(empl_data['nombre_unites'])} pallox ({empl_data['poids_total_kg']:.1f} kg)")
                     
+                    # Charger les sites disponibles
+                    sites_disponibles = get_sites_stockage()
+                    
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        transfer_site = st.text_input("Site destination *", key=f"transfer_site_{lot_data['lot_id']}")
+                        transfer_site = st.selectbox(
+                            "Site destination *",
+                            options=[""] + sites_disponibles,
+                            key=f"transfer_site_{lot_data['lot_id']}"
+                        )
                         transfer_quantite = st.number_input(
                             "Quantité à transférer (pallox) *",
                             min_value=1,
@@ -767,7 +845,18 @@ for lot_data in lots_data:
                         )
                     
                     with col2:
-                        transfer_emplacement = st.text_input("Emplacement destination *", key=f"transfer_empl_{lot_data['lot_id']}")
+                        # Charger emplacements pour le site destination sélectionné
+                        if transfer_site:
+                            emplacements_dest = get_emplacements_by_site(transfer_site)
+                            empl_dest_options = [""] + [e[0] for e in emplacements_dest]
+                        else:
+                            empl_dest_options = [""]
+                        
+                        transfer_emplacement = st.selectbox(
+                            "Emplacement destination *",
+                            options=empl_dest_options,
+                            key=f"transfer_empl_{lot_data['lot_id']}"
+                        )
                         transfer_poids = st.number_input(
                             "Poids à transférer (kg) *",
                             min_value=0.0,
