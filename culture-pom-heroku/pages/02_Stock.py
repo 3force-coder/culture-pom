@@ -399,6 +399,135 @@ def delete_lot(lot_id):
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
+def recalculate_lot_values():
+    """Recalcule les valeurs calculées pour tous les lots actifs"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Récupérer tous les lots actifs avec données nécessaires
+        query = """
+            SELECT 
+                id, 
+                nombre_unites, 
+                poids_unitaire_kg, 
+                tare_achat_pct, 
+                prix_achat_euro_tonne,
+                date_entree_stock
+            FROM lots_bruts 
+            WHERE is_active = TRUE
+        """
+        cursor.execute(query)
+        lots = cursor.fetchall()
+        
+        updates = 0
+        today = datetime.now().date()
+        
+        for lot in lots:
+            lot_id = lot['id']
+            nombre_unites = lot['nombre_unites'] or 0
+            poids_unitaire = lot['poids_unitaire_kg'] or 0
+            tare_pct = lot['tare_achat_pct'] or 0
+            prix_achat = lot['prix_achat_euro_tonne'] or 0
+            date_entree = lot['date_entree_stock']
+            
+            # ⭐ CALCUL 1 : Poids total brut
+            poids_total_brut = nombre_unites * poids_unitaire
+            
+            # ⭐ CALCUL 2 : Valeur lot (avec tare)
+            # Formule : (poids_brut / 1000) × (1 - tare/100) × prix
+            poids_tonnes = poids_total_brut / 1000
+            valeur_lot = poids_tonnes * (1 - tare_pct / 100) * prix_achat
+            
+            # ⭐ CALCUL 3 : Âge en jours
+            if date_entree:
+                age_jours = (today - date_entree).days
+            else:
+                age_jours = None
+            
+            # Mise à jour
+            update_query = """
+                UPDATE lots_bruts 
+                SET 
+                    poids_total_brut_kg = %s,
+                    valeur_lot_euro = %s,
+                    age_jours = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """
+            cursor.execute(update_query, (poids_total_brut, valeur_lot, age_jours, lot_id))
+            updates += 1
+        
+        conn.commit()
+        
+        # Enregistrer timestamp du calcul
+        timestamp_query = """
+            UPDATE lots_bruts 
+            SET updated_at = CURRENT_TIMESTAMP 
+            WHERE id = (SELECT MIN(id) FROM lots_bruts WHERE is_active = TRUE)
+        """
+        cursor.execute(timestamp_query)
+        conn.commit()
+        
+        cursor.close()
+        conn.close()
+        
+        return True, f"✅ {updates} lot(s) recalculé(s) avec succès", datetime.now()
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur calcul : {str(e)}", None
+
+def get_last_calculation_time():
+    """Récupère la date de dernière mise à jour des calculs"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        query = """
+            SELECT MAX(updated_at) as last_update 
+            FROM lots_bruts 
+            WHERE is_active = TRUE
+        """
+        cursor.execute(query)
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        
+        if result and result['last_update']:
+            return result['last_update']
+        return None
+        
+    except Exception as e:
+        return None
+
+def format_time_ago(timestamp):
+    """Formate le timestamp en 'il y a X min' ou 'le JJ/MM/YYYY'"""
+    if not timestamp:
+        return "Jamais"
+    
+    now = datetime.now()
+    
+    # Si timezone aware, convertir en naive
+    if timestamp.tzinfo is not None:
+        timestamp = timestamp.replace(tzinfo=None)
+    
+    diff = now - timestamp
+    
+    # Moins de 24h : afficher "il y a X min/h"
+    if diff.days == 0:
+        hours = diff.seconds // 3600
+        minutes = (diff.seconds % 3600) // 60
+        
+        if hours > 0:
+            return f"il y a {hours}h {minutes}min"
+        else:
+            return f"il y a {minutes}min"
+    else:
+        # Plus de 24h : afficher la date
+        return f"le {timestamp.strftime('%d/%m/%Y à %H:%M')}"
+
 # =====================================================
 # CHARGEMENT DES DONNÉES
 # =====================================================
@@ -918,6 +1047,46 @@ if not df.empty:
                         st.rerun()
         else:
             st.info("ℹ️ Aucun lot à supprimer")
+    else:
+        st.warning("⚠️ Fonction réservée aux administrateurs uniquement")
+        st.info("👤 Vous êtes connecté en tant que : **USER**")
+    
+    # ⭐ RECALCUL DES VALEURS (ADMIN UNIQUEMENT)
+    st.markdown("---")
+    st.subheader("🔄 Recalcul des Valeurs Calculées")
+    
+    if is_admin():
+        # Afficher timestamp dernière mise à jour
+        last_calc = get_last_calculation_time()
+        if last_calc:
+            time_ago = format_time_ago(last_calc)
+            st.info(f"📅 Dernière mise à jour : **{time_ago}**")
+        else:
+            st.warning("⚠️ Aucun calcul effectué récemment")
+        
+        st.markdown("""
+        **Champs recalculés** :
+        - **Poids Total Brut** (kg) = Nombre Unités × Poids Unitaire
+        - **Valeur Lot** (€) = (Poids Brut ÷ 1000) × (1 - Tare ÷ 100) × Prix Achat
+        - **Âge** (jours) = Jours écoulés depuis Date Entrée Stock
+        """)
+        
+        col1, col2 = st.columns([1, 5])
+        with col1:
+            if st.button("🔄 Recalculer", use_container_width=True, type="primary", key="btn_recalculate"):
+                with st.spinner("Calcul en cours..."):
+                    success, message, timestamp = recalculate_lot_values()
+                    
+                    if success:
+                        st.success(message)
+                        if timestamp:
+                            time_ago = format_time_ago(timestamp)
+                            st.info(f"📅 Mise à jour : {time_ago}")
+                        st.session_state.pop('original_stock_df', None)
+                        time.sleep(2)
+                        st.rerun()
+                    else:
+                        st.error(message)
     else:
         st.warning("⚠️ Fonction réservée aux administrateurs uniquement")
         st.info("👤 Vous êtes connecté en tant que : **USER**")
