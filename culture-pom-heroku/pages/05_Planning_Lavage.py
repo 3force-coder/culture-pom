@@ -606,8 +606,7 @@ def annuler_job_termine(job_id, raison):
                 tare_reelle_pct = NULL,
                 rendement_pct = NULL,
                 terminated_by = NULL,
-                notes = %s,
-                updated_at = CURRENT_TIMESTAMP
+                notes = %s
             WHERE id = %s
         """, (f"[ANNULÉ par {annule_par}] Raison: {raison}", job_id))
         
@@ -652,8 +651,7 @@ def supprimer_job(job_id):
         cursor.execute("""
             UPDATE lavages_jobs
             SET statut = 'SUPPRIMÉ',
-                notes = COALESCE(notes, '') || ' [SUPPRIMÉ par ' || %s || ']',
-                updated_at = CURRENT_TIMESTAMP
+                notes = COALESCE(notes, '') || ' [SUPPRIMÉ par ' || %s || ']'
             WHERE id = %s
         """, (supprime_par, job_id))
         
