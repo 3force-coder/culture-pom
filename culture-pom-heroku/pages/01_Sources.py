@@ -776,12 +776,29 @@ if not df_full.empty:
         
         st.markdown("---")
     
-    # ⭐ En-tête table avec bouton Ajouter aligné à droite
-    col_title, col_button = st.columns([4, 1])
+    # ⭐ EN-TÊTE avec 3 BOUTONS ALIGNÉS
+    col_title, col_save, col_refresh, col_add = st.columns([3, 1, 1, 1])
+    
     with col_title:
         st.subheader(f"📋 {selected_table}")
-    with col_button:
-        if st.button("➕ Ajouter", use_container_width=True, type="primary"):
+    
+    with col_save:
+        if st.button("💾 Enregistrer", use_container_width=True, type="primary", key="btn_save_top_sources"):
+            success, message = save_changes(selected_table, st.session_state.original_df, edited_df)
+            if success:
+                st.success(message)
+                st.session_state.original_df = edited_df.copy()
+                st.rerun()
+            else:
+                st.error(message)
+    
+    with col_refresh:
+        if st.button("🔄 Actualiser", use_container_width=True, key="btn_refresh_top_sources"):
+            st.session_state.pop('original_df', None)
+            st.rerun()
+    
+    with col_add:
+        if st.button("➕ Ajouter", use_container_width=True, type="primary", key="btn_add_top_sources"):
             st.session_state.show_add_form = not st.session_state.get('show_add_form', False)
             st.rerun()
     
@@ -890,22 +907,6 @@ if not df_full.empty:
             }
         </style>
         """, unsafe_allow_html=True)
-    
-    # Boutons
-    col1, col2 = st.columns([1, 5])
-    with col1:
-        if st.button("💾 Enregistrer", use_container_width=True, type="primary"):
-            success, message = save_changes(selected_table, st.session_state.original_df, edited_df)
-            if success:
-                st.success(message)
-                st.session_state.original_df = edited_df.copy()
-                st.rerun()
-            else:
-                st.error(message)
-    with col2:
-        if st.button("🔄 Actualiser", use_container_width=True):
-            st.session_state.pop('original_df', None)
-            st.rerun()
     
     # Désactivation / Réactivation
     st.markdown("---")
