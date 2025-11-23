@@ -82,7 +82,13 @@ def get_lots_bruts_disponibles():
         conn.close()
         
         if rows:
-            return pd.DataFrame(rows)
+            df = pd.DataFrame(rows)
+            # Convertir colonnes numériques
+            numeric_cols = ['nombre_unites', 'poids_total_kg']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            return df
         return pd.DataFrame()
         
     except Exception as e:
@@ -204,7 +210,13 @@ def get_jobs_by_date(date):
         conn.close()
         
         if rows:
-            return pd.DataFrame(rows)
+            df = pd.DataFrame(rows)
+            # Convertir colonnes numériques
+            numeric_cols = ['quantite_pallox', 'poids_brut_kg', 'temps_estime_heures']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            return df
         return pd.DataFrame()
         
     except Exception as e:
@@ -244,7 +256,13 @@ def get_jobs_by_statut(statut):
         conn.close()
         
         if rows:
-            return pd.DataFrame(rows)
+            df = pd.DataFrame(rows)
+            # Convertir colonnes numériques
+            numeric_cols = ['quantite_pallox', 'poids_brut_kg', 'temps_estime_heures']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            return df
         return pd.DataFrame()
         
     except Exception as e:
@@ -668,6 +686,9 @@ with tab3:
                 'poids_total_kg', 'type_conditionnement'
             ]].copy()
             
+            # Conversion types numériques
+            df_display['poids_total_kg'] = pd.to_numeric(df_display['poids_total_kg'], errors='coerce')
+            df_display['nombre_unites'] = pd.to_numeric(df_display['nombre_unites'], errors='coerce')
             df_display['poids_total_kg'] = df_display['poids_total_kg'].round(0)
             
             df_display = df_display.rename(columns={
