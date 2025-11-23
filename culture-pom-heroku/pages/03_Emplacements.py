@@ -255,16 +255,28 @@ def add_emplacement(lot_id, site_stockage, emplacement_stockage, nombre_unites, 
         emplacement_id = cursor.fetchone()['id']
         
         # Enregistrer le mouvement
+        user = st.session_state.get('username', 'system')
+        
         mouvement_query = """
         INSERT INTO stock_mouvements
-        (lot_id, type_mouvement, site_apres, quantite_mouvement, description, created_at, created_by)
-        VALUES (%s, 'AJOUT', %s, %s, %s, CURRENT_TIMESTAMP, %s)
+        (lot_id, type_mouvement, site_destination, emplacement_destination,
+         quantite, type_conditionnement, poids_kg, user_action, created_by, notes)
+        VALUES (%s, 'AJOUT_STOCK', %s, %s, %s, %s, %s, %s, %s, %s)
         """
         
-        description = f"Ajout emplacement {site_stockage}/{emplacement_stockage}"
-        created_by = st.session_state.get('username', 'system')
+        notes = f"Ajout stock : {nombre_unites} {type_conditionnement or 'unités'} à {site_stockage}/{emplacement_stockage}"
         
-        cursor.execute(mouvement_query, (lot_id, f"{site_stockage}/{emplacement_stockage}", nombre_unites, description, created_by))
+        cursor.execute(mouvement_query, (
+            lot_id, 
+            site_stockage, 
+            emplacement_stockage, 
+            nombre_unites, 
+            type_conditionnement or 'Pallox', 
+            poids_total_kg,
+            user,
+            user,
+            notes
+        ))
         
         conn.commit()
         cursor.close()
@@ -331,23 +343,32 @@ def update_emplacement(emplacement_id, nombre_unites=None, poids_total_kg=None, 
         cursor.execute(query, values)
         
         # Enregistrer le mouvement
-        description = f"Modification {old_data['site_stockage']}/{old_data['emplacement_stockage']}"
+        user = st.session_state.get('username', 'system')
+        
+        # Construire notes
+        notes = f"Modification {old_data['site_stockage']}/{old_data['emplacement_stockage']}"
         if nombre_unites is not None:
-            description += f" : {old_data['nombre_unites']} → {nombre_unites} pallox"
+            notes += f" : {old_data['nombre_unites']} → {nombre_unites} pallox"
+        if poids_total_kg is not None:
+            notes += f", poids : {old_data['poids_total_kg']:.1f} → {poids_total_kg:.1f} kg"
         
         mouvement_query = """
         INSERT INTO stock_mouvements
-        (lot_id, type_mouvement, site_apres, quantite_mouvement, description, created_at, created_by)
-        VALUES (%s, 'MODIFICATION', %s, %s, %s, CURRENT_TIMESTAMP, %s)
+        (lot_id, type_mouvement, site_origine, emplacement_origine,
+         quantite, type_conditionnement, poids_kg, user_action, created_by, notes)
+        VALUES (%s, 'MODIFICATION', %s, %s, %s, %s, %s, %s, %s, %s)
         """
         
-        created_by = st.session_state.get('username', 'system')
         cursor.execute(mouvement_query, (
-            old_data['lot_id'], 
-            f"{old_data['site_stockage']}/{old_data['emplacement_stockage']}", 
+            old_data['lot_id'],
+            old_data['site_stockage'],
+            old_data['emplacement_stockage'],
             nombre_unites or old_data['nombre_unites'],
-            description, 
-            created_by
+            type_conditionnement or 'Pallox',
+            poids_total_kg or old_data['poids_total_kg'],
+            user,
+            user,
+            notes
         ))
         
         conn.commit()
@@ -368,7 +389,7 @@ def delete_emplacement(emplacement_id):
         cursor = conn.cursor()
         
         # Récupérer les infos pour le mouvement
-        cursor.execute("SELECT lot_id, nombre_unites, site_stockage, emplacement_stockage FROM stock_emplacements WHERE id = %s", (emplacement_id,))
+        cursor.execute("SELECT lot_id, nombre_unites, poids_total_kg, site_stockage, emplacement_stockage FROM stock_emplacements WHERE id = %s", (emplacement_id,))
         data = cursor.fetchone()
         
         if not data:
@@ -378,21 +399,26 @@ def delete_emplacement(emplacement_id):
         cursor.execute("UPDATE stock_emplacements SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s", (emplacement_id,))
         
         # Enregistrer le mouvement
-        description = f"Suppression {data['site_stockage']}/{data['emplacement_stockage']}"
+        user = st.session_state.get('username', 'system')
+        notes = f"Suppression {data['site_stockage']}/{data['emplacement_stockage']}"
         
         mouvement_query = """
         INSERT INTO stock_mouvements
-        (lot_id, type_mouvement, site_avant, quantite_mouvement, description, created_at, created_by)
-        VALUES (%s, 'SUPPRESSION', %s, %s, %s, CURRENT_TIMESTAMP, %s)
+        (lot_id, type_mouvement, site_origine, emplacement_origine,
+         quantite, type_conditionnement, poids_kg, user_action, created_by, notes)
+        VALUES (%s, 'SUPPRESSION', %s, %s, %s, %s, %s, %s, %s, %s)
         """
         
-        created_by = st.session_state.get('username', 'system')
         cursor.execute(mouvement_query, (
             data['lot_id'],
-            f"{data['site_stockage']}/{data['emplacement_stockage']}",
+            data['site_stockage'],
+            data['emplacement_stockage'],
             data['nombre_unites'],
-            description,
-            created_by
+            'Pallox',
+            float(data['poids_total_kg']) if data['poids_total_kg'] else 0.0,
+            user,
+            user,
+            notes
         ))
         
         conn.commit()
@@ -481,22 +507,30 @@ def transfer_emplacement(emplacement_source_id, site_destination, emplacement_de
             """, (source['lot_id'], site_destination, emplacement_destination, quantite_transfert, poids_transfert, source['type_stock'], type_cond_final))
         
         # 3. Enregistrer le mouvement
-        description = f"Transfert {source['site_stockage']}/{source['emplacement_stockage']} → {site_destination}/{emplacement_destination}"
+        user = st.session_state.get('username', 'system')
+        notes = f"Transfert {source['site_stockage']}/{source['emplacement_stockage']} → {site_destination}/{emplacement_destination}"
         
         mouvement_query = """
         INSERT INTO stock_mouvements
-        (lot_id, type_mouvement, site_avant, site_apres, quantite_mouvement, description, created_at, created_by)
-        VALUES (%s, 'TRANSFERT', %s, %s, %s, %s, CURRENT_TIMESTAMP, %s)
+        (lot_id, type_mouvement, 
+         site_origine, emplacement_origine,
+         site_destination, emplacement_destination,
+         quantite, type_conditionnement, poids_kg, user_action, created_by, notes)
+        VALUES (%s, 'TRANSFERT', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         
-        created_by = st.session_state.get('username', 'system')
         cursor.execute(mouvement_query, (
             source['lot_id'],
-            f"{source['site_stockage']}/{source['emplacement_stockage']}",
-            f"{site_destination}/{emplacement_destination}",
+            source['site_stockage'],
+            source['emplacement_stockage'],
+            site_destination,
+            emplacement_destination,
             quantite_transfert,
-            description,
-            created_by
+            type_cond_final or 'Pallox',
+            poids_transfert,
+            user,
+            user,
+            notes
         ))
         
         conn.commit()
@@ -1006,9 +1040,13 @@ for lot_data in lots_data:
                 
                 type_labels = {
                     'CREATION_LOT': '🆕 Création',
+                    'AJOUT_STOCK': '➕ Ajout stock',
+                    'MODIFICATION': '✏️ Modification',
+                    'TRANSFERT': '🔄 Transfert',
                     'TRANSFERT_DEPART': '🚚 Départ',
                     'TRANSFERT_ARRIVEE': '📥 Arrivée',
                     'DIVISION_LOT': '✂️ Division',
+                    'SUPPRESSION': '🗑️ Suppression',
                     'LAVAGE': '🧼 Lavage',
                     'LAVAGE_BRUT_REDUIT': '🧼 Lavage (Brut réduit)',
                     'LAVAGE_CREATION_LAVE': '✨ Lavage (Création Lavé)',
