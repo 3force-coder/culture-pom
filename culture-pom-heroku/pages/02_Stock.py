@@ -1012,44 +1012,48 @@ if not df.empty:
         )
     }
     
+    # ⭐ DATA EDITOR AVEC SÉLECTION (Streamlit 1.35+)
     edited_df = st.data_editor(
         display_df,
         use_container_width=True,
         num_rows="fixed",
-        disabled=['id', 'code_lot_interne', 'poids_total_brut_kg', 'valeur_lot_euro', 'age_jours'],  # ⭐ Colonnes calculées en lecture seule
+        disabled=['id', 'code_lot_interne', 'poids_total_brut_kg', 'valeur_lot_euro', 'age_jours'],
         column_config=column_config,
         key="stock_editor",
-        # ⭐ ACTIVER LA SÉLECTION MULTIPLE
-        on_select="rerun",
-        selection_mode="multi-row"
+        selection_mode="multi-row"  # ✅ Sélection multi-rows (Streamlit 1.35+)
     )
     
     # ⭐ STOCKER edited_df dans session_state pour le bouton Enregistrer
     st.session_state.edited_stock_df = edited_df
     
-    # ⭐ RÉCUPÉRER LES LIGNES SÉLECTIONNÉES
-    try:
-        selected_rows = st.session_state.stock_editor.get("selection", {}).get("rows", [])
+    # ⭐ RÉCUPÉRER LES LIGNES SÉLECTIONNÉES depuis session_state
+    selected_lot_ids = []
+    
+    if "stock_editor" in st.session_state:
+        # Streamlit 1.35+ stocke la sélection dans session_state.key.selection
+        editor_state = st.session_state.stock_editor
         
-        if selected_rows:
-            # Récupérer les IDs des lots sélectionnés
-            selected_lot_ids = edited_df.iloc[selected_rows]['id'].tolist()
+        if isinstance(editor_state, dict) and "selection" in editor_state:
+            selection = editor_state["selection"]
             
-            # Limiter à 10 lots max
-            if len(selected_lot_ids) > 10:
-                st.warning("⚠️ Vous avez sélectionné plus de 10 lots. Seuls les 10 premiers seront affichés.")
-                selected_lot_ids = selected_lot_ids[:10]
-            
-            # Stocker dans session_state
-            st.session_state.selected_lots_for_emplacements = selected_lot_ids
-            
-            # Afficher info sélection
-            st.info(f"✅ {len(selected_lot_ids)} lot(s) sélectionné(s) pour voir les emplacements")
-        else:
-            # Aucune sélection
-            st.session_state.selected_lots_for_emplacements = []
-    except:
-        st.session_state.selected_lots_for_emplacements = []
+            if isinstance(selection, dict) and "rows" in selection:
+                selected_rows = selection["rows"]
+                
+                if selected_rows and len(selected_rows) > 0:
+                    # Récupérer les IDs des lots sélectionnés
+                    selected_lot_ids = [int(edited_df.iloc[row]['id']) for row in selected_rows if row < len(edited_df)]
+                    
+                    # Limiter à 10 lots max
+                    if len(selected_lot_ids) > 10:
+                        st.warning("⚠️ Vous avez sélectionné plus de 10 lots. Seuls les 10 premiers seront affichés.")
+                        selected_lot_ids = selected_lot_ids[:10]
+    
+    # Stocker dans session_state
+    st.session_state.selected_lots_for_emplacements = selected_lot_ids
+    
+    # Afficher info sélection
+    if len(selected_lot_ids) > 0:
+        st.info(f"✅ {len(selected_lot_ids)} lot(s) sélectionné(s) pour voir les emplacements")
     
     # ⭐ DÉTECTION CHANGEMENTS (Auto-save) - VERSION CORRIGÉE
     changes_detected = False
