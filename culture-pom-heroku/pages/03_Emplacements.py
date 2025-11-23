@@ -289,7 +289,7 @@ def add_emplacement(lot_id, site_stockage, emplacement_stockage, nombre_unites, 
         else:
             return False, f"❌ Erreur : {str(e)}"
 
-def update_emplacement(emplacement_id, nombre_unites=None, poids_total_kg=None):
+def update_emplacement(emplacement_id, nombre_unites=None, poids_total_kg=None, type_conditionnement=None):
     """Modifie la quantité d'un emplacement"""
     try:
         conn = get_connection()
@@ -313,6 +313,10 @@ def update_emplacement(emplacement_id, nombre_unites=None, poids_total_kg=None):
         if poids_total_kg is not None:
             updates.append("poids_total_kg = %s")
             values.append(poids_total_kg)
+        
+        if type_conditionnement is not None:
+            updates.append("type_conditionnement = %s")
+            values.append(type_conditionnement)
         
         if not updates:
             return False, "❌ Aucune modification à apporter"
@@ -817,11 +821,24 @@ for lot_data in lots_data:
                 if st.session_state.get(f'show_modify_form_{lot_data["lot_id"]}', False) and st.session_state.get(f'selected_empl_id_{lot_data["lot_id"]}') == selected_empl:
                     st.markdown("##### ✏️ Modifier l'emplacement")
                     
+                    # Récupérer type_conditionnement actuel (peut être None)
+                    current_type_cond = empl_data.get('type_conditionnement', 'Pallox')
+                    if not current_type_cond or current_type_cond == '':
+                        current_type_cond = 'Pallox'  # Défaut si vide
+                    
                     col1, col2 = st.columns(2)
                     
                     with col1:
+                        # Type de conditionnement
+                        mod_type_conditionnement = st.selectbox(
+                            "Type de conditionnement *",
+                            options=["Pallox", "Petit Pallox", "Big Bag"],
+                            index=["Pallox", "Petit Pallox", "Big Bag"].index(current_type_cond) if current_type_cond in ["Pallox", "Petit Pallox", "Big Bag"] else 0,
+                            key=f"mod_type_cond_{lot_data['lot_id']}"
+                        )
+                        
                         mod_nombre_unites = st.number_input(
-                            "Nombre de pallox",
+                            "Nombre de pallox *",
                             min_value=0,
                             value=int(empl_data['nombre_unites']),
                             step=1,
@@ -829,13 +846,19 @@ for lot_data in lots_data:
                         )
                     
                     with col2:
-                        mod_poids = st.number_input(
-                            "Poids total (kg)",
-                            min_value=0.0,
-                            value=float(empl_data['poids_total_kg']),
-                            step=100.0,
-                            key=f"mod_poids_{lot_data['lot_id']}"
-                        )
+                        # Calcul automatique du poids selon type conditionnement
+                        mod_poids_unitaire = 0
+                        if mod_type_conditionnement == "Pallox":
+                            mod_poids_unitaire = 1900
+                        elif mod_type_conditionnement == "Petit Pallox":
+                            mod_poids_unitaire = 1200
+                        elif mod_type_conditionnement == "Big Bag":
+                            mod_poids_unitaire = 1600
+                        
+                        mod_poids_calcule = mod_poids_unitaire * mod_nombre_unites
+                        
+                        # Afficher le poids calculé (non éditable)
+                        st.metric("Poids total calculé", f"{mod_poids_calcule} kg")
                     
                     col_save, col_cancel = st.columns(2)
                     
@@ -844,7 +867,8 @@ for lot_data in lots_data:
                             success, message = update_emplacement(
                                 selected_empl,
                                 nombre_unites=mod_nombre_unites,
-                                poids_total_kg=mod_poids
+                                poids_total_kg=mod_poids_calcule,
+                                type_conditionnement=mod_type_conditionnement
                             )
                             
                             if success:
@@ -890,7 +914,8 @@ for lot_data in lots_data:
                             max_value=int(empl_data['nombre_unites']),
                             value=min(1, int(empl_data['nombre_unites'])),
                             step=1,
-                            key=f"transfer_qty_{lot_data['lot_id']}"
+                            key=f"transfer_qty_{lot_data['lot_id']}",
+                            help=f"Maximum disponible : {int(empl_data['nombre_unites'])} pallox"
                         )
                     
                     with col2:
