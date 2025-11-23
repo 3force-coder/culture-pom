@@ -406,9 +406,98 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
               tare_reelle, rendement, site_dest, emplacement_dest,
               terminated_by, notes, job_id))
         
-        # TODO: Créer les nouveaux stock_emplacements (LAVÉ + GRENAILLES)
-        # TODO: Déduire du stock BRUT source
-        # TODO: Créer mouvements de stock
+        # === GESTION DES STOCKS ===
+        
+        # 1. Trouver stock BRUT source
+        cursor.execute("""
+            SELECT id, nombre_unites, site_stockage, emplacement_stockage, type_conditionnement
+            FROM stock_emplacements
+            WHERE lot_id = %s AND statut_lavage = 'BRUT' AND is_active = TRUE
+            LIMIT 1
+        """, (job['lot_id'],))
+        
+        stock_brut = cursor.fetchone()
+        if not stock_brut:
+            return False, "❌ Stock BRUT source introuvable"
+        
+        # 2. Déduire quantité du stock BRUT
+        quantite_lavee = int(job['quantite_pallox'])
+        nouvelle_quantite_brut = int(stock_brut['nombre_unites']) - quantite_lavee
+        
+        if nouvelle_quantite_brut < 0:
+            return False, f"❌ Quantité insuffisante : {stock_brut['nombre_unites']} disponibles, {quantite_lavee} demandés"
+        
+        if nouvelle_quantite_brut == 0:
+            # Désactiver l'emplacement vidé
+            cursor.execute("""
+                UPDATE stock_emplacements
+                SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (stock_brut['id'],))
+        else:
+            # Réduire quantité (recalcul poids selon type conditionnement)
+            poids_unitaire = 1900 if stock_brut['type_conditionnement'] == 'Pallox' else 1200
+            nouveau_poids_brut = nouvelle_quantite_brut * poids_unitaire
+            
+            cursor.execute("""
+                UPDATE stock_emplacements
+                SET nombre_unites = %s,
+                    poids_total_kg = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (nouvelle_quantite_brut, nouveau_poids_brut, stock_brut['id']))
+        
+        # 3. Créer stock LAVÉ
+        cursor.execute("""
+            INSERT INTO stock_emplacements (
+                lot_id, site_stockage, emplacement_stockage,
+                nombre_unites, type_conditionnement, poids_total_kg,
+                statut_lavage, lavage_job_id, is_active
+            ) VALUES (%s, %s, %s, %s, %s, %s, 'LAVÉ', %s, TRUE)
+        """, (job['lot_id'], site_dest, emplacement_dest, 
+              quantite_lavee, 'Pallox', float(poids_lave), int(job_id)))
+        
+        # 4. Créer stock GRENAILLES (si > 0)
+        if poids_grenailles > 0:
+            cursor.execute("""
+                INSERT INTO stock_emplacements (
+                    lot_id, site_stockage, emplacement_stockage,
+                    nombre_unites, type_conditionnement, poids_total_kg,
+                    statut_lavage, lavage_job_id, is_active
+                ) VALUES (%s, %s, %s, %s, %s, %s, 'GRENAILLES', %s, TRUE)
+            """, (job['lot_id'], site_dest, emplacement_dest + '_GREN',
+                  0, 'Vrac', float(poids_grenailles), int(job_id)))
+        
+        # 5. Créer mouvements traçabilité
+        user = st.session_state.get('username', 'system')
+        
+        # Mouvement : Réduction stock BRUT
+        cursor.execute("""
+            INSERT INTO stock_mouvements (
+                lot_id, type_mouvement, site_origine, emplacement_origine,
+                quantite, type_conditionnement, poids_kg, user_action, notes
+            ) VALUES (%s, 'LAVAGE_BRUT_REDUIT', %s, %s, %s, %s, %s, %s, %s)
+        """, (job['lot_id'], stock_brut['site_stockage'], stock_brut['emplacement_stockage'],
+              -quantite_lavee, 'Pallox', -poids_brut, user, f"Job #{job_id} - Lavage {job['ligne_lavage']}"))
+        
+        # Mouvement : Création stock LAVÉ
+        cursor.execute("""
+            INSERT INTO stock_mouvements (
+                lot_id, type_mouvement, site_destination, emplacement_destination,
+                quantite, type_conditionnement, poids_kg, user_action, notes
+            ) VALUES (%s, 'LAVAGE_CREATION_LAVE', %s, %s, %s, %s, %s, %s, %s)
+        """, (job['lot_id'], site_dest, emplacement_dest,
+              quantite_lavee, 'Pallox', float(poids_lave), user, f"Job #{job_id} - Stock lavé"))
+        
+        # Mouvement : Création GRENAILLES (si > 0)
+        if poids_grenailles > 0:
+            cursor.execute("""
+                INSERT INTO stock_mouvements (
+                    lot_id, type_mouvement, site_destination, emplacement_destination,
+                    quantite, type_conditionnement, poids_kg, user_action, notes
+                ) VALUES (%s, 'LAVAGE_CREATION_GRENAILLES', %s, %s, %s, %s, %s, %s, %s)
+            """, (job['lot_id'], site_dest, emplacement_dest + '_GREN',
+                  0, 'Vrac', float(poids_grenailles), user, f"Job #{job_id} - Grenailles"))
         
         conn.commit()
         cursor.close()
