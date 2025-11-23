@@ -70,7 +70,7 @@ def get_lot_info(lot_id):
             s.libelle as statut_libelle,
             s.couleur_hexa as statut_couleur,
             s.icone_emoji as statut_icone,
-            EXTRACT(DAY FROM (CURRENT_DATE - l.date_entree_stock)) as age_jours
+            COALESCE((CURRENT_DATE - l.date_entree_stock::DATE), 0) as age_jours
         FROM lots_bruts l
         LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
         LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
