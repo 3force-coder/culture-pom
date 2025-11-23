@@ -651,7 +651,7 @@ with tab2:
 
 with tab3:
     st.subheader("➕ Créer un Job de Lavage")
-    st.markdown("*Sélectionnez un lot BRUT dans le tableau ci-dessous*")
+    st.markdown("*Sélectionnez un lot BRUT puis cliquez sur 'Créer Job'*")
     
     # Charger lots disponibles
     lots_dispo = get_lots_bruts_disponibles()
@@ -677,7 +677,7 @@ with tab3:
         
         if not lots_filtres.empty:
             st.markdown("---")
-            st.markdown(f"**{len(lots_filtres)} lot(s) disponible(s)**")
+            st.markdown(f"**{len(lots_filtres)} lot(s) disponible(s)** - 👇 Sélectionnez un lot dans le tableau")
             
             # Créer DataFrame pour affichage
             df_display = lots_filtres[[
@@ -686,11 +686,11 @@ with tab3:
                 'poids_total_kg', 'type_conditionnement'
             ]].copy()
             
-            # Conversion types numériques
-            df_display['poids_total_kg'] = pd.to_numeric(df_display['poids_total_kg'], errors='coerce')
-            df_display['nombre_unites'] = pd.to_numeric(df_display['nombre_unites'], errors='coerce')
-            df_display['poids_total_kg'] = df_display['poids_total_kg'].round(0)
+            # Garder index original
+            df_display = df_display.reset_index(drop=False)
+            df_display = df_display.rename(columns={'index': '_idx'})
             
+            # Renommer pour affichage
             df_display = df_display.rename(columns={
                 'code_lot_interne': 'Code Lot',
                 'variete': 'Variété',
@@ -703,6 +703,9 @@ with tab3:
             
             # Configuration colonnes
             column_config = {
+                "_idx": None,  # Masquer
+                "lot_id": None,  # Masquer
+                "emplacement_id": None,  # Masquer
                 "Code Lot": st.column_config.TextColumn("Code Lot", width="large"),
                 "Variété": st.column_config.TextColumn("Variété", width="medium"),
                 "Site": st.column_config.TextColumn("Site", width="medium"),
@@ -712,42 +715,47 @@ with tab3:
                 "Type": st.column_config.TextColumn("Type", width="small")
             }
             
-            # Data editor avec sélection
-            selection = st.data_editor(
-                df_display[['Code Lot', 'Variété', 'Site', 'Emplacement', 'Pallox', 'Poids (kg)', 'Type']],
+            # Tableau avec sélection
+            event = st.dataframe(
+                df_display,
                 column_config=column_config,
                 use_container_width=True,
                 hide_index=True,
-                disabled=True,
+                on_select="rerun",
+                selection_mode="single-row",
                 key="lots_table_create"
             )
             
-            st.markdown("---")
-            st.markdown("##### 👇 Cliquer sur une ligne ci-dessus pour sélectionner le lot")
+            # Récupérer sélection
+            selected_rows = event.selection.rows if hasattr(event, 'selection') else []
             
-            # Utiliser on_select si disponible, sinon boutons par ligne
-            for idx, row in df_display.iterrows():
-                col_btn, col_info = st.columns([1, 4])
+            st.markdown("---")
+            
+            # Bouton créer job (actif seulement si sélection)
+            if len(selected_rows) > 0:
+                selected_idx = selected_rows[0]
+                selected_row = df_display.iloc[selected_idx]
                 
-                with col_btn:
-                    if st.button(f"✅ Sélectionner", key=f"select_lot_{idx}", use_container_width=True):
-                        st.session_state['selected_lot_idx'] = idx
-                        st.session_state['show_create_form'] = True
-                        st.rerun()
+                st.success(f"✅ Lot sélectionné : **{selected_row['Code Lot']}** - {selected_row['Variété']} ({int(selected_row['Pallox'])} pallox)")
                 
-                with col_info:
-                    st.text(f"{row['Code Lot']} - {row['Variété']} - {row['Site']}/{row['Emplacement']} ({int(row['Pallox'])} pallox)")
+                if st.button("➕ Créer Job de Lavage", type="primary", use_container_width=True, key="btn_show_create_form"):
+                    st.session_state['selected_lot_original_idx'] = selected_row['_idx']
+                    st.session_state['show_create_form'] = True
+                    st.rerun()
+            else:
+                st.info("👆 Veuillez sélectionner un lot dans le tableau ci-dessus")
+                st.button("➕ Créer Job de Lavage", type="primary", use_container_width=True, disabled=True, key="btn_create_disabled")
             
             # Formulaire de création si lot sélectionné
-            if st.session_state.get('show_create_form', False) and 'selected_lot_idx' in st.session_state:
+            if st.session_state.get('show_create_form', False) and 'selected_lot_original_idx' in st.session_state:
                 st.markdown("---")
-                st.markdown("### 📋 Créer le Job de Lavage")
+                st.markdown("### 📋 Paramètres du Job de Lavage")
                 
-                idx = st.session_state['selected_lot_idx']
-                lot_data = lots_dispo.iloc[idx]
+                original_idx = st.session_state['selected_lot_original_idx']
+                lot_data = lots_dispo.loc[original_idx]
                 
                 # Infos lot
-                st.info(f"**Lot sélectionné** : {lot_data['code_lot_interne']} - {lot_data['variete']} - {lot_data['site_stockage']}/{lot_data['emplacement_stockage']}")
+                st.info(f"**Lot** : {lot_data['code_lot_interne']} - {lot_data['variete']} - {lot_data['site_stockage']}/{lot_data['emplacement_stockage']}")
                 
                 col1, col2 = st.columns(2)
                 
@@ -768,27 +776,32 @@ with tab3:
                 
                 with col2:
                     lignes = get_lignes_lavage()
-                    ligne_options = [f"{l['code']} - {l['libelle']} ({l['capacite_th']}T/h)" for l in lignes]
-                    selected_ligne = st.selectbox("Ligne de lavage *", options=ligne_options, key="ligne_create")
-                    
-                    # Calculer poids et temps
-                    if lot_data['type_conditionnement'] == 'Pallox':
-                        poids_unitaire = 1900
-                    elif lot_data['type_conditionnement'] == 'Petit Pallox':
-                        poids_unitaire = 1200
-                    elif lot_data['type_conditionnement'] == 'Big Bag':
-                        poids_unitaire = 1600
+                    if lignes:
+                        ligne_options = [f"{l['code']} - {l['libelle']} ({l['capacite_th']}T/h)" for l in lignes]
+                        selected_ligne = st.selectbox("Ligne de lavage *", options=ligne_options, key="ligne_create")
+                        
+                        # Calculer poids et temps
+                        if lot_data['type_conditionnement'] == 'Pallox':
+                            poids_unitaire = 1900
+                        elif lot_data['type_conditionnement'] == 'Petit Pallox':
+                            poids_unitaire = 1200
+                        elif lot_data['type_conditionnement'] == 'Big Bag':
+                            poids_unitaire = 1600
+                        else:
+                            poids_unitaire = 1900
+                        
+                        poids_brut = quantite * poids_unitaire
+                        
+                        ligne_idx = ligne_options.index(selected_ligne)
+                        capacite = float(lignes[ligne_idx]['capacite_th'])
+                        temps_estime = (poids_brut / 1000) / capacite
+                        
+                        st.metric("Poids brut à laver", f"{poids_brut:,.0f} kg ({poids_brut/1000:.1f} T)")
+                        st.metric("Temps estimé", f"{temps_estime:.1f} heures")
                     else:
-                        poids_unitaire = 1900
-                    
-                    poids_brut = quantite * poids_unitaire
-                    
-                    ligne_idx = ligne_options.index(selected_ligne)
-                    capacite = float(lignes[ligne_idx]['capacite_th'])
-                    temps_estime = (poids_brut / 1000) / capacite
-                    
-                    st.metric("Poids brut à laver", f"{poids_brut:,.0f} kg ({poids_brut/1000:.1f} T)")
-                    st.metric("Temps estimé", f"{temps_estime:.1f} heures")
+                        st.error("❌ Aucune ligne de lavage disponible")
+                        ligne_code = None
+                        capacite = None
                 
                 notes = st.text_area("Notes (optionnel)", key="notes_create_form")
                 
@@ -796,32 +809,35 @@ with tab3:
                 
                 with col_save:
                     if st.button("✅ Créer le Job", type="primary", use_container_width=True, key="btn_create_job"):
-                        ligne_code = lignes[ligne_idx]['code']
-                        
-                        success, message = create_job_lavage(
-                            lot_data['lot_id'],
-                            lot_data['emplacement_id'],
-                            quantite,
-                            poids_brut,
-                            date_prevue,
-                            ligne_code,
-                            capacite,
-                            notes
-                        )
-                        
-                        if success:
-                            st.success(message)
-                            st.balloons()
-                            st.session_state.pop('show_create_form', None)
-                            st.session_state.pop('selected_lot_idx', None)
-                            st.rerun()
+                        if lignes:
+                            ligne_code = lignes[ligne_idx]['code']
+                            
+                            success, message = create_job_lavage(
+                                lot_data['lot_id'],
+                                lot_data['emplacement_id'],
+                                quantite,
+                                poids_brut,
+                                date_prevue,
+                                ligne_code,
+                                capacite,
+                                notes
+                            )
+                            
+                            if success:
+                                st.success(message)
+                                st.balloons()
+                                st.session_state.pop('show_create_form', None)
+                                st.session_state.pop('selected_lot_original_idx', None)
+                                st.rerun()
+                            else:
+                                st.error(message)
                         else:
-                            st.error(message)
+                            st.error("❌ Impossible de créer le job : aucune ligne de lavage")
                 
                 with col_cancel:
                     if st.button("❌ Annuler", use_container_width=True, key="btn_cancel_create"):
                         st.session_state.pop('show_create_form', None)
-                        st.session_state.pop('selected_lot_idx', None)
+                        st.session_state.pop('selected_lot_original_idx', None)
                         st.rerun()
         else:
             st.warning(f"⚠️ Aucun lot disponible avec les filtres : {filtre_variete} / {filtre_site}")
