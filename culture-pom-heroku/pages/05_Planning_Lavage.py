@@ -60,6 +60,8 @@ def get_lots_bruts_disponibles():
             l.id as lot_id,
             l.code_lot_interne,
             l.nom_usage,
+            l.calibre_min,
+            l.calibre_max,
             COALESCE(v.nom_variete, l.code_variete) as variete,
             se.id as emplacement_id,
             se.site_stockage,
@@ -84,7 +86,7 @@ def get_lots_bruts_disponibles():
         if rows:
             df = pd.DataFrame(rows)
             # Convertir colonnes numériques
-            numeric_cols = ['nombre_unites', 'poids_total_kg']
+            numeric_cols = ['nombre_unites', 'poids_total_kg', 'calibre_min', 'calibre_max']
             for col in numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -276,6 +278,13 @@ def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg,
         conn = get_connection()
         cursor = conn.cursor()
         
+        # Convertir tous les types en types Python natifs
+        lot_id = int(lot_id)
+        emplacement_id = int(emplacement_id)
+        quantite_pallox = int(quantite_pallox)
+        poids_brut_kg = float(poids_brut_kg)
+        capacite_th = float(capacite_th)
+        
         # Récupérer infos lot
         cursor.execute("""
             SELECT l.code_lot_interne, COALESCE(v.nom_variete, l.code_variete) as variete
@@ -285,8 +294,8 @@ def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg,
         """, (lot_id,))
         lot_info = cursor.fetchone()
         
-        # Calculer temps estimé (conversion Decimal en float)
-        temps_estime = (float(poids_brut_kg) / 1000) / float(capacite_th)  # heures
+        # Calculer temps estimé
+        temps_estime = (poids_brut_kg / 1000) / capacite_th  # heures
         
         # Insérer job
         created_by = st.session_state.get('username', 'system')
@@ -681,7 +690,8 @@ with tab3:
             
             # Créer DataFrame pour affichage
             df_display = lots_filtres[[
-                'lot_id', 'emplacement_id', 'code_lot_interne', 'variete', 
+                'lot_id', 'emplacement_id', 'code_lot_interne', 'nom_usage', 
+                'variete', 'calibre_min', 'calibre_max',
                 'site_stockage', 'emplacement_stockage', 'nombre_unites', 
                 'poids_total_kg', 'type_conditionnement'
             ]].copy()
@@ -693,7 +703,10 @@ with tab3:
             # Renommer pour affichage
             df_display = df_display.rename(columns={
                 'code_lot_interne': 'Code Lot',
+                'nom_usage': 'Nom Lot',
                 'variete': 'Variété',
+                'calibre_min': 'Cal Min',
+                'calibre_max': 'Cal Max',
                 'site_stockage': 'Site',
                 'emplacement_stockage': 'Emplacement',
                 'nombre_unites': 'Pallox',
@@ -707,7 +720,10 @@ with tab3:
                 "lot_id": None,  # Masquer
                 "emplacement_id": None,  # Masquer
                 "Code Lot": st.column_config.TextColumn("Code Lot", width="large"),
+                "Nom Lot": st.column_config.TextColumn("Nom Lot", width="medium"),
                 "Variété": st.column_config.TextColumn("Variété", width="medium"),
+                "Cal Min": st.column_config.NumberColumn("Cal Min", format="%d"),
+                "Cal Max": st.column_config.NumberColumn("Cal Max", format="%d"),
                 "Site": st.column_config.TextColumn("Site", width="medium"),
                 "Emplacement": st.column_config.TextColumn("Emplacement", width="medium"),
                 "Pallox": st.column_config.NumberColumn("Pallox", format="%d"),
