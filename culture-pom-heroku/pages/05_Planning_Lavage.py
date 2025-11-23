@@ -475,29 +475,29 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
         cursor.execute("""
             INSERT INTO stock_mouvements (
                 lot_id, type_mouvement, site_origine, emplacement_origine,
-                quantite, type_conditionnement, poids_kg, user_action, notes
-            ) VALUES (%s, 'LAVAGE_BRUT_REDUIT', %s, %s, %s, %s, %s, %s, %s)
+                quantite, type_conditionnement, poids_kg, user_action, created_by, notes
+            ) VALUES (%s, 'LAVAGE_BRUT_REDUIT', %s, %s, %s, %s, %s, %s, %s, %s)
         """, (job['lot_id'], stock_brut['site_stockage'], stock_brut['emplacement_stockage'],
-              -quantite_lavee, 'Pallox', -poids_brut, user, f"Job #{job_id} - Lavage {job['ligne_lavage']}"))
+              -quantite_lavee, 'Pallox', -poids_brut, user, user, f"Job #{job_id} - Lavage {job['ligne_lavage']}"))
         
         # Mouvement : Création stock LAVÉ
         cursor.execute("""
             INSERT INTO stock_mouvements (
                 lot_id, type_mouvement, site_destination, emplacement_destination,
-                quantite, type_conditionnement, poids_kg, user_action, notes
-            ) VALUES (%s, 'LAVAGE_CREATION_LAVE', %s, %s, %s, %s, %s, %s, %s)
+                quantite, type_conditionnement, poids_kg, user_action, created_by, notes
+            ) VALUES (%s, 'LAVAGE_CREATION_LAVE', %s, %s, %s, %s, %s, %s, %s, %s)
         """, (job['lot_id'], site_dest, emplacement_dest,
-              quantite_lavee, 'Pallox', float(poids_lave), user, f"Job #{job_id} - Stock lavé"))
+              quantite_lavee, 'Pallox', float(poids_lave), user, user, f"Job #{job_id} - Stock lavé"))
         
         # Mouvement : Création GRENAILLES (si > 0)
         if poids_grenailles > 0:
             cursor.execute("""
                 INSERT INTO stock_mouvements (
                     lot_id, type_mouvement, site_destination, emplacement_destination,
-                    quantite, type_conditionnement, poids_kg, user_action, notes
-                ) VALUES (%s, 'LAVAGE_CREATION_GRENAILLES', %s, %s, %s, %s, %s, %s, %s)
+                    quantite, type_conditionnement, poids_kg, user_action, created_by, notes
+                ) VALUES (%s, 'LAVAGE_CREATION_GRENAILLES', %s, %s, %s, %s, %s, %s, %s, %s)
             """, (job['lot_id'], site_dest, emplacement_dest + '_GREN',
-                  0, 'Vrac', float(poids_grenailles), user, f"Job #{job_id} - Grenailles"))
+                  0, 'Vrac', float(poids_grenailles), user, user, f"Job #{job_id} - Grenailles"))
         
         conn.commit()
         cursor.close()
