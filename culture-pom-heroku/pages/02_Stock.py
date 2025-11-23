@@ -736,6 +736,9 @@ if not df.empty:
                 """, unsafe_allow_html=True)
             st.rerun()
     
+    # Charger les types de conditionnement pour le dropdown
+    types_cond_list = get_unique_values_from_db("lots_bruts", "type_conditionnement", where_active=False)
+    
     # Colonnes à afficher
     display_columns = [
         'code_lot_interne', 
@@ -781,6 +784,11 @@ if not df.empty:
         "emplacement_stockage": st.column_config.SelectboxColumn(
             "Emplacement",
             options=sorted(emplacements_list),
+            required=False
+        ),
+        "type_conditionnement": st.column_config.SelectboxColumn(
+            "Type Conditionnement",
+            options=sorted(types_cond_list) if types_cond_list else [],
             required=False
         )
     }
@@ -867,33 +875,47 @@ if not df.empty:
                 key="delete_lot_selector"
             )
             
+            # Extraire l'ID du lot sélectionné
+            selected_lot_id = int(selected_lot.split(" - ")[0])
+            
+            # Bouton Supprimer
             col1, col2 = st.columns([1, 5])
             with col1:
                 if st.button("🗑️ Supprimer", use_container_width=True, type="secondary", key="btn_delete_lot"):
-                    # Extraire l'ID
-                    lot_id = int(selected_lot.split(" - ")[0])
-                    
-                    # Confirmation via checkbox
-                    if 'confirm_delete' not in st.session_state:
-                        st.session_state.confirm_delete = False
-                    
-                    if not st.session_state.confirm_delete:
-                        st.warning("⚠️ Cochez la case de confirmation ci-dessous puis recliquez sur Supprimer")
-                        st.session_state.confirm_delete = st.checkbox(
-                            f"Je confirme la suppression du lot {selected_lot}",
-                            key="confirm_delete_checkbox"
-                        )
-                    else:
+                    # Activer l'état de confirmation
+                    st.session_state.confirm_delete_lot_id = selected_lot_id
+                    st.session_state.confirm_delete_lot_name = selected_lot
+            
+            # Si confirmation demandée
+            if st.session_state.get('confirm_delete_lot_id'):
+                st.warning(f"⚠️ **ATTENTION** : Vous êtes sur le point de supprimer le lot :\n\n**{st.session_state.confirm_delete_lot_name}**")
+                
+                col_confirm1, col_confirm2, col_confirm3 = st.columns([1, 1, 4])
+                
+                with col_confirm1:
+                    if st.button("✅ CONFIRMER", use_container_width=True, type="primary", key="btn_confirm_delete"):
+                        lot_id = st.session_state.confirm_delete_lot_id
+                        
                         success, message = delete_lot(lot_id)
+                        
                         if success:
                             st.success(message)
-                            st.session_state.confirm_delete = False
-                            st.session_state.pop('confirm_delete_checkbox', None)
+                            # Nettoyer session state
+                            st.session_state.pop('confirm_delete_lot_id', None)
+                            st.session_state.pop('confirm_delete_lot_name', None)
                             st.session_state.pop('original_stock_df', None)
                             time.sleep(1)
                             st.rerun()
                         else:
                             st.error(message)
+                            st.session_state.pop('confirm_delete_lot_id', None)
+                            st.session_state.pop('confirm_delete_lot_name', None)
+                
+                with col_confirm2:
+                    if st.button("❌ ANNULER", use_container_width=True, key="btn_cancel_delete"):
+                        st.session_state.pop('confirm_delete_lot_id', None)
+                        st.session_state.pop('confirm_delete_lot_name', None)
+                        st.rerun()
         else:
             st.info("ℹ️ Aucun lot à supprimer")
     else:
