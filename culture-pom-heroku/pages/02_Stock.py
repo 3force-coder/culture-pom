@@ -276,7 +276,18 @@ def save_stock_changes(original_df, edited_df, varietes_dict, producteurs_dict):
             if idx not in original_df.index:
                 continue
             
-            row_id = convert_to_native_types(edited_df.loc[idx, 'id'])
+            # ⭐ FIX: Récupérer l'ID depuis la colonne 'id', pas depuis l'index
+            if 'id' not in edited_df.columns:
+                continue
+            
+            row_id = edited_df.loc[idx, 'id']
+            
+            # ⭐ Vérifier que l'ID est valide (pas 0, pas None, pas NaN)
+            if pd.isna(row_id) or row_id == 0:
+                continue
+            
+            row_id = convert_to_native_types(row_id)
+            
             changes = {}
             
             editable_columns = ['nom_usage', 'nom_variete', 'nom_producteur', 'site_stockage', 'emplacement_stockage',
@@ -892,21 +903,22 @@ if not df.empty:
     
     # Colonnes à afficher
     display_columns = [
+        'id',  # ⭐ ID en premier (obligatoire pour édition)
         'code_lot_interne', 
         'nom_usage', 
-        'code_variete',
         'nom_variete',
-        'code_producteur',
         'nom_producteur',
         'site_stockage', 
         'emplacement_stockage',
         'nombre_unites',
         'poids_unitaire_kg',
-        'poids_total_brut_kg',
+        'poids_total_brut_kg',  # ⭐ Colonne calculée visible
         'calibre_min',
         'calibre_max',
         'type_conditionnement',
-        'age_jours',
+        'prix_achat_euro_tonne',
+        'valeur_lot_euro',  # ⭐ Colonne calculée visible
+        'age_jours',  # ⭐ Colonne calculée visible
         'statut'
     ]
     
@@ -915,8 +927,7 @@ if not df.empty:
     
     # Configuration dropdowns
     column_config = {
-        "code_variete": None,
-        "code_producteur": None,
+        "id": None,  # ⭐ Masquer la colonne ID
         "nom_variete": st.column_config.SelectboxColumn(
             "Variété",
             options=sorted(varietes_dict.keys()),
@@ -948,7 +959,7 @@ if not df.empty:
         display_df,
         use_container_width=True,
         num_rows="fixed",
-        disabled=['code_lot_interne', 'code_variete', 'code_producteur', 'age_jours', 'poids_total_brut_kg'],
+        disabled=['id', 'code_lot_interne', 'poids_total_brut_kg', 'valeur_lot_euro', 'age_jours'],  # ⭐ Colonnes calculées en lecture seule
         column_config=column_config,
         key="stock_editor"
     )
