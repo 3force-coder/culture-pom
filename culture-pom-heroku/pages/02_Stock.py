@@ -1023,7 +1023,7 @@ if not df.empty:
     # Configuration de la colonne Select
     column_config["Select"] = st.column_config.CheckboxColumn(
         "☑",
-        help="Cochez pour sélectionner le lot et voir ses emplacements",
+        help="Cochez les lots puis cliquez 'Actualiser' pour voir le bouton Emplacements",
         default=False,
         width="small"
     )
@@ -1062,9 +1062,32 @@ if not df.empty:
     # Stocker dans session_state
     st.session_state.selected_lots_for_emplacements = selected_lot_ids
     
-    # Afficher info sélection
+    # ⭐ DÉTECTION INTELLIGENTE : Rerun SEULEMENT si colonne Select a changé
+    # Comparer l'état actuel de Select avec l'état précédent
+    if 'Select' in edited_df.columns:
+        # Créer une signature de l'état Select (liste des IDs cochés triée)
+        current_select_state = tuple(sorted(selected_lot_ids))
+        previous_select_state = st.session_state.get('previous_select_state', tuple())
+        
+        # Si l'état Select a changé ET qu'on n'est pas déjà en train de rerun
+        if current_select_state != previous_select_state and not st.session_state.get('is_rerunning_for_select', False):
+            st.session_state.previous_select_state = current_select_state
+            st.session_state.is_rerunning_for_select = True
+            st.rerun()
+        else:
+            # Réinitialiser le flag après le rerun
+            st.session_state.is_rerunning_for_select = False
+    
+    # Afficher info sélection ET bouton navigation
     if len(selected_lot_ids) > 0:
-        st.success(f"✅ {len(selected_lot_ids)} lot(s) sélectionné(s) pour voir les emplacements")
+        col_msg, col_btn = st.columns([3, 1])
+        
+        with col_msg:
+            st.success(f"✅ {len(selected_lot_ids)} lot(s) sélectionné(s) pour voir les emplacements")
+        
+        with col_btn:
+            if st.button(f"👁️ Voir Emplacements ({len(selected_lot_ids)})", use_container_width=True, type="primary", key="btn_goto_emplacements"):
+                st.switch_page("pages/03_Emplacements.py")
     
     # ⭐ DÉTECTION CHANGEMENTS (Auto-save) - VERSION CORRIGÉE AVEC FILTRE
     changes_detected = False
