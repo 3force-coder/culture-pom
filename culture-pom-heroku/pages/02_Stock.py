@@ -882,8 +882,8 @@ if not df.empty:
     if 'original_stock_df' not in st.session_state:
         st.session_state.original_stock_df = filtered_df.copy()
     
-    # ⭐ EN-TÊTE avec 4 BOUTONS ALIGNÉS
-    col_title, col_save, col_refresh, col_add, col_calc = st.columns([3, 1, 1, 1, 1.5])
+    # ⭐ EN-TÊTE avec 5 BOUTONS ALIGNÉS (ajout "Voir Emplacements")
+    col_title, col_save, col_refresh, col_add, col_emplacements, col_calc = st.columns([2.5, 1, 1, 1, 1.5, 1.5])
     
     with col_title:
         st.subheader("📋 Liste des Lots")
@@ -921,6 +921,22 @@ if not df.empty:
                 </script>
                 """, unsafe_allow_html=True)
             st.rerun()
+    
+    # ⭐ NOUVEAU BOUTON : Voir Emplacements
+    with col_emplacements:
+        # Compter les lots sélectionnés
+        nb_selected = len(st.session_state.get('selected_lots_for_emplacements', []))
+        
+        if nb_selected > 0:
+            btn_label = f"👁️ Emplacements ({nb_selected})"
+            btn_disabled = False
+        else:
+            btn_label = "👁️ Emplacements"
+            btn_disabled = True
+        
+        if st.button(btn_label, use_container_width=True, type="secondary", key="btn_view_emplacements", disabled=btn_disabled):
+            # Naviguer vers page Emplacements avec les lots sélectionnés
+            st.switch_page("pages/03_Emplacements.py")
     
     with col_calc:
         if is_admin():
@@ -1002,11 +1018,38 @@ if not df.empty:
         num_rows="fixed",
         disabled=['id', 'code_lot_interne', 'poids_total_brut_kg', 'valeur_lot_euro', 'age_jours'],  # ⭐ Colonnes calculées en lecture seule
         column_config=column_config,
-        key="stock_editor"
+        key="stock_editor",
+        # ⭐ ACTIVER LA SÉLECTION MULTIPLE
+        on_select="rerun",
+        selection_mode="multi-row"
     )
     
     # ⭐ STOCKER edited_df dans session_state pour le bouton Enregistrer
     st.session_state.edited_stock_df = edited_df
+    
+    # ⭐ RÉCUPÉRER LES LIGNES SÉLECTIONNÉES
+    try:
+        selected_rows = st.session_state.stock_editor.get("selection", {}).get("rows", [])
+        
+        if selected_rows:
+            # Récupérer les IDs des lots sélectionnés
+            selected_lot_ids = edited_df.iloc[selected_rows]['id'].tolist()
+            
+            # Limiter à 10 lots max
+            if len(selected_lot_ids) > 10:
+                st.warning("⚠️ Vous avez sélectionné plus de 10 lots. Seuls les 10 premiers seront affichés.")
+                selected_lot_ids = selected_lot_ids[:10]
+            
+            # Stocker dans session_state
+            st.session_state.selected_lots_for_emplacements = selected_lot_ids
+            
+            # Afficher info sélection
+            st.info(f"✅ {len(selected_lot_ids)} lot(s) sélectionné(s) pour voir les emplacements")
+        else:
+            # Aucune sélection
+            st.session_state.selected_lots_for_emplacements = []
+    except:
+        st.session_state.selected_lots_for_emplacements = []
     
     # ⭐ DÉTECTION CHANGEMENTS (Auto-save) - VERSION CORRIGÉE
     changes_detected = False
@@ -1173,26 +1216,5 @@ if not df.empty:
 else:
     st.warning("⚠️ Aucun lot trouvé")
     
-# ============================================================================
-# VOIR EMPLACEMENTS DÉTAILLÉS
-# ============================================================================
 
-st.markdown("---")
-st.subheader("🔍 Voir Emplacements Détaillés")
-
-if not df.empty:
-    lot_options = [f"{row['id']} - {row['code_lot_interne']} ({row['nom_usage']})" 
-                   for _, row in df.iterrows()]
-    
-    selected_lot = st.selectbox(
-        "Sélectionner un lot",
-        lot_options,
-        key="select_lot_emplacements"
-    )
-    
-    if st.button("👁️ Voir les Emplacements", use_container_width=True, type="primary"):
-        lot_id = int(selected_lot.split(" - ")[0])
-        st.query_params['lot_id'] = lot_id
-        st.switch_page("pages/03_Emplacements.py")
-        
 show_footer()
