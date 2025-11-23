@@ -234,7 +234,7 @@ def get_lot_mouvements(lot_id, limit=10):
 # FONCTIONS ACTIONS SUR EMPLACEMENTS
 # ============================================================================
 
-def add_emplacement(lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock="PRINCIPAL"):
+def add_emplacement(lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock="PRINCIPAL", type_conditionnement=None):
     """Ajoute un nouvel emplacement pour un lot"""
     try:
         conn = get_connection()
@@ -243,12 +243,12 @@ def add_emplacement(lot_id, site_stockage, emplacement_stockage, nombre_unites, 
         # Insérer l'emplacement
         query = """
         INSERT INTO stock_emplacements 
-        (lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock, is_active, created_at, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        (lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock, type_conditionnement, is_active, created_at, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         RETURNING id
         """
         
-        cursor.execute(query, (lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock))
+        cursor.execute(query, (lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock, type_conditionnement))
         emplacement_id = cursor.fetchone()['id']
         
         # Enregistrer le mouvement
@@ -272,7 +272,21 @@ def add_emplacement(lot_id, site_stockage, emplacement_stockage, nombre_unites, 
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
-        return False, f"❌ Erreur : {str(e)}"
+            conn.close()
+        
+        error_msg = str(e).lower()
+        
+        # Erreur colonne manquante type_conditionnement
+        if "type_conditionnement" in error_msg and "does not exist" in error_msg:
+            return False, "❌ La colonne 'type_conditionnement' n'existe pas dans la table. Veuillez exécuter le script SQL de mise à jour."
+        
+        # Erreur code_lot_interne
+        elif "code_lot_interne" in error_msg:
+            return False, "❌ Erreur structure table : colonne 'code_lot_interne' manquante. Veuillez vérifier la structure de la base de données."
+        
+        # Autres erreurs
+        else:
+            return False, f"❌ Erreur : {str(e)}"
 
 def update_emplacement(emplacement_id, nombre_unites=None, poids_total_kg=None):
     """Modifie la quantité d'un emplacement"""
@@ -642,7 +656,15 @@ for lot_data in lots_data:
                         options=[""] + sites_disponibles,
                         key=f"new_site_{lot_data['lot_id']}"
                     )
-                    new_nombre_unites = st.number_input("Nombre de pallox *", min_value=0, value=0, step=1, key=f"new_nb_{lot_data['lot_id']}")
+                    
+                    # Type de conditionnement
+                    new_type_conditionnement = st.selectbox(
+                        "Type de conditionnement *",
+                        options=["", "Pallox", "Petit Pallox", "Big Bag"],
+                        key=f"new_type_cond_{lot_data['lot_id']}"
+                    )
+                    
+                    new_nombre_unites = st.number_input("Nombre d'unités *", min_value=0, value=0, step=1, key=f"new_nb_{lot_data['lot_id']}")
                 
                 with col2:
                     # Charger emplacements pour le site sélectionné
@@ -657,7 +679,20 @@ for lot_data in lots_data:
                         options=empl_options,
                         key=f"new_empl_{lot_data['lot_id']}"
                     )
-                    new_poids = st.number_input("Poids total (kg) *", min_value=0.0, value=0.0, step=100.0, key=f"new_poids_{lot_data['lot_id']}")
+                    
+                    # Calcul automatique du poids total
+                    poids_unitaire = 0
+                    if new_type_conditionnement == "Pallox":
+                        poids_unitaire = 1900
+                    elif new_type_conditionnement == "Petit Pallox":
+                        poids_unitaire = 1200
+                    elif new_type_conditionnement == "Big Bag":
+                        poids_unitaire = 1600
+                    
+                    poids_total_calcule = poids_unitaire * new_nombre_unites
+                    
+                    # Afficher le poids calculé (non éditable)
+                    st.metric("Poids total calculé", f"{poids_total_calcule} kg")
                 
                 new_type = st.selectbox(
                     "Type de stock",
@@ -670,7 +705,7 @@ for lot_data in lots_data:
                 with col_save:
                     if st.button("💾 Enregistrer", key=f"btn_save_add_{lot_data['lot_id']}", use_container_width=True, type="primary"):
                         # Validation
-                        if not new_site or not new_emplacement or new_nombre_unites <= 0 or new_poids <= 0:
+                        if not new_site or not new_emplacement or not new_type_conditionnement or new_nombre_unites <= 0:
                             st.error("❌ Tous les champs obligatoires doivent être remplis avec des valeurs > 0")
                         else:
                             success, message = add_emplacement(
@@ -678,8 +713,9 @@ for lot_data in lots_data:
                                 new_site,
                                 new_emplacement,
                                 new_nombre_unites,
-                                new_poids,
-                                new_type
+                                poids_total_calcule,
+                                new_type,
+                                new_type_conditionnement
                             )
                             
                             if success:
