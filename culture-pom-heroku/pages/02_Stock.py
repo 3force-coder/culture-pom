@@ -68,9 +68,7 @@ st.title("📦 Gestion du Stock de Lots")
 st.markdown("---")
 
 def get_all_varietes_for_dropdown():
-    """Récupère TOUTES les variétés actives (nom + code) pour dropdown édition
-    Retourne un dictionnaire {nom_variete: code_variete}
-    """
+    """Récupère TOUTES les variétés actives (nom + code) pour dropdown édition"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -83,16 +81,13 @@ def get_all_varietes_for_dropdown():
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        # {nom: code} pour conversion facile lors de la sauvegarde
         return {row['nom_variete']: row['code_variete'] for row in rows}
     except Exception as e:
         st.error(f"❌ Erreur variétés : {str(e)}")
         return {}
 
 def get_all_producteurs_for_dropdown():
-    """Récupère TOUS les producteurs actifs (nom + code) pour dropdown édition
-    Retourne un dictionnaire {nom: code_producteur}
-    """
+    """Récupère TOUS les producteurs actifs (nom + code) pour dropdown édition"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -105,22 +100,51 @@ def get_all_producteurs_for_dropdown():
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        # {nom: code} pour conversion facile lors de la sauvegarde
         return {row['nom']: row['code_producteur'] for row in rows}
     except Exception as e:
         st.error(f"❌ Erreur producteurs : {str(e)}")
         return {}
 
+def get_all_sites_for_dropdown():
+    """Récupère TOUS les sites de stockage actifs pour dropdown édition"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT code_site 
+            FROM ref_sites_stockage 
+            WHERE is_active = TRUE 
+            ORDER BY code_site
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [row['code_site'] for row in rows]
+    except Exception as e:
+        st.error(f"❌ Erreur sites : {str(e)}")
+        return []
+
+def get_all_emplacements_for_dropdown():
+    """Récupère TOUS les emplacements de stockage actifs pour dropdown édition"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT code_emplacement 
+            FROM ref_sites_stockage 
+            WHERE is_active = TRUE 
+            ORDER BY code_emplacement
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [row['code_emplacement'] for row in rows]
+    except Exception as e:
+        st.error(f"❌ Erreur emplacements : {str(e)}")
+        return []
+
 def load_stock_data():
-    """Charge les données du stock AVEC jointures BIDIRECTIONNELLES
-    
-    ⭐ JOINTURE BIDIRECTIONNELLE : Match sur CODE ou NOM
-    Pourquoi ? Parce que la colonne lots_bruts.code_variete peut contenir :
-    - Des CODES (ex: "SENS") → Match avec ref_varietes.code_variete
-    - Des NOMS (ex: "SENSATION") → Match avec ref_varietes.nom_variete
-    
-    Ainsi, on affiche toujours le nom, même si les données en base sont incohérentes.
-    """
+    """Charge les données du stock AVEC jointures BIDIRECTIONNELLES"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -130,18 +154,18 @@ def load_stock_data():
                 l.id,
                 l.code_lot_interne,
                 l.nom_usage,
-                l.code_variete,              -- Code stocké en base (peut être CODE ou NOM)
-                v.nom_variete,               -- Nom à afficher (depuis ref_varietes)
-                l.code_producteur,           -- Code stocké en base (peut être CODE ou NOM)
-                p.nom as nom_producteur,     -- Nom à afficher (depuis ref_producteurs)
+                l.code_variete,
+                v.nom_variete,
+                l.code_producteur,
+                p.nom as nom_producteur,
                 l.site_stockage,
                 l.emplacement_stockage,
                 l.nombre_unites,
-                l.poids_unitaire_kg,         
-                l.poids_total_brut_kg,       
-                l.calibre_min,               
-                l.calibre_max,               
-                l.type_conditionnement,      
+                l.poids_unitaire_kg,
+                l.poids_total_brut_kg,
+                l.calibre_min,
+                l.calibre_max,
+                l.type_conditionnement,
                 l.date_entree_stock,
                 l.age_jours,
                 l.est_lave,
@@ -152,7 +176,6 @@ def load_stock_data():
                 l.valeur_lot_euro,
                 l.is_active
             FROM lots_bruts l
-            -- ⭐ JOINTURE BIDIRECTIONNELLE : Match sur code OU nom
             LEFT JOIN ref_varietes v ON 
                 (l.code_variete = v.code_variete OR l.code_variete = v.nom_variete)
                 AND v.is_active = TRUE
@@ -191,7 +214,7 @@ def calculate_metrics(df):
     }
 
 def convert_to_native_types(value):
-    """Convertit numpy types vers types Python natifs pour PostgreSQL"""
+    """Convertit numpy types vers types Python natifs"""
     if pd.isna(value) or value is None:
         return None
     if isinstance(value, (np.bool_, bool)):
@@ -203,19 +226,12 @@ def convert_to_native_types(value):
     return value
 
 def save_stock_changes(original_df, edited_df, varietes_dict, producteurs_dict):
-    """Sauvegarde les modifications avec conversion automatique NOM → CODE
-    
-    ⭐ LOGIQUE DE SAUVEGARDE :
-    - L'utilisateur voit et sélectionne des NOMS (ex: "SENSATION")
-    - On enregistre toujours les CODES en base (ex: "SENS")
-    - Conversion via dictionnaires {nom: code}
-    """
+    """Sauvegarde les modifications avec conversion NOM → CODE pour variétés/producteurs"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         updates = 0
         
-        # Dictionnaires inverses : {nom: code}
         varietes_reverse = {v: k for k, v in varietes_dict.items()}
         producteurs_reverse = {v: k for k, v in producteurs_dict.items()}
         
@@ -238,7 +254,6 @@ def save_stock_changes(original_df, edited_df, varietes_dict, producteurs_dict):
                 old_val = original_df.loc[idx, col]
                 new_val = edited_df.loc[idx, col]
                 
-                # Détection de changement
                 has_changed = False
                 if pd.isna(old_val) and pd.isna(new_val):
                     has_changed = False
@@ -248,16 +263,13 @@ def save_stock_changes(original_df, edited_df, varietes_dict, producteurs_dict):
                     has_changed = True
                 
                 if has_changed:
-                    # ⭐ CONVERSION NOM → CODE pour variété et producteur
                     if col == 'nom_variete':
                         if pd.notna(new_val) and new_val != '':
-                            # Enregistrer le CODE (pas le nom)
                             changes['code_variete'] = varietes_reverse.get(new_val, new_val)
                         else:
                             changes['code_variete'] = None
                     elif col == 'nom_producteur':
                         if pd.notna(new_val) and new_val != '':
-                            # Enregistrer le CODE (pas le nom)
                             changes['code_producteur'] = producteurs_reverse.get(new_val, new_val)
                         else:
                             changes['code_producteur'] = None
@@ -288,6 +300,15 @@ def save_stock_changes(original_df, edited_df, varietes_dict, producteurs_dict):
 # Charger données
 df = load_stock_data()
 
+# ⭐ FIX DOUBLONS : Supprimer les doublons basés sur l'ID
+if not df.empty:
+    initial_count = len(df)
+    df = df.drop_duplicates(subset=['id'], keep='first')
+    df = df.reset_index(drop=True)
+    duplicates_removed = initial_count - len(df)
+    if duplicates_removed > 0:
+        st.warning(f"⚠️ {duplicates_removed} doublon(s) supprimé(s) de l'affichage")
+
 # Formulaire d'ajout (masqué par défaut)
 if st.session_state.get('show_add_form', False):
     st.subheader("➕ Ajouter un lot")
@@ -302,9 +323,11 @@ if st.session_state.get('show_add_form', False):
     st.markdown("---")
 
 if not df.empty:
-    # Récupérer les dictionnaires {nom: code} pour dropdowns
+    # Récupérer tous les dropdowns
     varietes_dict = get_all_varietes_for_dropdown()
     producteurs_dict = get_all_producteurs_for_dropdown()
+    sites_list = get_all_sites_for_dropdown()
+    emplacements_list = get_all_emplacements_for_dropdown()
     
     metrics = calculate_metrics(df)
     
@@ -327,7 +350,7 @@ if not df.empty:
     
     st.markdown("---")
     
-    # Filtres - 6 filtres avec NOMS
+    # Filtres
     st.subheader("🔍 Filtres")
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     
@@ -381,7 +404,7 @@ if not df.empty:
     if 'original_stock_df' not in st.session_state:
         st.session_state.original_stock_df = filtered_df.copy()
     
-    # En-tête tableau avec bouton Ajouter
+    # En-tête tableau
     col_title, col_button = st.columns([4, 1])
     with col_title:
         st.subheader("📋 Liste des Lots")
@@ -390,22 +413,22 @@ if not df.empty:
             st.session_state.show_add_form = not st.session_state.get('show_add_form', False)
             st.rerun()
     
-    # ⭐ Colonnes à afficher - AVEC codes masqués (nécessaires pour sauvegarde)
+    # Colonnes à afficher
     display_columns = [
         'code_lot_interne', 
         'nom_usage', 
-        'code_variete',         # ⭐ Masqué mais nécessaire pour sauvegarde
-        'nom_variete',          # ⭐ Visible - NOM lisible
-        'code_producteur',      # ⭐ Masqué mais nécessaire pour sauvegarde
-        'nom_producteur',       # ⭐ Visible - NOM lisible
+        'code_variete',
+        'nom_variete',
+        'code_producteur',
+        'nom_producteur',
         'site_stockage', 
         'emplacement_stockage',
         'nombre_unites',
-        'poids_unitaire_kg',        
-        'poids_total_brut_kg',      
-        'calibre_min',              
-        'calibre_max',              
-        'type_conditionnement',     
+        'poids_unitaire_kg',
+        'poids_total_brut_kg',
+        'calibre_min',
+        'calibre_max',
+        'type_conditionnement',
         'age_jours',
         'statut'
     ]
@@ -413,18 +436,28 @@ if not df.empty:
     available_columns = [col for col in display_columns if col in filtered_df.columns]
     display_df = filtered_df[available_columns].copy()
     
-    # Configuration des colonnes pour dropdowns avec recherche
+    # Configuration dropdowns
     column_config = {
-        "code_variete": None,  # ⭐ Masquer cette colonne (code technique)
-        "code_producteur": None,  # ⭐ Masquer cette colonne (code technique)
+        "code_variete": None,
+        "code_producteur": None,
         "nom_variete": st.column_config.SelectboxColumn(
             "Variété",
-            options=sorted(varietes_dict.keys()),  # Liste TOUS les noms de variétés
+            options=sorted(varietes_dict.keys()),
             required=False
         ),
         "nom_producteur": st.column_config.SelectboxColumn(
             "Producteur",
-            options=sorted(producteurs_dict.keys()),  # Liste TOUS les noms de producteurs
+            options=sorted(producteurs_dict.keys()),
+            required=False
+        ),
+        "site_stockage": st.column_config.SelectboxColumn(
+            "Site",
+            options=sorted(sites_list),
+            required=False
+        ),
+        "emplacement_stockage": st.column_config.SelectboxColumn(
+            "Emplacement",
+            options=sorted(emplacements_list),
             required=False
         )
     }
@@ -472,7 +505,6 @@ if not df.empty:
             st.success("✅ Aucun lot ancien")
     
     with col2:
-        # ⭐ Alerte : vérifier nom_variete NULL (pas code_variete)
         no_variety = df[df['nom_variete'].isna() | (df['nom_variete'] == '')]
         if not no_variety.empty:
             st.warning(f"⚠️ {len(no_variety)} lot(s) sans variété")
