@@ -832,19 +832,39 @@ if not df_full.empty:
         key=f"editor_{selected_table}"
     )
     
-    # ⭐ DÉTECTION CHANGEMENTS (Auto-save)
+    # ⭐ DÉTECTION CHANGEMENTS (Auto-save) - VERSION CORRIGÉE
     changes_detected = False
     try:
-        # Comparer seulement les colonnes communes
-        common_cols = [col for col in st.session_state.original_df.columns if col in edited_df.columns]
-        if not st.session_state.original_df[common_cols].equals(edited_df[common_cols]):
-            changes_detected = True
-    except:
-        pass
+        if 'original_df' in st.session_state:
+            config = TABLES_CONFIG[selected_table]
+            
+            # Comparer ligne par ligne sur colonnes éditables
+            for idx in edited_df.index:
+                if idx not in st.session_state.original_df.index:
+                    continue
+                
+                for col in config.get('editable', []):
+                    if col in st.session_state.original_df.columns and col in edited_df.columns:
+                        old_val = st.session_state.original_df.loc[idx, col]
+                        new_val = edited_df.loc[idx, col]
+                        
+                        # Comparer en ignorant NaN
+                        if pd.isna(old_val) and pd.isna(new_val):
+                            continue
+                        elif old_val != new_val:
+                            changes_detected = True
+                            break
+                
+                if changes_detected:
+                    break
+    except Exception as e:
+        # Debug
+        st.caption(f"Debug détection: {str(e)}")
     
     # ⭐ ALERTE si modifications non sauvegardées
     if changes_detected:
-        st.warning("⚠️ **Modifications non sauvegardées détectées** - Pensez à cliquer sur 💾 Enregistrer pour ne pas perdre vos modifications")
+        st.error("🚫 **MODIFICATIONS NON SAUVEGARDÉES !**")
+        st.warning("⚠️ Vous avez modifié des données. **Cliquez sur 💾 Enregistrer** avant de changer de table ou vous perdrez vos modifications !")
     
     # Boutons
     col1, col2 = st.columns([1, 5])
