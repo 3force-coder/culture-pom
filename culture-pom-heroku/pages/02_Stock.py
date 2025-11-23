@@ -20,6 +20,9 @@ def show_user_info():
             st.caption(f"🔑 {st.session_state.get('role', 'USER')}")
             st.markdown("---")
             
+            # ⭐ AFFICHER VERSION STREAMLIT
+            st.caption(f"⚙️ Streamlit v{st.__version__}")
+            
             if st.button("🚪 Déconnexion", use_container_width=True, key="btn_logout_sidebar"):
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
@@ -1012,48 +1015,83 @@ if not df.empty:
         )
     }
     
-    # ⭐ DATA EDITOR AVEC SÉLECTION (Streamlit 1.35+)
-    edited_df = st.data_editor(
-        display_df,
-        use_container_width=True,
-        num_rows="fixed",
-        disabled=['id', 'code_lot_interne', 'poids_total_brut_kg', 'valeur_lot_euro', 'age_jours'],
-        column_config=column_config,
-        key="stock_editor",
-        selection_mode="multi-row"  # ✅ Sélection multi-rows (Streamlit 1.35+)
-    )
+    # ⭐ DATA EDITOR AVEC SÉLECTION ADAPTATIVE (selon version Streamlit)
+    from packaging import version
+    
+    # Détecter la version de Streamlit
+    streamlit_version = version.parse(st.__version__)
+    
+    # Préparer les paramètres du data_editor
+    editor_params = {
+        "data": display_df,
+        "use_container_width": True,
+        "num_rows": "fixed",
+        "disabled": ['id', 'code_lot_interne', 'poids_total_brut_kg', 'valeur_lot_euro', 'age_jours'],
+        "column_config": column_config,
+        "key": "stock_editor"
+    }
+    
+    # ⭐ Ajouter selection_mode SEULEMENT si Streamlit >= 1.35.0
+    if streamlit_version >= version.parse("1.35.0"):
+        try:
+            # Tenter d'ajouter selection_mode
+            editor_params["selection_mode"] = "multi-row"
+            st.info(f"✅ Mode sélection activé (Streamlit {st.__version__})")
+        except:
+            st.warning(f"⚠️ selection_mode non supporté sur Streamlit {st.__version__}")
+    else:
+        st.warning(f"⚠️ Streamlit {st.__version__} < 1.35.0 : sélection multi-row non disponible")
+    
+    # Créer le data_editor
+    try:
+        edited_df = st.data_editor(**editor_params)
+    except TypeError as e:
+        # Si selection_mode cause une erreur, retirer et réessayer
+        if "selection_mode" in str(e):
+            st.error(f"❌ Erreur avec selection_mode : {e}")
+            editor_params.pop("selection_mode", None)
+            edited_df = st.data_editor(**editor_params)
+            st.warning("⚠️ Data editor chargé SANS sélection multi-row")
+        else:
+            raise e
     
     # ⭐ STOCKER edited_df dans session_state pour le bouton Enregistrer
     st.session_state.edited_stock_df = edited_df
     
-    # ⭐ RÉCUPÉRER LES LIGNES SÉLECTIONNÉES depuis session_state
+    # ⭐ RÉCUPÉRER LES LIGNES SÉLECTIONNÉES (si disponible)
     selected_lot_ids = []
     
-    if "stock_editor" in st.session_state:
-        # Streamlit 1.35+ stocke la sélection dans session_state.key.selection
-        editor_state = st.session_state.stock_editor
-        
-        if isinstance(editor_state, dict) and "selection" in editor_state:
-            selection = editor_state["selection"]
+    if "selection_mode" in editor_params and "stock_editor" in st.session_state:
+        try:
+            # Streamlit 1.35+ stocke la sélection dans session_state.key.selection
+            editor_state = st.session_state.stock_editor
             
-            if isinstance(selection, dict) and "rows" in selection:
-                selected_rows = selection["rows"]
+            if isinstance(editor_state, dict) and "selection" in editor_state:
+                selection = editor_state["selection"]
                 
-                if selected_rows and len(selected_rows) > 0:
-                    # Récupérer les IDs des lots sélectionnés
-                    selected_lot_ids = [int(edited_df.iloc[row]['id']) for row in selected_rows if row < len(edited_df)]
+                if isinstance(selection, dict) and "rows" in selection:
+                    selected_rows = selection["rows"]
                     
-                    # Limiter à 10 lots max
-                    if len(selected_lot_ids) > 10:
-                        st.warning("⚠️ Vous avez sélectionné plus de 10 lots. Seuls les 10 premiers seront affichés.")
-                        selected_lot_ids = selected_lot_ids[:10]
+                    if selected_rows and len(selected_rows) > 0:
+                        # Récupérer les IDs des lots sélectionnés
+                        selected_lot_ids = [int(edited_df.iloc[row]['id']) for row in selected_rows if row < len(edited_df)]
+                        
+                        # Limiter à 10 lots max
+                        if len(selected_lot_ids) > 10:
+                            st.warning("⚠️ Vous avez sélectionné plus de 10 lots. Seuls les 10 premiers seront affichés.")
+                            selected_lot_ids = selected_lot_ids[:10]
+        except Exception as e:
+            st.error(f"❌ Erreur récupération sélection : {e}")
     
     # Stocker dans session_state
     st.session_state.selected_lots_for_emplacements = selected_lot_ids
     
     # Afficher info sélection
     if len(selected_lot_ids) > 0:
-        st.info(f"✅ {len(selected_lot_ids)} lot(s) sélectionné(s) pour voir les emplacements")
+        st.success(f"✅ {len(selected_lot_ids)} lot(s) sélectionné(s) pour voir les emplacements")
+    elif "selection_mode" not in editor_params:
+        # Si selection_mode n'est pas disponible, afficher message alternatif
+        st.info("💡 La sélection multi-lots via checkboxes nécessite Streamlit >= 1.35.0. Version actuelle : " + st.__version__)
     
     # ⭐ DÉTECTION CHANGEMENTS (Auto-save) - VERSION CORRIGÉE
     changes_detected = False
