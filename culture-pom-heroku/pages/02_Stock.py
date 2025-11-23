@@ -12,7 +12,6 @@ st.set_page_config(page_title="Stock - Culture Pom", page_icon="📦", layout="w
 # CSS custom pour réduire FORTEMENT les espacements
 st.markdown("""
 <style>
-    /* Réduire espacement général du container */
     .block-container {
         padding-top: 2rem !important;
         padding-bottom: 0.5rem !important;
@@ -20,7 +19,6 @@ st.markdown("""
         padding-right: 2rem !important;
     }
     
-    /* Réduire espacement autour de TOUS les titres */
     h1, h2, h3, h4 {
         margin-top: 0.3rem !important;
         margin-bottom: 0.3rem !important;
@@ -28,19 +26,16 @@ st.markdown("""
         padding-bottom: 0 !important;
     }
     
-    /* Réduire espacement entre widgets */
     .stSelectbox, .stButton, .stCheckbox, .stTextInput {
         margin-bottom: 0.3rem !important;
         margin-top: 0.3rem !important;
     }
     
-    /* Réduire espacement des data_editor */
     .stDataFrame {
         margin-top: 0.5rem !important;
         margin-bottom: 0.5rem !important;
     }
     
-    /* Réduire espacement des métriques */
     [data-testid="stMetricValue"] {
         font-size: 1.4rem !important;
     }
@@ -49,18 +44,15 @@ st.markdown("""
         padding: 0.3rem !important;
     }
     
-    /* Réduire espacement markdown (lignes hr) */
     hr {
         margin-top: 0.5rem !important;
         margin-bottom: 0.5rem !important;
     }
     
-    /* Réduire espacement colonnes */
     [data-testid="column"] {
         padding: 0.2rem !important;
     }
     
-    /* Réduire espacement subheaders */
     .stSubheader {
         margin-top: 0.3rem !important;
         margin-bottom: 0.3rem !important;
@@ -76,7 +68,9 @@ st.title("📦 Gestion du Stock de Lots")
 st.markdown("---")
 
 def get_all_varietes_for_dropdown():
-    """Récupère TOUTES les variétés actives (code + nom) pour dropdown édition"""
+    """Récupère TOUTES les variétés actives (nom + code) pour dropdown édition
+    Retourne un dictionnaire {nom_variete: code_variete}
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -89,14 +83,16 @@ def get_all_varietes_for_dropdown():
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        # Retourner dictionnaire {nom: code}
+        # {nom: code} pour conversion facile lors de la sauvegarde
         return {row['nom_variete']: row['code_variete'] for row in rows}
     except Exception as e:
         st.error(f"❌ Erreur variétés : {str(e)}")
         return {}
 
 def get_all_producteurs_for_dropdown():
-    """Récupère TOUS les producteurs actifs (code + nom) pour dropdown édition"""
+    """Récupère TOUS les producteurs actifs (nom + code) pour dropdown édition
+    Retourne un dictionnaire {nom: code_producteur}
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -109,28 +105,35 @@ def get_all_producteurs_for_dropdown():
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        # Retourner dictionnaire {nom: code}
+        # {nom: code} pour conversion facile lors de la sauvegarde
         return {row['nom']: row['code_producteur'] for row in rows}
     except Exception as e:
         st.error(f"❌ Erreur producteurs : {str(e)}")
         return {}
 
 def load_stock_data():
-    """Charge les données du stock AVEC jointures pour afficher les noms"""
+    """Charge les données du stock AVEC jointures BIDIRECTIONNELLES
+    
+    ⭐ JOINTURE BIDIRECTIONNELLE : Match sur CODE ou NOM
+    Pourquoi ? Parce que la colonne lots_bruts.code_variete peut contenir :
+    - Des CODES (ex: "SENS") → Match avec ref_varietes.code_variete
+    - Des NOMS (ex: "SENSATION") → Match avec ref_varietes.nom_variete
+    
+    Ainsi, on affiche toujours le nom, même si les données en base sont incohérentes.
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Requête avec jointures pour avoir nom_variete et nom_producteur
         query = """
             SELECT 
                 l.id,
                 l.code_lot_interne,
                 l.nom_usage,
-                l.code_variete,
-                v.nom_variete,              
-                l.code_producteur,
-                p.nom as nom_producteur,     
+                l.code_variete,              -- Code stocké en base (peut être CODE ou NOM)
+                v.nom_variete,               -- Nom à afficher (depuis ref_varietes)
+                l.code_producteur,           -- Code stocké en base (peut être CODE ou NOM)
+                p.nom as nom_producteur,     -- Nom à afficher (depuis ref_producteurs)
                 l.site_stockage,
                 l.emplacement_stockage,
                 l.nombre_unites,
@@ -149,8 +152,13 @@ def load_stock_data():
                 l.valeur_lot_euro,
                 l.is_active
             FROM lots_bruts l
-            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete AND v.is_active = TRUE
-            LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur AND p.is_active = TRUE
+            -- ⭐ JOINTURE BIDIRECTIONNELLE : Match sur code OU nom
+            LEFT JOIN ref_varietes v ON 
+                (l.code_variete = v.code_variete OR l.code_variete = v.nom_variete)
+                AND v.is_active = TRUE
+            LEFT JOIN ref_producteurs p ON 
+                (l.code_producteur = p.code_producteur OR l.code_producteur = p.nom)
+                AND p.is_active = TRUE
             WHERE l.is_active = TRUE
             ORDER BY l.date_entree_stock DESC
         """
@@ -169,7 +177,7 @@ def load_stock_data():
         return pd.DataFrame()
 
 def calculate_metrics(df):
-    """Calcule les métriques"""
+    """Calcule les métriques KPI"""
     if df.empty:
         return {'total_lots': 0, 'tonnage_total': 0.0, 'nb_varietes': 0, 'nb_producteurs': 0, 'age_moyen': 0, 'valeur_totale': 0.0}
     
@@ -183,7 +191,7 @@ def calculate_metrics(df):
     }
 
 def convert_to_native_types(value):
-    """Convertit numpy types vers types Python natifs"""
+    """Convertit numpy types vers types Python natifs pour PostgreSQL"""
     if pd.isna(value) or value is None:
         return None
     if isinstance(value, (np.bool_, bool)):
@@ -195,21 +203,26 @@ def convert_to_native_types(value):
     return value
 
 def save_stock_changes(original_df, edited_df, varietes_dict, producteurs_dict):
-    """Sauvegarde les modifications avec conversion nom → code pour variétés et producteurs"""
+    """Sauvegarde les modifications avec conversion automatique NOM → CODE
+    
+    ⭐ LOGIQUE DE SAUVEGARDE :
+    - L'utilisateur voit et sélectionne des NOMS (ex: "SENSATION")
+    - On enregistre toujours les CODES en base (ex: "SENS")
+    - Conversion via dictionnaires {nom: code}
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
         updates = 0
         
-        # Créer dictionnaires inverses pour conversion nom → code
+        # Dictionnaires inverses : {nom: code}
         varietes_reverse = {v: k for k, v in varietes_dict.items()}
         producteurs_reverse = {v: k for k, v in producteurs_dict.items()}
         
-        # Colonnes éditables
-        editable_columns = ['nom_usage', 'nom_variete', 'nom_producteur', 'site_stockage', 
-                           'emplacement_stockage', 'nombre_unites', 'poids_unitaire_kg', 
-                           'calibre_min', 'calibre_max', 'type_conditionnement',
-                           'prix_achat_euro_tonne', 'valeur_lot_euro', 'statut']
+        editable_display_columns = ['nom_usage', 'nom_variete', 'nom_producteur', 'site_stockage', 
+                                    'emplacement_stockage', 'nombre_unites', 'poids_unitaire_kg', 
+                                    'calibre_min', 'calibre_max', 'type_conditionnement',
+                                    'prix_achat_euro_tonne', 'valeur_lot_euro', 'statut']
         
         for idx in edited_df.index:
             if idx not in original_df.index:
@@ -218,21 +231,36 @@ def save_stock_changes(original_df, edited_df, varietes_dict, producteurs_dict):
             lot_id = convert_to_native_types(original_df.loc[idx, 'id'])
             changes = {}
             
-            for col in editable_columns:
+            for col in editable_display_columns:
                 if col not in edited_df.columns or col not in original_df.columns:
                     continue
                     
                 old_val = original_df.loc[idx, col]
                 new_val = edited_df.loc[idx, col]
                 
+                # Détection de changement
+                has_changed = False
                 if pd.isna(old_val) and pd.isna(new_val):
-                    continue
-                elif pd.isna(old_val) or pd.isna(new_val) or old_val != new_val:
-                    # Conversion nom → code pour variété et producteur
+                    has_changed = False
+                elif pd.isna(old_val) or pd.isna(new_val):
+                    has_changed = True
+                elif old_val != new_val:
+                    has_changed = True
+                
+                if has_changed:
+                    # ⭐ CONVERSION NOM → CODE pour variété et producteur
                     if col == 'nom_variete':
-                        changes['code_variete'] = varietes_reverse.get(new_val, new_val)
+                        if pd.notna(new_val) and new_val != '':
+                            # Enregistrer le CODE (pas le nom)
+                            changes['code_variete'] = varietes_reverse.get(new_val, new_val)
+                        else:
+                            changes['code_variete'] = None
                     elif col == 'nom_producteur':
-                        changes['code_producteur'] = producteurs_reverse.get(new_val, new_val)
+                        if pd.notna(new_val) and new_val != '':
+                            # Enregistrer le CODE (pas le nom)
+                            changes['code_producteur'] = producteurs_reverse.get(new_val, new_val)
+                        else:
+                            changes['code_producteur'] = None
                     else:
                         changes[col] = convert_to_native_types(new_val)
             
@@ -247,6 +275,9 @@ def save_stock_changes(original_df, edited_df, varietes_dict, producteurs_dict):
         conn.commit()
         cursor.close()
         conn.close()
+        
+        if updates == 0:
+            return False, "ℹ️ Aucune modification détectée"
         return True, f"✅ {updates} lot(s) mis à jour"
         
     except Exception as e:
@@ -271,7 +302,7 @@ if st.session_state.get('show_add_form', False):
     st.markdown("---")
 
 if not df.empty:
-    # Récupérer les dictionnaires pour dropdowns
+    # Récupérer les dictionnaires {nom: code} pour dropdowns
     varietes_dict = get_all_varietes_for_dropdown()
     producteurs_dict = get_all_producteurs_for_dropdown()
     
@@ -359,12 +390,14 @@ if not df.empty:
             st.session_state.show_add_form = not st.session_state.get('show_add_form', False)
             st.rerun()
     
-    # Colonnes à afficher
+    # ⭐ Colonnes à afficher - AVEC codes masqués (nécessaires pour sauvegarde)
     display_columns = [
         'code_lot_interne', 
         'nom_usage', 
-        'nom_variete',
-        'nom_producteur',
+        'code_variete',         # ⭐ Masqué mais nécessaire pour sauvegarde
+        'nom_variete',          # ⭐ Visible - NOM lisible
+        'code_producteur',      # ⭐ Masqué mais nécessaire pour sauvegarde
+        'nom_producteur',       # ⭐ Visible - NOM lisible
         'site_stockage', 
         'emplacement_stockage',
         'nombre_unites',
@@ -382,15 +415,17 @@ if not df.empty:
     
     # Configuration des colonnes pour dropdowns avec recherche
     column_config = {
+        "code_variete": None,  # ⭐ Masquer cette colonne (code technique)
+        "code_producteur": None,  # ⭐ Masquer cette colonne (code technique)
         "nom_variete": st.column_config.SelectboxColumn(
             "Variété",
-            options=sorted(varietes_dict.keys()),
-            required=True
+            options=sorted(varietes_dict.keys()),  # Liste TOUS les noms de variétés
+            required=False
         ),
         "nom_producteur": st.column_config.SelectboxColumn(
             "Producteur",
-            options=sorted(producteurs_dict.keys()),
-            required=True
+            options=sorted(producteurs_dict.keys()),  # Liste TOUS les noms de producteurs
+            required=False
         )
     }
     
@@ -398,7 +433,7 @@ if not df.empty:
         display_df,
         use_container_width=True,
         num_rows="fixed",
-        disabled=['code_lot_interne', 'age_jours', 'poids_total_brut_kg'],
+        disabled=['code_lot_interne', 'code_variete', 'code_producteur', 'age_jours', 'poids_total_brut_kg'],
         column_config=column_config,
         key="stock_editor"
     )
@@ -413,7 +448,10 @@ if not df.empty:
                 st.session_state.pop('original_stock_df', None)
                 st.rerun()
             else:
-                st.error(message)
+                if "Aucune modification" in message:
+                    st.info(message)
+                else:
+                    st.error(message)
     with col2:
         if st.button("🔄 Actualiser", use_container_width=True):
             st.session_state.pop('original_stock_df', None)
@@ -434,9 +472,12 @@ if not df.empty:
             st.success("✅ Aucun lot ancien")
     
     with col2:
-        no_variety = df[df['code_variete'].isna()]
+        # ⭐ Alerte : vérifier nom_variete NULL (pas code_variete)
+        no_variety = df[df['nom_variete'].isna() | (df['nom_variete'] == '')]
         if not no_variety.empty:
             st.warning(f"⚠️ {len(no_variety)} lot(s) sans variété")
+            alert_variety_df = no_variety[['code_lot_interne', 'nom_usage']].head(5)
+            st.dataframe(alert_variety_df, use_container_width=True, hide_index=True)
         else:
             st.success("✅ Tous avec variété")
     
