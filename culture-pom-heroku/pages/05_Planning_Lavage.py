@@ -248,7 +248,15 @@ def get_jobs_by_statut(statut):
             lj.created_by,
             lj.created_at,
             lj.date_activation,
-            lj.date_terminaison
+            lj.date_terminaison,
+            lj.poids_lave_net_kg,
+            lj.poids_grenailles_kg,
+            lj.poids_dechets_kg,
+            lj.poids_terre_calcule_kg,
+            lj.tare_reelle_pct,
+            lj.rendement_pct,
+            lj.site_destination,
+            lj.emplacement_destination
         FROM lavages_jobs lj
         WHERE lj.statut = %s
         ORDER BY lj.date_prevue DESC, lj.created_at DESC
@@ -262,7 +270,9 @@ def get_jobs_by_statut(statut):
         if rows:
             df = pd.DataFrame(rows)
             # Convertir colonnes numériques
-            numeric_cols = ['quantite_pallox', 'poids_brut_kg', 'temps_estime_heures']
+            numeric_cols = ['quantite_pallox', 'poids_brut_kg', 'temps_estime_heures',
+                          'poids_lave_net_kg', 'poids_grenailles_kg', 'poids_dechets_kg',
+                          'poids_terre_calcule_kg', 'tare_reelle_pct', 'rendement_pct']
             for col in numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
