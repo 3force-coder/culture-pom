@@ -890,16 +890,21 @@ if not df.empty:
     
     with col_save:
         if st.button("💾 Enregistrer", use_container_width=True, type="primary", key="btn_save_top"):
-            success, message = save_stock_changes(st.session_state.original_stock_df, edited_df, varietes_dict, producteurs_dict)
-            if success:
-                st.success(message)
-                st.session_state.pop('original_stock_df', None)
-                st.rerun()
-            else:
-                if "Aucune modification" in message:
-                    st.info(message)
+            # Utiliser edited_df depuis session_state (créé par data_editor)
+            if 'edited_stock_df' in st.session_state:
+                success, message = save_stock_changes(st.session_state.original_stock_df, st.session_state.edited_stock_df, varietes_dict, producteurs_dict)
+                if success:
+                    st.success(message)
+                    st.session_state.pop('original_stock_df', None)
+                    st.session_state.pop('edited_stock_df', None)
+                    st.rerun()
                 else:
-                    st.error(message)
+                    if "Aucune modification" in message:
+                        st.info(message)
+                    else:
+                        st.error(message)
+            else:
+                st.warning("⚠️ Aucune modification à enregistrer")
     
     with col_refresh:
         if st.button("🔄 Actualiser", use_container_width=True, key="btn_refresh_top"):
@@ -999,6 +1004,9 @@ if not df.empty:
         column_config=column_config,
         key="stock_editor"
     )
+    
+    # ⭐ STOCKER edited_df dans session_state pour le bouton Enregistrer
+    st.session_state.edited_stock_df = edited_df
     
     # ⭐ DÉTECTION CHANGEMENTS (Auto-save) - VERSION CORRIGÉE
     changes_detected = False
