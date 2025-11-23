@@ -425,10 +425,12 @@ def recalculate_lot_values():
         
         for lot in lots:
             lot_id = lot['id']
-            nombre_unites = lot['nombre_unites'] or 0
-            poids_unitaire = lot['poids_unitaire_kg'] or 0
-            tare_pct = lot['tare_achat_pct'] or 0
-            prix_achat = lot['prix_achat_euro_tonne'] or 0
+            
+            # ⭐ CONVERSION EN FLOAT pour éviter erreurs decimal.Decimal
+            nombre_unites = float(lot['nombre_unites']) if lot['nombre_unites'] is not None else 0.0
+            poids_unitaire = float(lot['poids_unitaire_kg']) if lot['poids_unitaire_kg'] is not None else 0.0
+            tare_pct = float(lot['tare_achat_pct']) if lot['tare_achat_pct'] is not None else 0.0
+            prix_achat = float(lot['prix_achat_euro_tonne']) if lot['prix_achat_euro_tonne'] is not None else 0.0
             date_entree = lot['date_entree_stock']
             
             # ⭐ CALCUL 1 : Poids total brut
@@ -436,8 +438,8 @@ def recalculate_lot_values():
             
             # ⭐ CALCUL 2 : Valeur lot (avec tare)
             # Formule : (poids_brut / 1000) × (1 - tare/100) × prix
-            poids_tonnes = poids_total_brut / 1000
-            valeur_lot = poids_tonnes * (1 - tare_pct / 100) * prix_achat
+            poids_tonnes = poids_total_brut / 1000.0
+            valeur_lot = poids_tonnes * (1.0 - tare_pct / 100.0) * prix_achat
             
             # ⭐ CALCUL 3 : Âge en jours
             if date_entree:
@@ -472,12 +474,12 @@ def recalculate_lot_values():
         cursor.close()
         conn.close()
         
-        return True, f"✅ {updates} lot(s) recalculé(s) avec succès", datetime.now()
+        return True, f"✅ {updates} lot(s) recalculé(s)", datetime.now()
         
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
-        return False, f"❌ Erreur calcul : {str(e)}", None
+        return False, f"❌ Erreur : {str(e)}", None
 
 def get_last_calculation_time():
     """Récupère la date de dernière mise à jour des calculs"""
@@ -534,14 +536,15 @@ def format_time_ago(timestamp):
 
 df = load_stock_data()
 
-# ⭐ FIX DOUBLONS : Supprimer les doublons basés sur l'ID
+# ⭐ FIX DOUBLONS : Supprimer les doublons basés sur l'ID (alerte déplacée en bas)
 if not df.empty:
     initial_count = len(df)
     df = df.drop_duplicates(subset=['id'], keep='first')
     df = df.reset_index(drop=True)
     duplicates_removed = initial_count - len(df)
-    if duplicates_removed > 0:
-        st.warning(f"⚠️ {duplicates_removed} doublon(s) supprimé(s) de l'affichage")
+    # Stocker pour affichage en bas
+    if 'duplicates_removed' not in st.session_state:
+        st.session_state.duplicates_removed = duplicates_removed
 
 # =====================================================
 # FORMULAIRE D'AJOUT (AU CLIC SUR BOUTON)
@@ -849,11 +852,11 @@ if not df.empty:
     if 'original_stock_df' not in st.session_state:
         st.session_state.original_stock_df = filtered_df.copy()
     
-    # En-tête tableau
-    col_title, col_button = st.columns([4, 1])
+    # En-tête tableau avec boutons Ajouter + Recalculer
+    col_title, col_add, col_calc = st.columns([3, 1, 2])
     with col_title:
         st.subheader("📋 Liste des Lots")
-    with col_button:
+    with col_add:
         if st.button("➕ Ajouter", use_container_width=True, type="primary"):
             st.session_state.show_add_form = not st.session_state.get('show_add_form', False)
             if st.session_state.show_add_form:
@@ -864,6 +867,25 @@ if not df.empty:
                 </script>
                 """, unsafe_allow_html=True)
             st.rerun()
+    
+    with col_calc:
+        # ⭐ BOUTON RECALCULER (ADMIN uniquement)
+        if is_admin():
+            # Timestamp à afficher
+            last_calc = get_last_calculation_time()
+            time_ago_text = format_time_ago(last_calc) if last_calc else "Jamais"
+            
+            if st.button(f"🔄 Recalculer ({time_ago_text})", use_container_width=True, type="secondary", key="btn_recalc_top"):
+                with st.spinner("Calcul en cours..."):
+                    success, message, timestamp = recalculate_lot_values()
+                    
+                    if success:
+                        st.success(message)
+                        st.session_state.pop('original_stock_df', None)
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(message)
     
     # Charger les types de conditionnement pour le dropdown
     types_cond_list = get_unique_values_from_db("lots_bruts", "type_conditionnement", where_active=False)
@@ -1051,45 +1073,11 @@ if not df.empty:
         st.warning("⚠️ Fonction réservée aux administrateurs uniquement")
         st.info("👤 Vous êtes connecté en tant que : **USER**")
     
-    # ⭐ RECALCUL DES VALEURS (ADMIN UNIQUEMENT)
-    st.markdown("---")
-    st.subheader("🔄 Recalcul des Valeurs Calculées")
-    
-    if is_admin():
-        # Afficher timestamp dernière mise à jour
-        last_calc = get_last_calculation_time()
-        if last_calc:
-            time_ago = format_time_ago(last_calc)
-            st.info(f"📅 Dernière mise à jour : **{time_ago}**")
-        else:
-            st.warning("⚠️ Aucun calcul effectué récemment")
-        
-        st.markdown("""
-        **Champs recalculés** :
-        - **Poids Total Brut** (kg) = Nombre Unités × Poids Unitaire
-        - **Valeur Lot** (€) = (Poids Brut ÷ 1000) × (1 - Tare ÷ 100) × Prix Achat
-        - **Âge** (jours) = Jours écoulés depuis Date Entrée Stock
-        """)
-        
-        col1, col2 = st.columns([1, 5])
-        with col1:
-            if st.button("🔄 Recalculer", use_container_width=True, type="primary", key="btn_recalculate"):
-                with st.spinner("Calcul en cours..."):
-                    success, message, timestamp = recalculate_lot_values()
-                    
-                    if success:
-                        st.success(message)
-                        if timestamp:
-                            time_ago = format_time_ago(timestamp)
-                            st.info(f"📅 Mise à jour : {time_ago}")
-                        st.session_state.pop('original_stock_df', None)
-                        time.sleep(2)
-                        st.rerun()
-                    else:
-                        st.error(message)
-    else:
-        st.warning("⚠️ Fonction réservée aux administrateurs uniquement")
-        st.info("👤 Vous êtes connecté en tant que : **USER**")
+    # ⭐ ALERTE DOUBLONS (EN BAS, DISCRÈTE)
+    if st.session_state.get('duplicates_removed', 0) > 0:
+        st.markdown("---")
+        with st.expander("ℹ️ Information technique", expanded=False):
+            st.info(f"🔧 {st.session_state.duplicates_removed} doublon(s) d'affichage supprimé(s) automatiquement (causés par les jointures SQL)")
 
 else:
     st.warning("⚠️ Aucun lot trouvé")
