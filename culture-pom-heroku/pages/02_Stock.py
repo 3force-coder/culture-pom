@@ -1066,26 +1066,31 @@ if not df.empty:
     if len(selected_lot_ids) > 0:
         st.success(f"✅ {len(selected_lot_ids)} lot(s) sélectionné(s) pour voir les emplacements")
     
-    # ⭐ DÉTECTION CHANGEMENTS (Auto-save) - VERSION CORRIGÉE
+    # ⭐ DÉTECTION CHANGEMENTS (Auto-save) - VERSION CORRIGÉE AVEC FILTRE
     changes_detected = False
     try:
         if 'original_stock_df' in st.session_state:
-            # Colonnes éditables (celles qui peuvent vraiment changer)
-            editable_cols = ['nom_usage', 'nom_variete', 'nom_producteur', 'site_stockage', 
-                           'emplacement_stockage', 'nombre_unites', 'poids_unitaire_kg', 
-                           'calibre_min', 'calibre_max', 'type_conditionnement', 
-                           'prix_achat_euro_tonne', 'statut']
-            
-            # Vérifier colonne par colonne
-            for col in editable_cols:
-                if col in st.session_state.original_stock_df.columns and col in edited_df_for_save.columns:
-                    # Comparer les valeurs (en ignorant NaN)
-                    orig_vals = st.session_state.original_stock_df[col].fillna('')
-                    edit_vals = edited_df_for_save[col].fillna('')
-                    
-                    if not orig_vals.equals(edit_vals):
-                        changes_detected = True
-                        break
+            # ⭐ VÉRIFIER D'ABORD SI C'EST UN FILTRE (nombre lignes différent)
+            if len(st.session_state.original_stock_df) != len(edited_df_for_save):
+                # C'est un filtre, pas une modification → Pas d'alerte
+                changes_detected = False
+            else:
+                # Même nombre de lignes → Vérifier si vraies modifications
+                editable_cols = ['nom_usage', 'nom_variete', 'nom_producteur', 'site_stockage', 
+                               'emplacement_stockage', 'nombre_unites', 'poids_unitaire_kg', 
+                               'calibre_min', 'calibre_max', 'type_conditionnement', 
+                               'prix_achat_euro_tonne', 'statut']
+                
+                # Vérifier colonne par colonne
+                for col in editable_cols:
+                    if col in st.session_state.original_stock_df.columns and col in edited_df_for_save.columns:
+                        # Comparer les valeurs (en ignorant NaN)
+                        orig_vals = st.session_state.original_stock_df[col].fillna('')
+                        edit_vals = edited_df_for_save[col].fillna('')
+                        
+                        if not orig_vals.equals(edit_vals):
+                            changes_detected = True
+                            break
     except Exception as e:
         # Debug : afficher l'erreur
         st.caption(f"Debug détection: {str(e)}")
