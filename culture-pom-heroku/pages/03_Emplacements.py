@@ -164,6 +164,7 @@ def get_lot_emplacements(lot_id):
             poids_total_kg,
             type_stock,
             type_conditionnement,
+            statut_lavage,
             is_active,
             created_at,
             updated_at
@@ -181,8 +182,13 @@ def get_lot_emplacements(lot_id):
             df = pd.DataFrame(rows, columns=[
                 'id', 'site_stockage', 'emplacement_stockage', 
                 'nombre_unites', 'poids_total_kg', 'type_stock', 'type_conditionnement',
-                'is_active', 'created_at', 'updated_at'
+                'statut_lavage', 'is_active', 'created_at', 'updated_at'
             ])
+            
+            # ⭐ Ajouter colonnes calculées Lavé et Grenailles
+            df['est_lave'] = df['statut_lavage'].apply(lambda x: 'OUI' if x == 'LAVÉ' else 'NON')
+            df['est_grenailles'] = df['statut_lavage'].apply(lambda x: 'OUI' if x == 'GRENAILLES' else 'NON')
+            
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -740,8 +746,8 @@ for lot_data in lots_data:
         
         # Tableau emplacements
         if not emplacements_df.empty:
-            # Afficher : Site, Emplacement, Pallox, Type conditionnement, Poids, Type stock
-            display_df = emplacements_df[['site_stockage', 'emplacement_stockage', 'nombre_unites', 'type_conditionnement', 'poids_total_kg', 'type_stock']].copy()
+            # Afficher : Site, Emplacement, Pallox, Type conditionnement, Poids, Lavé, Grenailles, Type stock
+            display_df = emplacements_df[['site_stockage', 'emplacement_stockage', 'nombre_unites', 'type_conditionnement', 'poids_total_kg', 'est_lave', 'est_grenailles', 'type_stock']].copy()
             
             # Formatter poids
             if 'poids_total_kg' in display_df.columns:
@@ -750,8 +756,8 @@ for lot_data in lots_data:
                 )
                 display_df = display_df.drop('poids_total_kg', axis=1)
             
-            # Renommer colonnes - Site, Emplacement, Pallox, Type Cond., Poids, Type Stock
-            display_df.columns = ['Site', 'Emplacement', 'Pallox', 'Type Cond.', 'Poids', 'Type']
+            # Renommer colonnes
+            display_df.columns = ['Site', 'Emplacement', 'Pallox', 'Type Cond.', 'Poids', 'Lavé', 'Grenailles', 'Type']
             
             # Afficher tableau
             st.dataframe(
