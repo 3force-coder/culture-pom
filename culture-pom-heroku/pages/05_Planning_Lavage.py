@@ -1,9 +1,11 @@
 import streamlit as st
 import pandas as pd
+import math
+import time
 from datetime import datetime, timedelta
 from database import get_connection
 from components import show_footer
-from auth import is_authenticated
+from auth import is_authenticated, is_admin
 import io
 
 st.set_page_config(page_title="Planning Lavage - Culture Pom", page_icon="🧼", layout="wide")
@@ -447,7 +449,9 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
                 WHERE id = %s
             """, (nouvelle_quantite_brut, nouveau_poids_brut, stock_brut['id']))
         
-        # 3. Créer stock LAVÉ
+        # 3. Créer stock LAVÉ (arrondi supérieur, toujours en pallox)
+        pallox_lave = max(1, math.ceil(poids_lave / 1900))  # Minimum 1 pallox
+        
         cursor.execute("""
             INSERT INTO stock_emplacements (
                 lot_id, site_stockage, emplacement_stockage,
@@ -455,10 +459,12 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
                 statut_lavage, lavage_job_id, is_active
             ) VALUES (%s, %s, %s, %s, %s, %s, 'LAVÉ', %s, TRUE)
         """, (job['lot_id'], site_dest, emplacement_dest, 
-              quantite_lavee, 'Pallox', float(poids_lave), int(job_id)))
+              pallox_lave, 'Pallox', float(poids_lave), int(job_id)))
         
-        # 4. Créer stock GRENAILLES (si > 0)
+        # 4. Créer stock GRENAILLES (si > 0, arrondi supérieur, toujours en pallox)
         if poids_grenailles > 0:
+            pallox_grenailles = max(1, math.ceil(poids_grenailles / 1900))  # Minimum 1 pallox
+            
             cursor.execute("""
                 INSERT INTO stock_emplacements (
                     lot_id, site_stockage, emplacement_stockage,
@@ -466,7 +472,7 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
                     statut_lavage, lavage_job_id, is_active
                 ) VALUES (%s, %s, %s, %s, %s, %s, 'GRENAILLES', %s, TRUE)
             """, (job['lot_id'], site_dest, emplacement_dest + '_GREN',
-                  0, 'Vrac', float(poids_grenailles), int(job_id)))
+                  pallox_grenailles, 'Pallox', float(poids_grenailles), int(job_id)))
         
         # 5. Créer mouvements traçabilité
         user = st.session_state.get('username', 'system')
@@ -510,6 +516,142 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
+def annuler_job_termine(job_id, raison):
+    """
+    Annule complètement un job terminé et rétablit le stock initial
+    ADMIN ONLY
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # 1. Récupérer infos job
+        cursor.execute("""
+            SELECT lot_id, quantite_pallox, poids_brut_kg, 
+                   site_destination, emplacement_destination
+            FROM lavages_jobs
+            WHERE id = %s AND statut = 'TERMINÉ'
+        """, (job_id,))
+        
+        job = cursor.fetchone()
+        if not job:
+            return False, "❌ Job introuvable ou pas TERMINÉ"
+        
+        # 2. Supprimer stocks LAVÉ et GRENAILLES créés
+        cursor.execute("""
+            DELETE FROM stock_emplacements
+            WHERE lavage_job_id = %s 
+              AND statut_lavage IN ('LAVÉ', 'GRENAILLES')
+        """, (job_id,))
+        
+        # 3. Restaurer stock BRUT
+        cursor.execute("""
+            SELECT id, nombre_unites, poids_total_kg, type_conditionnement
+            FROM stock_emplacements
+            WHERE lot_id = %s AND statut_lavage = 'BRUT' AND is_active = TRUE
+            LIMIT 1
+        """, (job['lot_id'],))
+        
+        stock_brut = cursor.fetchone()
+        if stock_brut:
+            # Calcul poids selon type
+            poids_unitaire = 1900
+            if stock_brut['type_conditionnement'] == 'Petit Pallox':
+                poids_unitaire = 1200
+            elif stock_brut['type_conditionnement'] == 'Big Bag':
+                poids_unitaire = 1600
+            
+            nouvelle_quantite = int(stock_brut['nombre_unites']) + int(job['quantite_pallox'])
+            nouveau_poids = nouvelle_quantite * poids_unitaire
+            
+            cursor.execute("""
+                UPDATE stock_emplacements
+                SET nombre_unites = %s,
+                    poids_total_kg = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (nouvelle_quantite, nouveau_poids, stock_brut['id']))
+        
+        # 4. Supprimer mouvements
+        cursor.execute("""
+            DELETE FROM stock_mouvements 
+            WHERE lot_id = %s 
+              AND (notes LIKE %s OR notes LIKE %s OR notes LIKE %s)
+        """, (job['lot_id'], f"%Job #{job_id}%", f"%Job #{job_id}%", f"%Job #{job_id}%"))
+        
+        # 5. Marquer job ANNULÉ
+        annule_par = st.session_state.get('username', 'system')
+        
+        cursor.execute("""
+            UPDATE lavages_jobs
+            SET statut = 'ANNULÉ',
+                date_terminaison = NULL,
+                poids_lave_net_kg = NULL,
+                poids_grenailles_kg = NULL,
+                poids_dechets_kg = NULL,
+                poids_terre_calcule_kg = NULL,
+                tare_reelle_pct = NULL,
+                rendement_pct = NULL,
+                terminated_by = NULL,
+                notes = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (f"[ANNULÉ par {annule_par}] Raison: {raison}", job_id))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, f"✅ Job #{job_id} annulé - Stock rétabli"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+def supprimer_job(job_id):
+    """
+    Supprime un job PRÉVU ou EN_COURS (soft delete)
+    ADMIN ONLY
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Vérifier statut
+        cursor.execute("""
+            SELECT statut FROM lavages_jobs WHERE id = %s
+        """, (job_id,))
+        
+        result = cursor.fetchone()
+        if not result:
+            return False, "❌ Job introuvable"
+        
+        if result['statut'] not in ('PRÉVU', 'EN_COURS'):
+            return False, f"❌ Impossible de supprimer un job {result['statut']}"
+        
+        # Soft delete
+        supprime_par = st.session_state.get('username', 'system')
+        
+        cursor.execute("""
+            UPDATE lavages_jobs
+            SET statut = 'SUPPRIMÉ',
+                notes = COALESCE(notes, '') || ' [SUPPRIMÉ par ' || %s || ']',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (supprime_par, job_id))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, f"✅ Job #{job_id} supprimé"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
 # ==========================================
 # AFFICHAGE - KPIs
 # ==========================================
@@ -537,7 +679,7 @@ st.markdown("---")
 # ONGLETS PRINCIPAUX
 # ==========================================
 
-tab1, tab2, tab3 = st.tabs(["📅 Calendrier", "📋 Liste Jobs", "➕ Créer Job"])
+tab1, tab2, tab3, tab4 = st.tabs(["📅 Calendrier", "📋 Liste Jobs", "➕ Créer Job", "⚙️ Admin"])
 
 # ==========================================
 # ONGLET 1 : CALENDRIER
@@ -948,5 +1090,153 @@ with tab3:
             st.warning(f"⚠️ Aucun lot disponible avec les filtres : {filtre_variete} / {filtre_site}")
     else:
         st.warning("⚠️ Aucun lot BRUT disponible pour lavage")
+
+# ==========================================
+# ONGLET 4 : ADMIN
+# ==========================================
+
+with tab4:
+    st.subheader("⚙️ Administration des Jobs")
+    
+    # Vérifier permissions ADMIN
+    if not is_admin():
+        st.warning("⚠️ Accès réservé aux administrateurs")
+        st.stop()
+    
+    st.markdown("*Fonctions de gestion avancées des jobs de lavage*")
+    st.markdown("---")
+    
+    # Sous-onglets : Annuler | Supprimer
+    subtab_annuler, subtab_supprimer = st.tabs(["🔄 Annuler Job Terminé", "🗑️ Supprimer Job"])
+    
+    # ===== ANNULER JOB TERMINÉ =====
+    with subtab_annuler:
+        st.markdown("### 🔄 Annuler un Job Terminé")
+        st.warning("⚠️ **Attention** : Cette action rétablit le stock initial et supprime tous les stocks créés (LAVÉ/GRENAILLES)")
+        
+        # Charger jobs terminés
+        jobs_termines = get_jobs_by_statut('TERMINÉ')
+        
+        if not jobs_termines.empty:
+            # Tableau jobs terminés
+            st.markdown("**Jobs terminés disponibles :**")
+            
+            display_jobs = jobs_termines[['id', 'code_lot_interne', 'variete', 'quantite_pallox', 
+                                          'poids_brut_kg', 'date_terminaison', 'rendement_pct']].copy()
+            
+            # Formatter
+            display_jobs['poids_brut_kg'] = display_jobs['poids_brut_kg'].apply(lambda x: f"{x/1000:.1f} T" if pd.notna(x) else "N/A")
+            display_jobs['rendement_pct'] = display_jobs['rendement_pct'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A")
+            display_jobs.columns = ['ID', 'Lot', 'Variété', 'Pallox', 'Poids', 'Date terminaison', 'Rendement']
+            
+            st.dataframe(display_jobs, use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
+            
+            # Formulaire annulation
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                job_options = [f"Job #{row['id']} - {row['code_lot_interne']} ({int(row['quantite_pallox'])} pallox)" 
+                              for _, row in jobs_termines.iterrows()]
+                
+                selected_job = st.selectbox(
+                    "Sélectionner le job à annuler",
+                    options=range(len(jobs_termines)),
+                    format_func=lambda x: job_options[x],
+                    key="select_job_annuler"
+                )
+                
+                raison = st.text_area(
+                    "Raison de l'annulation * (obligatoire)",
+                    placeholder="Ex: Erreur de saisie tares, problème qualité...",
+                    key="raison_annulation"
+                )
+            
+            with col2:
+                st.metric("Job sélectionné", f"#{jobs_termines.iloc[selected_job]['id']}")
+                st.metric("Lot", jobs_termines.iloc[selected_job]['code_lot_interne'])
+                st.metric("Pallox à rétablir", int(jobs_termines.iloc[selected_job]['quantite_pallox']))
+            
+            st.markdown("---")
+            
+            if st.button("⚠️ ANNULER LE JOB", type="secondary", use_container_width=True, key="btn_annuler_job"):
+                if not raison or len(raison.strip()) < 10:
+                    st.error("❌ Raison obligatoire (minimum 10 caractères)")
+                else:
+                    job_id = jobs_termines.iloc[selected_job]['id']
+                    
+                    with st.spinner("Annulation en cours..."):
+                        success, message = annuler_job_termine(job_id, raison)
+                    
+                    if success:
+                        st.success(message)
+                        st.balloons()
+                        time.sleep(2)
+                        st.rerun()
+                    else:
+                        st.error(message)
+        else:
+            st.info("📭 Aucun job terminé disponible")
+    
+    # ===== SUPPRIMER JOB =====
+    with subtab_supprimer:
+        st.markdown("### 🗑️ Supprimer un Job")
+        st.warning("⚠️ **Attention** : Cette action supprime définitivement le job (PRÉVU ou EN_COURS)")
+        
+        # Charger jobs actifs
+        jobs_prevus = get_jobs_by_statut('PRÉVU')
+        jobs_en_cours = get_jobs_by_statut('EN_COURS')
+        
+        jobs_actifs = pd.concat([jobs_prevus, jobs_en_cours], ignore_index=True) if not jobs_prevus.empty or not jobs_en_cours.empty else pd.DataFrame()
+        
+        if not jobs_actifs.empty:
+            # Tableau jobs actifs
+            st.markdown("**Jobs actifs disponibles :**")
+            
+            display_jobs = jobs_actifs[['id', 'statut', 'code_lot_interne', 'variete', 
+                                        'quantite_pallox', 'date_prevue', 'ligne_lavage']].copy()
+            
+            display_jobs.columns = ['ID', 'Statut', 'Lot', 'Variété', 'Pallox', 'Date prévue', 'Ligne']
+            
+            st.dataframe(display_jobs, use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
+            
+            # Formulaire suppression
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                job_options = [f"Job #{row['id']} - {row['statut']} - {row['code_lot_interne']} ({int(row['quantite_pallox'])} pallox)" 
+                              for _, row in jobs_actifs.iterrows()]
+                
+                selected_job = st.selectbox(
+                    "Sélectionner le job à supprimer",
+                    options=range(len(jobs_actifs)),
+                    format_func=lambda x: job_options[x],
+                    key="select_job_supprimer"
+                )
+            
+            with col2:
+                st.metric("Job sélectionné", f"#{jobs_actifs.iloc[selected_job]['id']}")
+                st.metric("Statut", jobs_actifs.iloc[selected_job]['statut'])
+                st.metric("Lot", jobs_actifs.iloc[selected_job]['code_lot_interne'])
+            
+            st.markdown("---")
+            
+            if st.button("🗑️ SUPPRIMER LE JOB", type="secondary", use_container_width=True, key="btn_supprimer_job"):
+                job_id = jobs_actifs.iloc[selected_job]['id']
+                
+                with st.spinner("Suppression en cours..."):
+                    success, message = supprimer_job(job_id)
+                
+                if success:
+                    st.success(message)
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error(message)
+        else:
+            st.info("📭 Aucun job actif (PRÉVU/EN_COURS) disponible")
 
 show_footer()
