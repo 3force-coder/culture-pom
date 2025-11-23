@@ -82,7 +82,7 @@ if not is_authenticated():
 
 # ⭐ FONCTION ANIMATION LOTTIE
 def show_confetti_animation():
-    """Affiche l'animation confetti Lottie via web component - CENTRÉE"""
+    """Affiche l'animation confetti Lottie via web component - CENTRÉE avec auto-reload"""
     confetti_html = """
     <script src="https://unpkg.com/@lottiefiles/dotlottie-wc@0.8.5/dist/dotlottie-wc.js" type="module"></script>
     <div style="
@@ -103,8 +103,14 @@ def show_confetti_animation():
             autoplay>
         </dotlottie-wc>
     </div>
+    <script>
+        // Recharger la page après 2.5 secondes
+        setTimeout(function() {
+            window.parent.location.reload();
+        }, 2500);
+    </script>
     """
-    components.html(confetti_html, height=0)
+    components.html(confetti_html, height=600)
 
 st.title("📋 Gestion des Tables de Référence")
 st.markdown("---")
@@ -243,7 +249,7 @@ TABLES_CONFIG = {
     
     "Code Emballage": {
         "table": "ref_emballages",
-        "columns": ["code_emballage", "atelier", "poids_unitaire", "unite_poids", "nbr_uvc", "type_produit", "sur_emballage"],
+        "columns": ["code_emballage", "atelier", "poids_unitaire", "unite_poids", "poids", "nbr_uvc", "type_produit", "sur_emballage"],
         "hidden_columns": ["notes", "is_active"],
         "primary_key": "id",
         "editable": ["atelier", "poids_unitaire", "unite_poids", "nbr_uvc", "type_produit", "sur_emballage"],
@@ -254,13 +260,16 @@ TABLES_CONFIG = {
             "type_produit": "dynamic_from_db",
             "sur_emballage": "dynamic_from_db"
         },
-        "filter_columns": ["atelier", "type_produit"],
-        "required_fields": ["code_emballage"]
+        "filter_columns": ["poids", "atelier", "type_produit"],
+        "required_fields": ["code_emballage"],
+        "calculated_columns": {
+            "poids": ["poids_unitaire", "unite_poids"]
+        }
     },
     
     "Produits Commerciaux": {
         "table": "ref_produits_commerciaux",
-        "columns": ["code_produit", "marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "code_variete"],
+        "columns": ["code_produit", "marque", "libelle", "poids_unitaire", "unite_poids", "poids", "type_produit", "code_variete"],
         "hidden_columns": ["is_bio", "notes", "is_active"],
         "primary_key": "id",
         "editable": ["marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "code_variete"],
@@ -271,8 +280,11 @@ TABLES_CONFIG = {
             "type_produit": "dynamic_from_db",
             "code_variete": "dynamic_varietes"
         },
-        "filter_columns": ["marque", "type_produit"],
-        "required_fields": ["code_produit", "marque", "libelle"]
+        "filter_columns": ["poids", "marque", "type_produit"],
+        "required_fields": ["code_produit", "marque", "libelle"],
+        "calculated_columns": {
+            "poids": ["poids_unitaire", "unite_poids"]
+        }
     }
 }
 
@@ -288,18 +300,21 @@ def load_table_data(table_name, show_inactive=False):
         if "hidden_columns" in config:
             all_columns.extend(config["hidden_columns"])
         
-        columns_str = ", ".join(all_columns)
+        # ⭐ Retirer les colonnes calculées de la requête SQL
+        sql_columns = [col for col in all_columns if col not in config.get("calculated_columns", {})]
+        
+        columns_str = ", ".join(sql_columns)
         
         # ⭐ Filtrer par is_active si show_inactive = False
         where_clause = ""
-        if not show_inactive and 'is_active' in all_columns:
+        if not show_inactive and 'is_active' in sql_columns:
             where_clause = " WHERE is_active = TRUE"
         
         query = f"SELECT {config['primary_key']}, {columns_str} FROM {config['table']}{where_clause} ORDER BY {config['primary_key']}"
         cursor.execute(query)
         
         rows = cursor.fetchall()
-        columns = [config['primary_key']] + all_columns
+        columns = [config['primary_key']] + sql_columns
         cursor.close()
         conn.close()
         
@@ -310,6 +325,17 @@ def load_table_data(table_name, show_inactive=False):
             df['departement'] = df['code_postal'].apply(
                 lambda x: str(x)[:2] if pd.notna(x) and str(x).strip() != '' else None
             )
+        
+        # ⭐ CALCULER colonnes Poids (poids_unitaire + unite_poids)
+        if "calculated_columns" in config and "poids" in config["calculated_columns"]:
+            source_cols = config["calculated_columns"]["poids"]
+            if all(col in df.columns for col in source_cols):
+                df['poids'] = df.apply(
+                    lambda row: f"{row[source_cols[0]]} {row[source_cols[1]]}" 
+                    if pd.notna(row[source_cols[0]]) and pd.notna(row[source_cols[1]]) 
+                    else "", 
+                    axis=1
+                )
         
         # ⭐ Ne garder que les colonnes visibles pour l'affichage
         display_columns = [config['primary_key']] + config['columns']
@@ -624,12 +650,10 @@ if st.session_state.get('show_add_form', False):
                 success, message = add_record(selected_table, filtered_data)
                 if success:
                     st.success(message)
-                    # ⭐ Animation confettis Lottie (web component)
+                    # ⭐ Animation confettis Lottie (web component) avec auto-reload
                     show_confetti_animation()
-                    time.sleep(2)
                     st.session_state.show_add_form = False
                     st.session_state.pop('new_data', None)
-                    st.rerun()
                 else:
                     st.error(message)
     
@@ -769,7 +793,7 @@ if not df_full.empty:
         df,
         use_container_width=True,
         num_rows="fixed",
-        disabled=[config['primary_key']],
+        disabled=[config['primary_key']] + list(config.get("calculated_columns", {}).keys()),
         column_config=column_config if column_config else None,
         key=f"editor_{selected_table}"
     )
