@@ -861,10 +861,35 @@ if not df_full.empty:
         # Debug
         st.caption(f"Debug détection: {str(e)}")
     
-    # ⭐ ALERTE si modifications non sauvegardées
+    # ⭐ ALERTE FLOATING STICKY EN HAUT (toujours visible)
     if changes_detected:
-        st.error("🚫 **MODIFICATIONS NON SAUVEGARDÉES !**")
-        st.warning("⚠️ Vous avez modifié des données. **Cliquez sur 💾 Enregistrer** avant de changer de table ou vous perdrez vos modifications !")
+        st.markdown("""
+        <div style="
+            position: fixed;
+            top: 60px;
+            left: 0;
+            right: 0;
+            background: linear-gradient(90deg, #ff4b4b 0%, #ff6b6b 100%);
+            color: white;
+            padding: 15px 20px;
+            text-align: center;
+            font-weight: bold;
+            font-size: 16px;
+            z-index: 999999;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+            border-bottom: 4px solid #cc0000;
+            animation: slideDown 0.3s ease-out;
+        ">
+            🚫 MODIFICATIONS NON SAUVEGARDÉES ! 
+            Cliquez sur 💾 Enregistrer avant de changer de table ou de quitter cette page.
+        </div>
+        <style>
+            @keyframes slideDown {
+                from { transform: translateY(-100px); opacity: 0; }
+                to { transform: translateY(0); opacity: 1; }
+            }
+        </style>
+        """, unsafe_allow_html=True)
     
     # Boutons
     col1, col2 = st.columns([1, 5])
