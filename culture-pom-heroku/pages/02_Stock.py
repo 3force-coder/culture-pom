@@ -6,6 +6,7 @@ import time
 from database import get_connection
 from components import show_footer
 from auth import is_authenticated
+from roles import is_admin
 import io
 import streamlit.components.v1 as components
 
@@ -379,6 +380,26 @@ def add_lot(data, varietes_dict, producteurs_dict):
         else:
             return False, f"❌ Erreur : {str(e)}"
 
+def delete_lot(lot_id):
+    """Désactive un lot (soft delete)"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        query = "UPDATE lots_bruts SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s"
+        cursor.execute(query, (lot_id,))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, "✅ Lot désactivé avec succès"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
 # =====================================================
 # CHARGEMENT DES DONNÉES
 # =====================================================
@@ -406,7 +427,7 @@ if st.session_state.get('show_add_form', False):
     producteurs_dict = get_all_producteurs_for_dropdown()
     sites_list = get_all_sites_for_dropdown()
     emplacements_list = get_all_emplacements_for_dropdown()
-    types_cond_list = get_unique_values_from_db("lots_bruts", "type_conditionnement")
+    types_cond_list = get_unique_values_from_db("lots_bruts", "type_conditionnement", where_active=False)
     
     # ⭐ Afficher champs obligatoires
     st.info("📌 Champs obligatoires : **Code Lot Interne, Nom Usage, Variété, Producteur, Site, Emplacement, Nombre Unités, Poids Unitaire, Tare Achat**")
@@ -493,15 +514,15 @@ if st.session_state.get('show_add_form', False):
             help="Défaut: 1900 kg (pallox standard)"
         )
         
-        # Tare achat - OBLIGATOIRE (défaut 22%)
+        # Tare achat - OBLIGATOIRE (défaut 5%)
         st.session_state.new_lot_data['tare_achat_pct'] = st.number_input(
             "Tare Achat (%) *",
             min_value=0.0,
             max_value=100.0,
-            value=22.0,
+            value=5.0,
             step=0.5,
             key="add_tare_achat",
-            help="Tare d'achat en % (défaut: 22%)"
+            help="Tare d'achat en % (défaut: 5%)"
         )
         
         # Type conditionnement - Dropdown depuis DB
@@ -831,6 +852,55 @@ if not df.empty:
             filtered_df.to_excel(writer, index=False, sheet_name='Stock')
         st.download_button("📥 Excel", buffer.getvalue(), f"stock_{datetime.now().strftime('%Y%m%d')}.xlsx", 
                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+    
+    # ⭐ SUPPRESSION LOTS (ADMIN UNIQUEMENT)
+    st.markdown("---")
+    st.subheader("🗑️ Suppression de Lots")
+    
+    if is_admin():
+        # Dropdown avec liste des lots
+        lot_options = [f"{row['id']} - {row['code_lot_interne']} - {row['nom_usage']}" for _, row in df.iterrows()]
+        
+        if lot_options:
+            selected_lot = st.selectbox(
+                "Sélectionner un lot à supprimer",
+                options=lot_options,
+                key="delete_lot_selector"
+            )
+            
+            col1, col2 = st.columns([1, 5])
+            with col1:
+                if st.button("🗑️ Supprimer", use_container_width=True, type="secondary", key="btn_delete_lot"):
+                    # Extraire l'ID
+                    lot_id = int(selected_lot.split(" - ")[0])
+                    
+                    # Confirmation via checkbox
+                    if 'confirm_delete' not in st.session_state:
+                        st.session_state.confirm_delete = False
+                    
+                    if not st.session_state.confirm_delete:
+                        st.warning("⚠️ Cochez la case de confirmation ci-dessous puis recliquez sur Supprimer")
+                        st.session_state.confirm_delete = st.checkbox(
+                            f"Je confirme la suppression du lot {selected_lot}",
+                            key="confirm_delete_checkbox"
+                        )
+                    else:
+                        success, message = delete_lot(lot_id)
+                        if success:
+                            st.success(message)
+                            st.session_state.confirm_delete = False
+                            st.session_state.pop('confirm_delete_checkbox', None)
+                            st.session_state.pop('original_stock_df', None)
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error(message)
+        else:
+            st.info("ℹ️ Aucun lot à supprimer")
+    else:
+        st.warning("⚠️ Fonction réservée aux administrateurs uniquement")
+        st.info("👤 Vous êtes connecté en tant que : **USER**")
+
 else:
     st.warning("⚠️ Aucun lot trouvé")
 
