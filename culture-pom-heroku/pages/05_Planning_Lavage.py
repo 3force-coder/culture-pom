@@ -503,7 +503,7 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
                 quantite, type_conditionnement, poids_kg, user_action, created_by, notes
             ) VALUES (%s, 'LAVAGE_CREATION_LAVE', %s, %s, %s, %s, %s, %s, %s, %s)
         """, (job['lot_id'], site_dest, emplacement_dest,
-              quantite_lavee, 'Pallox', float(poids_lave), user, user, f"Job #{job_id} - Stock lavé"))
+              pallox_lave, 'Pallox', float(poids_lave), user, user, f"Job #{job_id} - Stock lavé"))
         
         # Mouvement : Création GRENAILLES (si > 0)
         if poids_grenailles > 0:
@@ -513,7 +513,7 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
                     quantite, type_conditionnement, poids_kg, user_action, created_by, notes
                 ) VALUES (%s, 'LAVAGE_CREATION_GRENAILLES', %s, %s, %s, %s, %s, %s, %s, %s)
             """, (job['lot_id'], site_dest, emplacement_dest + '_GREN',
-                  0, 'Vrac', float(poids_grenailles), user, user, f"Job #{job_id} - Grenailles"))
+                  pallox_grenailles, 'Pallox', float(poids_grenailles), user, user, f"Job #{job_id} - Grenailles"))
         
         conn.commit()
         cursor.close()
@@ -532,6 +532,9 @@ def annuler_job_termine(job_id, raison):
     ADMIN ONLY
     """
     try:
+        # Convertir job_id en type Python natif
+        job_id = int(job_id)
+        
         conn = get_connection()
         cursor = conn.cursor()
         
@@ -625,6 +628,9 @@ def supprimer_job(job_id):
     ADMIN ONLY
     """
     try:
+        # Convertir job_id en type Python natif
+        job_id = int(job_id)
+        
         conn = get_connection()
         cursor = conn.cursor()
         
