@@ -18,21 +18,43 @@ st.title("📦 Gestion du Stock de Lots")
 st.markdown("---")
 
 def load_stock_data():
-    """Charge les données du stock"""
+    """Charge les données du stock AVEC jointures pour afficher les noms"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ⭐ Requête avec jointures pour avoir nom_variete et nom_producteur
         query = """
             SELECT 
-                id, code_lot_interne, nom_usage, code_producteur, code_variete,
-                date_entree_stock, age_jours, calibre_min, calibre_max,
-                est_lave, est_bio, avec_grenailles, site_stockage, emplacement_stockage,
-                nombre_unites, poids_total_brut_kg, poids_lave_net_kg,
-                prix_achat_euro_tonne, valeur_lot_euro, statut, is_active
-            FROM lots_bruts
-            WHERE is_active = TRUE
-            ORDER BY date_entree_stock DESC
+                l.id,
+                l.code_lot_interne,
+                l.nom_usage,
+                l.code_variete,
+                v.nom_variete,              
+                l.code_producteur,
+                p.nom as nom_producteur,     
+                l.site_stockage,
+                l.emplacement_stockage,
+                l.nombre_unites,
+                l.poids_unitaire_kg,         
+                l.poids_total_brut_kg,       
+                l.calibre_min,               
+                l.calibre_max,               
+                l.type_conditionnement,      
+                l.date_entree_stock,
+                l.age_jours,
+                l.est_lave,
+                l.est_bio,
+                l.statut,
+                l.poids_lave_net_kg,
+                l.prix_achat_euro_tonne,
+                l.valeur_lot_euro,
+                l.is_active
+            FROM lots_bruts l
+            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete AND v.is_active = TRUE
+            LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur AND p.is_active = TRUE
+            WHERE l.is_active = TRUE
+            ORDER BY l.date_entree_stock DESC
         """
         
         cursor.execute(query)
@@ -55,7 +77,7 @@ def calculate_metrics(df):
     
     return {
         'total_lots': len(df),
-        'tonnage_total': df['poids_lave_net_kg'].sum() / 1000 if 'poids_lave_net_kg' in df.columns else 0.0,
+        'tonnage_total': df['poids_total_brut_kg'].sum() / 1000 if 'poids_total_brut_kg' in df.columns else 0.0,
         'nb_varietes': df['code_variete'].nunique(),
         'nb_producteurs': df['code_producteur'].nunique(),
         'age_moyen': df['age_jours'].mean() if 'age_jours' in df.columns else 0,
@@ -81,14 +103,19 @@ def save_stock_changes(original_df, edited_df):
         cursor = conn.cursor()
         updates = 0
         
+        # Colonnes éditables
         editable_columns = ['nom_usage', 'site_stockage', 'emplacement_stockage', 'nombre_unites', 
-                           'poids_lave_net_kg', 'prix_achat_euro_tonne', 'valeur_lot_euro', 'statut']
+                           'poids_unitaire_kg', 'calibre_min', 'calibre_max', 'type_conditionnement',
+                           'prix_achat_euro_tonne', 'valeur_lot_euro', 'statut']
         
         for idx in edited_df.index:
             if idx not in original_df.index:
                 continue
                 
-            lot_id = convert_to_native_types(edited_df.loc[idx, 'id'])
+            lot_id = convert_to_native_types(edited_df.loc[idx, 'id']) if 'id' in edited_df.columns else None
+            if lot_id is None:
+                continue
+                
             changes = {}
             
             for col in editable_columns:
@@ -146,31 +173,54 @@ if not df.empty:
     
     st.markdown("---")
     
-    # Filtres
+    # Filtres - 6 filtres avec NOMS
     st.subheader("🔍 Filtres")
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     
     with col1:
-        varietes = ['Toutes'] + sorted(df['code_variete'].dropna().unique().tolist())
-        selected_variete = st.selectbox("Variété", varietes)
+        # Filtre nom_usage (recherche texte)
+        search_nom = st.text_input("Nom usage", key="filter_nom_usage", placeholder="Rechercher...")
+    
     with col2:
-        producteurs = ['Tous'] + sorted(df['code_producteur'].dropna().unique().tolist())
-        selected_producteur = st.selectbox("Producteur", producteurs)
+        # Filtre variété - afficher NOM
+        varietes = ['Toutes'] + sorted(df['nom_variete'].dropna().unique().tolist())
+        selected_variete = st.selectbox("Variété", varietes, key="filter_variete")
+    
     with col3:
-        sites = ['Tous'] + sorted(df['site_stockage'].dropna().unique().tolist())
-        selected_site = st.selectbox("Site", sites)
+        # Filtre producteur - afficher NOM
+        producteurs = ['Tous'] + sorted(df['nom_producteur'].dropna().unique().tolist())
+        selected_producteur = st.selectbox("Producteur", producteurs, key="filter_producteur")
+    
     with col4:
-        statuts = ['Tous', 'EN_STOCK', 'VENDU', 'TRANSFERE']
-        selected_statut = st.selectbox("Statut", statuts)
+        sites = ['Tous'] + sorted(df['site_stockage'].dropna().unique().tolist())
+        selected_site = st.selectbox("Site", sites, key="filter_site")
+    
+    with col5:
+        emplacements = ['Tous'] + sorted(df['emplacement_stockage'].dropna().unique().tolist())
+        selected_emplacement = st.selectbox("Emplacement", emplacements, key="filter_emplacement")
+    
+    with col6:
+        statuts = ['Tous', 'EN_STOCK', 'SORTI', 'RESERVE', 'BLOQUE']
+        selected_statut = st.selectbox("Statut", statuts, key="filter_statut")
     
     # Appliquer filtres
     filtered_df = df.copy()
+    
+    if search_nom:
+        filtered_df = filtered_df[filtered_df['nom_usage'].str.contains(search_nom, case=False, na=False)]
+    
     if selected_variete != 'Toutes':
-        filtered_df = filtered_df[filtered_df['code_variete'] == selected_variete]
+        filtered_df = filtered_df[filtered_df['nom_variete'] == selected_variete]
+    
     if selected_producteur != 'Tous':
-        filtered_df = filtered_df[filtered_df['code_producteur'] == selected_producteur]
+        filtered_df = filtered_df[filtered_df['nom_producteur'] == selected_producteur]
+    
     if selected_site != 'Tous':
         filtered_df = filtered_df[filtered_df['site_stockage'] == selected_site]
+    
+    if selected_emplacement != 'Tous':
+        filtered_df = filtered_df[filtered_df['emplacement_stockage'] == selected_emplacement]
+    
     if selected_statut != 'Tous':
         filtered_df = filtered_df[filtered_df['statut'] == selected_statut]
     
@@ -180,13 +230,26 @@ if not df.empty:
     if 'original_stock_df' not in st.session_state:
         st.session_state.original_stock_df = filtered_df.copy()
     
-    # Tableau
+    # Tableau avec NOMS et nouvelles colonnes
     st.subheader("📋 Liste des Lots")
     
-    display_columns = ['id', 'code_lot_interne', 'nom_usage', 'code_variete', 'code_producteur',
-                      'date_entree_stock', 'age_jours', 'est_lave', 'est_bio', 
-                      'site_stockage', 'emplacement_stockage', 'nombre_unites', 
-                      'poids_lave_net_kg', 'statut']
+    # Colonnes à afficher (avec NOMS et nouvelles colonnes)
+    display_columns = [
+        'code_lot_interne', 
+        'nom_usage', 
+        'nom_variete',              # NOM au lieu de code_variete
+        'nom_producteur',           # NOM au lieu de code_producteur
+        'site_stockage', 
+        'emplacement_stockage',
+        'nombre_unites',
+        'poids_unitaire_kg',        
+        'poids_total_brut_kg',      
+        'calibre_min',              
+        'calibre_max',              
+        'type_conditionnement',     
+        'age_jours',
+        'statut'
+    ]
     
     available_columns = [col for col in display_columns if col in filtered_df.columns]
     display_df = filtered_df[available_columns].copy()
@@ -195,7 +258,7 @@ if not df.empty:
         display_df,
         use_container_width=True,
         num_rows="fixed",
-        disabled=['id', 'code_lot_interne', 'code_variete', 'code_producteur', 'date_entree_stock', 'age_jours', 'est_lave', 'est_bio'],
+        disabled=['code_lot_interne', 'nom_variete', 'nom_producteur', 'age_jours', 'poids_total_brut_kg'],  # Noms + calculées en lecture seule
         key="stock_editor"
     )
     
@@ -224,7 +287,7 @@ if not df.empty:
         old_lots = df[df['age_jours'] > 90] if 'age_jours' in df.columns else pd.DataFrame()
         if not old_lots.empty:
             st.warning(f"⚠️ {len(old_lots)} lot(s) >90 jours")
-            alert_df = old_lots[['code_lot_interne', 'code_variete', 'age_jours']].head(5)
+            alert_df = old_lots[['code_lot_interne', 'nom_variete', 'age_jours']].head(5)
             st.dataframe(alert_df, use_container_width=True, hide_index=True)
         else:
             st.success("✅ Aucun lot ancien")
