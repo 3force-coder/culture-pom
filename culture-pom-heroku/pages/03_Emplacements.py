@@ -901,7 +901,7 @@ for lot_data in lots_data:
                         else:
                             empl_dest_options = [""]
                         
-                        transfer_emplacement = st.selectbox(
+                        dest_emplacement = st.selectbox(
                             "Emplacement destination *",
                             options=empl_dest_options,
                             key=f"transfer_empl_{lot_data['lot_id']}"
@@ -926,7 +926,7 @@ for lot_data in lots_data:
                     with col_save:
                         if st.button("🚚 Transférer", key=f"btn_save_transfer_{lot_data['lot_id']}", use_container_width=True, type="primary"):
                             # Validation
-                            if not transfer_site or not transfer_emplacement or not transfer_type_conditionnement:
+                            if not transfer_site or not dest_emplacement or not transfer_type_conditionnement:
                                 st.error("❌ Site, emplacement et type de conditionnement sont obligatoires")
                             elif transfer_quantite <= 0:
                                 st.error("❌ Quantité doit être > 0")
@@ -938,7 +938,7 @@ for lot_data in lots_data:
                                 success, message = transfer_emplacement(
                                     selected_empl,
                                     transfer_site,
-                                    transfer_emplacement,
+                                    dest_emplacement,
                                     transfer_quantite,
                                     transfer_poids_calcule,
                                     transfer_type_conditionnement
