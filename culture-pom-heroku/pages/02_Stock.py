@@ -882,15 +882,34 @@ if not df.empty:
     if 'original_stock_df' not in st.session_state:
         st.session_state.original_stock_df = filtered_df.copy()
     
-    # En-tête tableau avec boutons Ajouter + Recalculer
-    col_title, col_add, col_calc = st.columns([3, 1, 2])
+    # ⭐ EN-TÊTE avec 4 BOUTONS ALIGNÉS
+    col_title, col_save, col_refresh, col_add, col_calc = st.columns([3, 1, 1, 1, 1.5])
+    
     with col_title:
         st.subheader("📋 Liste des Lots")
+    
+    with col_save:
+        if st.button("💾 Enregistrer", use_container_width=True, type="primary", key="btn_save_top"):
+            success, message = save_stock_changes(st.session_state.original_stock_df, edited_df, varietes_dict, producteurs_dict)
+            if success:
+                st.success(message)
+                st.session_state.pop('original_stock_df', None)
+                st.rerun()
+            else:
+                if "Aucune modification" in message:
+                    st.info(message)
+                else:
+                    st.error(message)
+    
+    with col_refresh:
+        if st.button("🔄 Actualiser", use_container_width=True, key="btn_refresh_top"):
+            st.session_state.pop('original_stock_df', None)
+            st.rerun()
+    
     with col_add:
-        if st.button("➕ Ajouter", use_container_width=True, type="primary"):
+        if st.button("➕ Ajouter", use_container_width=True, type="primary", key="btn_add_top"):
             st.session_state.show_add_form = not st.session_state.get('show_add_form', False)
             if st.session_state.show_add_form:
-                # Forcer scroll en haut avec JavaScript
                 st.markdown("""
                 <script>
                     window.parent.document.querySelector('section.main').scrollTo(0, 0);
@@ -899,13 +918,11 @@ if not df.empty:
             st.rerun()
     
     with col_calc:
-        # ⭐ BOUTON RECALCULER (ADMIN uniquement)
         if is_admin():
-            # Timestamp à afficher
             last_calc = get_last_calculation_time()
             time_ago_text = format_time_ago(last_calc) if last_calc else "Jamais"
             
-            if st.button(f"🔄 Recalculer ({time_ago_text})", use_container_width=True, type="secondary", key="btn_recalc_top"):
+            if st.button(f"⚡ Calculer ({time_ago_text})", use_container_width=True, type="secondary", key="btn_calc_top"):
                 with st.spinner("Calcul en cours..."):
                     success, message, timestamp = recalculate_lot_values()
                     
@@ -1037,24 +1054,6 @@ if not df.empty:
         </style>
         """, unsafe_allow_html=True)
     
-    # Boutons
-    col1, col2 = st.columns([1, 5])
-    with col1:
-        if st.button("💾 Enregistrer", use_container_width=True, type="primary"):
-            success, message = save_stock_changes(st.session_state.original_stock_df, edited_df, varietes_dict, producteurs_dict)
-            if success:
-                st.success(message)
-                st.session_state.pop('original_stock_df', None)
-                st.rerun()
-            else:
-                if "Aucune modification" in message:
-                    st.info(message)
-                else:
-                    st.error(message)
-    with col2:
-        if st.button("🔄 Actualiser", use_container_width=True):
-            st.session_state.pop('original_stock_df', None)
-            st.rerun()
     
     # Alertes
     st.markdown("---")
