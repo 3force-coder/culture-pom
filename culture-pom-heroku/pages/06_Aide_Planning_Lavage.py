@@ -4,7 +4,9 @@ from datetime import datetime, timedelta, time
 from database import get_connection
 from components import show_footer
 from auth import is_authenticated
+from auth.roles import is_admin
 import io
+import math
 
 st.set_page_config(page_title="Aide Planning Lavage - Culture Pom", page_icon="🗓️", layout="wide")
 
@@ -20,6 +22,14 @@ st.markdown("""
     h1, h2, h3, h4 {
         margin-top: 0.3rem !important;
         margin-bottom: 0.3rem !important;
+    }
+    
+    /* Centrage semaine */
+    .semaine-center {
+        text-align: center;
+    }
+    .semaine-center h2 {
+        margin: 0 !important;
     }
     
     /* Cartes jobs/temps */
@@ -91,6 +101,29 @@ if not is_authenticated():
 # FONCTIONS UTILITAIRES
 # ============================================================
 
+def arrondir_quart_heure_sup(heure_obj):
+    """
+    Arrondit une heure au quart d'heure supérieur
+    5h43 → 5h45, 6h10 → 6h15, 7h00 → 7h00
+    """
+    minutes = heure_obj.minute
+    if minutes % 15 == 0:
+        return heure_obj
+    
+    # Arrondir au quart d'heure supérieur
+    nouveau_minutes = ((minutes // 15) + 1) * 15
+    
+    if nouveau_minutes >= 60:
+        # Passer à l'heure suivante
+        nouvelle_heure = heure_obj.hour + 1
+        nouveau_minutes = 0
+        if nouvelle_heure >= 24:
+            nouvelle_heure = 23
+            nouveau_minutes = 45
+        return time(nouvelle_heure, nouveau_minutes)
+    else:
+        return time(heure_obj.hour, nouveau_minutes)
+
 def get_lignes_lavage():
     """Récupère les lignes de lavage actives"""
     try:
@@ -129,6 +162,25 @@ def get_temps_customs():
         st.error(f"❌ Erreur : {str(e)}")
         return []
 
+def supprimer_temps_custom(temps_id):
+    """Supprime (désactive) un temps custom"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE lavages_temps_customs 
+            SET is_active = FALSE 
+            WHERE id = %s
+        """, (temps_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, "✅ Temps custom supprimé"
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
 def get_config_horaires():
     """Récupère la configuration des horaires par jour"""
     try:
@@ -144,7 +196,6 @@ def get_config_horaires():
         cursor.close()
         conn.close()
         
-        # Convertir en dict
         config = {}
         for row in rows:
             config[row['jour_semaine']] = {
@@ -153,7 +204,6 @@ def get_config_horaires():
             }
         return config
     except Exception as e:
-        # Config par défaut si table n'existe pas encore
         return {i: {'debut': time(5, 0), 'fin': time(22, 0) if i < 5 else time(20, 0)} for i in range(6)}
 
 def get_jobs_a_placer():
@@ -233,18 +283,24 @@ def get_planning_semaine(annee, semaine):
             return df
         return pd.DataFrame()
     except Exception as e:
-        # Table n'existe peut-être pas encore
         return pd.DataFrame()
+
+def get_horaire_fin_jour(jour_semaine, horaires_config):
+    """Retourne l'heure de fin pour un jour donné"""
+    if jour_semaine in horaires_config:
+        h_fin = horaires_config[jour_semaine]['fin']
+        if isinstance(h_fin, time):
+            return h_fin
+    return time(22, 0) if jour_semaine < 5 else time(20, 0)
 
 def get_capacite_jour(ligne_code, capacite_th, jour_semaine, horaires_config):
     """Calcule la capacité totale en heures pour un jour donné"""
     if jour_semaine not in horaires_config:
-        return 17.0  # Par défaut 17h
+        return 17.0
     
     h_debut = horaires_config[jour_semaine]['debut']
     h_fin = horaires_config[jour_semaine]['fin']
     
-    # Convertir en heures décimales
     if isinstance(h_debut, time):
         debut_h = h_debut.hour + h_debut.minute / 60
     else:
@@ -268,42 +324,71 @@ def calculer_temps_utilise(planning_df, date_str, ligne):
     if filtered.empty:
         return 0.0
     
-    return filtered['duree_minutes'].sum() / 60  # En heures
+    return filtered['duree_minutes'].sum() / 60
+
+def get_creneaux_disponibles(planning_df, date_prevue, ligne_lavage, jour_semaine, horaires_config):
+    """
+    Retourne la liste des créneaux horaires disponibles pour un jour/ligne
+    Format: [(heure_debut, label), ...]
+    """
+    jour_str = str(date_prevue)
+    
+    # Heure de début et fin de journée
+    if jour_semaine in horaires_config:
+        h_debut_jour = horaires_config[jour_semaine]['debut']
+        h_fin_jour = horaires_config[jour_semaine]['fin']
+    else:
+        h_debut_jour = time(5, 0)
+        h_fin_jour = time(22, 0) if jour_semaine < 5 else time(20, 0)
+    
+    creneaux = []
+    
+    # Premier créneau = début de journée
+    creneaux.append((h_debut_jour, f"{h_debut_jour.strftime('%H:%M')} (début journée)"))
+    
+    # Créneaux après chaque élément existant (arrondi au quart d'heure)
+    if not planning_df.empty:
+        mask = (planning_df['date_prevue'].astype(str) == jour_str) & (planning_df['ligne_lavage'] == ligne_lavage)
+        elements = planning_df[mask].sort_values('ordre_jour')
+        
+        for _, elem in elements.iterrows():
+            if pd.notna(elem['heure_fin']):
+                h_fin_arrondi = arrondir_quart_heure_sup(elem['heure_fin'])
+                
+                # Générer le label
+                if elem['type_element'] == 'JOB':
+                    label = f"{h_fin_arrondi.strftime('%H:%M')} (après Job #{int(elem['job_id'])})"
+                else:
+                    label = f"{h_fin_arrondi.strftime('%H:%M')} (après {elem['custom_emoji']} {elem['custom_libelle']})"
+                
+                creneaux.append((h_fin_arrondi, label))
+    
+    return creneaux
 
 def ajouter_element_planning(type_element, job_id, temps_custom_id, date_prevue, ligne_lavage, 
-                             duree_minutes, annee, semaine):
-    """Ajoute un élément au planning"""
+                             duree_minutes, annee, semaine, heure_debut_choisie):
+    """Ajoute un élément au planning avec heure de début choisie"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Déterminer l'ordre (dernier + 1)
+        # Déterminer l'ordre (basé sur heure_debut)
         cursor.execute("""
-            SELECT COALESCE(MAX(ordre_jour), 0) + 1 as next_ordre
+            SELECT COALESCE(MAX(ordre_jour), 0) as max_ordre
             FROM lavages_planning_elements
             WHERE date_prevue = %s AND ligne_lavage = %s
         """, (date_prevue, ligne_lavage))
-        next_ordre = cursor.fetchone()['next_ordre']
+        result = cursor.fetchone()
+        next_ordre = (result['max_ordre'] or 0) + 1
         
-        # Calculer heure début (après le dernier élément)
-        cursor.execute("""
-            SELECT heure_fin 
-            FROM lavages_planning_elements
-            WHERE date_prevue = %s AND ligne_lavage = %s
-            ORDER BY ordre_jour DESC
-            LIMIT 1
-        """, (date_prevue, ligne_lavage))
-        last = cursor.fetchone()
+        # Utiliser l'heure choisie
+        heure_debut = heure_debut_choisie
         
-        if last and last['heure_fin']:
-            heure_debut = last['heure_fin']
-        else:
-            heure_debut = time(5, 0)  # 05:00 par défaut
-        
-        # Calculer heure fin
+        # Calculer heure fin et arrondir au quart d'heure
         debut_minutes = heure_debut.hour * 60 + heure_debut.minute
         fin_minutes = debut_minutes + duree_minutes
-        heure_fin = time(fin_minutes // 60, fin_minutes % 60)
+        heure_fin_brute = time(min(23, fin_minutes // 60), fin_minutes % 60)
+        heure_fin = arrondir_quart_heure_sup(heure_fin_brute)
         
         # Insérer
         created_by = st.session_state.get('username', 'system')
@@ -322,7 +407,7 @@ def ajouter_element_planning(type_element, job_id, temps_custom_id, date_prevue,
         cursor.close()
         conn.close()
         
-        return True, f"✅ Élément ajouté"
+        return True, f"✅ Élément ajouté ({heure_debut.strftime('%H:%M')} → {heure_fin.strftime('%H:%M')})"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
@@ -333,81 +418,31 @@ def retirer_element_planning(element_id):
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        
         cursor.execute("DELETE FROM lavages_planning_elements WHERE id = %s", (element_id,))
-        
         conn.commit()
         cursor.close()
         conn.close()
-        
         return True, "✅ Élément retiré"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
-def recalculer_horaires(date_prevue, ligne_lavage):
-    """Recalcule les horaires après modification"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Récupérer tous les éléments du jour/ligne ordonnés
-        cursor.execute("""
-            SELECT id, duree_minutes, ordre_jour
-            FROM lavages_planning_elements
-            WHERE date_prevue = %s AND ligne_lavage = %s
-            ORDER BY ordre_jour
-        """, (date_prevue, ligne_lavage))
-        
-        elements = cursor.fetchall()
-        
-        heure_courante = time(5, 0)  # Début à 05:00
-        
-        for i, elem in enumerate(elements):
-            # Mettre à jour ordre et horaires
-            debut = heure_courante
-            debut_min = debut.hour * 60 + debut.minute
-            fin_min = debut_min + elem['duree_minutes']
-            fin = time(fin_min // 60, fin_min % 60)
-            
-            cursor.execute("""
-                UPDATE lavages_planning_elements 
-                SET ordre_jour = %s, heure_debut = %s, heure_fin = %s
-                WHERE id = %s
-            """, (i + 1, debut, fin, elem['id']))
-            
-            heure_courante = fin
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        return True
-    except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
-        return False
-
 def creer_temps_custom(code, libelle, emoji, duree_minutes):
     """Crée un nouveau temps custom"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        
         created_by = st.session_state.get('username', 'system')
-        
         cursor.execute("""
             INSERT INTO lavages_temps_customs (code, libelle, emoji, duree_minutes, created_by)
             VALUES (%s, %s, %s, %s, %s)
             RETURNING id
         """, (code, libelle, emoji, duree_minutes, created_by))
-        
         new_id = cursor.fetchone()['id']
         conn.commit()
         cursor.close()
         conn.close()
-        
         return True, f"✅ Temps custom créé"
     except Exception as e:
         if 'conn' in locals():
@@ -430,37 +465,13 @@ def generer_html_jour(planning_df, date_obj, ligne, lignes_info):
             body {{ font-family: Arial, sans-serif; margin: 0; padding: 20px; }}
             h1 {{ color: #1976d2; border-bottom: 3px solid #1976d2; padding-bottom: 10px; margin-bottom: 20px; }}
             .info {{ background: #f5f5f5; padding: 15px; border-radius: 8px; margin-bottom: 20px; }}
-            .element {{ 
-                border-left: 5px solid #388e3c; 
-                padding: 12px 15px; 
-                margin: 10px 0; 
-                background: #f9f9f9;
-                border-radius: 0 8px 8px 0;
-            }}
+            .element {{ border-left: 5px solid #388e3c; padding: 12px 15px; margin: 10px 0; background: #f9f9f9; border-radius: 0 8px 8px 0; }}
             .element-custom {{ border-left-color: #f57c00; background: #fff8e1; }}
-            .horaire {{ 
-                font-weight: bold; 
-                color: #1976d2; 
-                font-size: 1.1em;
-                display: inline-block;
-                min-width: 120px;
-            }}
+            .horaire {{ font-weight: bold; color: #1976d2; font-size: 1.1em; display: inline-block; min-width: 120px; }}
             .duree {{ color: #666; font-size: 0.9em; }}
             .details {{ margin-top: 5px; color: #333; }}
-            .footer {{ 
-                margin-top: 40px; 
-                padding-top: 15px;
-                border-top: 1px solid #ddd;
-                font-size: 0.85em; 
-                color: #666; 
-            }}
-            .recap {{ 
-                background: #e3f2fd; 
-                padding: 15px; 
-                border-radius: 8px; 
-                margin-top: 30px;
-                font-weight: bold;
-            }}
+            .footer {{ margin-top: 40px; padding-top: 15px; border-top: 1px solid #ddd; font-size: 0.85em; color: #666; }}
+            .recap {{ background: #e3f2fd; padding: 15px; border-radius: 8px; margin-top: 30px; font-weight: bold; }}
         </style>
     </head>
     <body>
@@ -471,12 +482,11 @@ def generer_html_jour(planning_df, date_obj, ligne, lignes_info):
         </div>
     """
     
-    # Filtrer les éléments du jour/ligne
     jour_str = str(date_obj)
     
     if not planning_df.empty:
         mask = (planning_df['date_prevue'].astype(str) == jour_str) & (planning_df['ligne_lavage'] == ligne)
-        elements = planning_df[mask].sort_values('ordre_jour')
+        elements = planning_df[mask].sort_values('heure_debut')
     else:
         elements = pd.DataFrame()
     
@@ -515,14 +525,9 @@ def generer_html_jour(planning_df, date_obj, ligne, lignes_info):
         
         temps_total = elements['duree_minutes'].sum() / 60
     
-    # Récap
     html += f"""
-        <div class="recap">
-            📊 RÉCAPITULATIF : {temps_total:.1f}h planifié
-        </div>
-        <div class="footer">
-            Imprimé le {datetime.now().strftime('%d/%m/%Y à %H:%M')} | Culture Pom - Planning Lavage
-        </div>
+        <div class="recap">📊 RÉCAPITULATIF : {temps_total:.1f}h planifié</div>
+        <div class="footer">Imprimé le {datetime.now().strftime('%d/%m/%Y à %H:%M')} | Culture Pom - Planning Lavage</div>
     </body>
     </html>
     """
@@ -534,7 +539,6 @@ def generer_html_jour(planning_df, date_obj, ligne, lignes_info):
 # ============================================================
 
 def get_monday_of_week(date_obj):
-    """Retourne le lundi de la semaine contenant date_obj"""
     return date_obj - timedelta(days=date_obj.weekday())
 
 if 'current_week_start' not in st.session_state:
@@ -555,7 +559,6 @@ st.title("🗓️ Aide Planning Lavage")
 
 col_ligne, col_nav_prev, col_semaine, col_nav_next, col_refresh = st.columns([2, 0.5, 2, 0.5, 1])
 
-# Sélecteur de ligne
 lignes = get_lignes_lavage()
 with col_ligne:
     if lignes:
@@ -569,7 +572,6 @@ with col_ligne:
         selected = st.selectbox("🔵 Ligne affichée", ligne_options, index=selected_idx, key="ligne_select")
         st.session_state.selected_ligne = lignes[ligne_options.index(selected)]['code']
 
-# Navigation semaine
 with col_nav_prev:
     st.write("")
     if st.button("◀", key="prev_week", use_container_width=True):
@@ -580,8 +582,13 @@ with col_semaine:
     week_start = st.session_state.current_week_start
     week_end = week_start + timedelta(days=5)
     annee, semaine, _ = week_start.isocalendar()
-    st.markdown(f"### Semaine {semaine}")
-    st.caption(f"{week_start.strftime('%d/%m')} → {week_end.strftime('%d/%m/%Y')}")
+    # ⭐ CENTRÉ avec HTML
+    st.markdown(f"""
+    <div class="semaine-center">
+        <h2>Semaine {semaine}</h2>
+        <small style="color: #666;">{week_start.strftime('%d/%m')} → {week_end.strftime('%d/%m/%Y')}</small>
+    </div>
+    """, unsafe_allow_html=True)
 
 with col_nav_next:
     st.write("")
@@ -605,17 +612,16 @@ temps_customs = get_temps_customs()
 horaires_config = get_config_horaires()
 planning_df = get_planning_semaine(annee, semaine)
 
-# Créer dict des lignes avec capacités
 lignes_dict = {l['code']: float(l['capacite_th']) for l in lignes} if lignes else {'LIGNE_1': 13.0, 'LIGNE_2': 6.0}
 
 # ============================================================
-# LAYOUT PRINCIPAL : GAUCHE (Jobs + Temps) | DROITE (Calendrier)
+# LAYOUT PRINCIPAL
 # ============================================================
 
 col_left, col_right = st.columns([1, 4])
 
 # ============================================================
-# COLONNE GAUCHE : JOBS À PLACER + TEMPS CUSTOMS
+# COLONNE GAUCHE
 # ============================================================
 
 with col_left:
@@ -624,7 +630,6 @@ with col_left:
     # ----------------------------------------
     st.markdown("### 📦 Jobs à placer")
     
-    # Filtrer jobs non planifiés cette semaine
     jobs_planifies_ids = []
     if not planning_df.empty:
         jobs_planifies_ids = planning_df[planning_df['type_element'] == 'JOB']['job_id'].dropna().astype(int).tolist()
@@ -641,39 +646,62 @@ with col_left:
                     <strong>Job #{int(job['id'])}</strong><br>
                     🌱 {job['variete']}<br>
                     📦 {int(job['quantite_pallox'])} pallox<br>
-                    ⏱️ {job['temps_estime_heures']:.1f}h
+                    ⏱️ {job['temps_estime_heures']:.1f}h ({int(job['temps_estime_heures'] * 60)} min)
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Générer options de placement
-                placement_options = ["Sélectionner..."]
+                # Sélection jour
+                jours_options = ["Sélectionner jour..."]
                 for i in range(6):
                     jour_date = week_start + timedelta(days=i)
                     jour_nom = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'][i]
-                    placement_options.append(f"{jour_nom} {jour_date.strftime('%d/%m')} - {st.session_state.selected_ligne}")
+                    jours_options.append(f"{jour_nom} {jour_date.strftime('%d/%m')}")
                 
-                placement = st.selectbox(
-                    "Placer →",
-                    placement_options,
-                    key=f"place_job_{job['id']}",
+                jour_choisi = st.selectbox(
+                    "Jour",
+                    jours_options,
+                    key=f"jour_job_{job['id']}",
                     label_visibility="collapsed"
                 )
                 
-                if placement != "Sélectionner...":
-                    jour_idx = placement_options.index(placement) - 1
+                if jour_choisi != "Sélectionner jour...":
+                    jour_idx = jours_options.index(jour_choisi) - 1
                     date_cible = week_start + timedelta(days=jour_idx)
+                    
+                    # ⭐ SÉLECTION HEURE DE DÉBUT
+                    creneaux = get_creneaux_disponibles(planning_df, date_cible, st.session_state.selected_ligne, jour_idx, horaires_config)
+                    creneau_options = [c[1] for c in creneaux]
+                    
+                    creneau_choisi = st.selectbox(
+                        "Heure début",
+                        creneau_options,
+                        key=f"heure_job_{job['id']}",
+                        label_visibility="collapsed"
+                    )
+                    
+                    creneau_idx = creneau_options.index(creneau_choisi)
+                    heure_debut = creneaux[creneau_idx][0]
                     duree_min = int(job['temps_estime_heures'] * 60)
                     
-                    if st.button(f"✅ Confirmer", key=f"confirm_job_{job['id']}", type="primary", use_container_width=True):
-                        success, msg = ajouter_element_planning(
-                            'JOB', int(job['id']), None, date_cible, 
-                            st.session_state.selected_ligne, duree_min, annee, semaine
-                        )
-                        if success:
-                            st.success(msg)
-                            st.rerun()
-                        else:
-                            st.error(msg)
+                    # ⭐ VÉRIFICATION DURÉE SUFFISANTE
+                    h_fin_jour = get_horaire_fin_jour(jour_idx, horaires_config)
+                    debut_minutes = heure_debut.hour * 60 + heure_debut.minute
+                    fin_minutes = debut_minutes + duree_min
+                    fin_jour_minutes = h_fin_jour.hour * 60 + h_fin_jour.minute
+                    
+                    if fin_minutes > fin_jour_minutes:
+                        st.error(f"⚠️ Durée insuffisante ! Fin prévue {fin_minutes//60}:{fin_minutes%60:02d} > fin journée {h_fin_jour.strftime('%H:%M')}")
+                    else:
+                        if st.button(f"✅ Placer", key=f"confirm_job_{job['id']}", type="primary", use_container_width=True):
+                            success, msg = ajouter_element_planning(
+                                'JOB', int(job['id']), None, date_cible, 
+                                st.session_state.selected_ligne, duree_min, annee, semaine, heure_debut
+                            )
+                            if success:
+                                st.success(msg)
+                                st.rerun()
+                            else:
+                                st.error(msg)
                 
                 st.markdown("<hr style='margin: 0.5rem 0; border: none; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
     
@@ -685,46 +713,85 @@ with col_left:
     st.markdown("### 🔧 Temps customs")
     
     if not temps_customs:
-        st.warning("⚠️ Tables non créées. Exécutez le script SQL d'abord.")
+        st.warning("⚠️ Aucun temps custom")
     else:
         for tc in temps_customs:
             with st.container():
-                st.markdown(f"""
-                <div class="custom-card">
-                    <strong>{tc['emoji']} {tc['libelle']}</strong><br>
-                    ⏱️ {tc['duree_minutes']} min
-                </div>
-                """, unsafe_allow_html=True)
+                col_tc, col_del = st.columns([5, 1])
                 
-                placement_options_tc = ["Sélectionner..."]
+                with col_tc:
+                    st.markdown(f"""
+                    <div class="custom-card">
+                        <strong>{tc['emoji']} {tc['libelle']}</strong><br>
+                        ⏱️ {tc['duree_minutes']} min
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                # ⭐ BOUTON SUPPRIMER (admins uniquement)
+                with col_del:
+                    if is_admin():
+                        if st.button("🗑️", key=f"del_tc_{tc['id']}", help="Supprimer"):
+                            success, msg = supprimer_temps_custom(tc['id'])
+                            if success:
+                                st.success(msg)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                
+                # Sélection jour
+                jours_options_tc = ["Sélectionner jour..."]
                 for i in range(6):
                     jour_date = week_start + timedelta(days=i)
                     jour_nom = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'][i]
-                    placement_options_tc.append(f"{jour_nom} {jour_date.strftime('%d/%m')} - {st.session_state.selected_ligne}")
+                    jours_options_tc.append(f"{jour_nom} {jour_date.strftime('%d/%m')}")
                 
-                placement_tc = st.selectbox(
-                    "Placer →",
-                    placement_options_tc,
-                    key=f"place_tc_{tc['id']}",
+                jour_choisi_tc = st.selectbox(
+                    "Jour",
+                    jours_options_tc,
+                    key=f"jour_tc_{tc['id']}",
                     label_visibility="collapsed"
                 )
                 
-                if placement_tc != "Sélectionner...":
-                    jour_idx = placement_options_tc.index(placement_tc) - 1
+                if jour_choisi_tc != "Sélectionner jour...":
+                    jour_idx = jours_options_tc.index(jour_choisi_tc) - 1
                     date_cible = week_start + timedelta(days=jour_idx)
                     
-                    if st.button(f"✅ Confirmer", key=f"confirm_tc_{tc['id']}", type="primary", use_container_width=True):
-                        success, msg = ajouter_element_planning(
-                            'CUSTOM', None, int(tc['id']), date_cible,
-                            st.session_state.selected_ligne, int(tc['duree_minutes']), annee, semaine
-                        )
-                        if success:
-                            st.success(msg)
-                            st.rerun()
-                        else:
-                            st.error(msg)
+                    # ⭐ SÉLECTION HEURE DE DÉBUT
+                    creneaux = get_creneaux_disponibles(planning_df, date_cible, st.session_state.selected_ligne, jour_idx, horaires_config)
+                    creneau_options = [c[1] for c in creneaux]
+                    
+                    creneau_choisi = st.selectbox(
+                        "Heure début",
+                        creneau_options,
+                        key=f"heure_tc_{tc['id']}",
+                        label_visibility="collapsed"
+                    )
+                    
+                    creneau_idx = creneau_options.index(creneau_choisi)
+                    heure_debut = creneaux[creneau_idx][0]
+                    duree_min = int(tc['duree_minutes'])
+                    
+                    # ⭐ VÉRIFICATION DURÉE SUFFISANTE
+                    h_fin_jour = get_horaire_fin_jour(jour_idx, horaires_config)
+                    debut_minutes = heure_debut.hour * 60 + heure_debut.minute
+                    fin_minutes = debut_minutes + duree_min
+                    fin_jour_minutes = h_fin_jour.hour * 60 + h_fin_jour.minute
+                    
+                    if fin_minutes > fin_jour_minutes:
+                        st.error(f"⚠️ Durée insuffisante !")
+                    else:
+                        if st.button(f"✅ Placer", key=f"confirm_tc_{tc['id']}", type="primary", use_container_width=True):
+                            success, msg = ajouter_element_planning(
+                                'CUSTOM', None, int(tc['id']), date_cible,
+                                st.session_state.selected_ligne, duree_min, annee, semaine, heure_debut
+                            )
+                            if success:
+                                st.success(msg)
+                                st.rerun()
+                            else:
+                                st.error(msg)
     
-    # Bouton créer temps custom
+    # Créer temps custom
     st.markdown("---")
     with st.expander("➕ Créer temps custom"):
         new_libelle = st.text_input("Libellé", key="new_tc_libelle")
@@ -748,9 +815,7 @@ with col_left:
 # ============================================================
 
 with col_right:
-    # Créer 6 colonnes pour Lundi à Samedi
     jour_cols = st.columns(6)
-    
     jours_noms = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi']
     
     for i, col_jour in enumerate(jour_cols):
@@ -759,16 +824,13 @@ with col_right:
         jour_semaine_idx = i
         
         with col_jour:
-            # ----------------------------------------
-            # EN-TÊTE JOUR + CAPACITÉS (EN HAUT)
-            # ----------------------------------------
             st.markdown(f"""
             <div class="day-header">
                 {jours_noms[i][:3]} {jour_date.strftime('%d/%m')}
             </div>
             """, unsafe_allow_html=True)
             
-            # Capacités des 2 lignes
+            # Capacités des 2 lignes EN HAUT
             capacites_html = ""
             for ligne_code in sorted(lignes_dict.keys()):
                 capacite_th = lignes_dict[ligne_code]
@@ -796,14 +858,12 @@ with col_right:
             </div>
             """, unsafe_allow_html=True)
             
-            # ----------------------------------------
-            # ÉLÉMENTS PLANIFIÉS
-            # ----------------------------------------
+            # Éléments planifiés
             ligne_affichee = st.session_state.selected_ligne
             
             if not planning_df.empty:
                 mask = (planning_df['date_prevue'].astype(str) == jour_str) & (planning_df['ligne_lavage'] == ligne_affichee)
-                elements_jour = planning_df[mask].sort_values('ordre_jour')
+                elements_jour = planning_df[mask].sort_values('heure_debut')
                 
                 if elements_jour.empty:
                     st.caption("_Vide_")
@@ -831,11 +891,9 @@ with col_right:
                             </div>
                             """, unsafe_allow_html=True)
                         
-                        # Bouton retirer
                         if st.button("❌", key=f"del_{elem['id']}", help="Retirer"):
                             success, msg = retirer_element_planning(int(elem['id']))
                             if success:
-                                recalculer_horaires(jour_date, ligne_affichee)
                                 st.rerun()
                             else:
                                 st.error(msg)
@@ -843,7 +901,7 @@ with col_right:
                 st.caption("_Vide_")
 
 # ============================================================
-# FOOTER : ACTIONS
+# FOOTER
 # ============================================================
 
 st.markdown("---")
