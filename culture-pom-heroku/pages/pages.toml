@@ -1,0 +1,39 @@
+[[pages]]
+path = "app.py"
+name = "🏠 Accueil"
+
+[[pages]]
+path = "pages/01_Sources.py"
+name = "📋 Sources"
+
+[[pages]]
+path = "pages/02_Lots.py"
+name = "📦 Lots"
+
+[[pages]]
+path = "pages/03_Details_stock.py"
+name = "🗃️ Détails Stock"
+
+[[pages]]
+path = "pages/04_Stock_Global.py"
+name = "📊 Stock Global"
+
+[[pages]]
+path = "pages/05_Planning_Lavage.py"
+name = "🧼 Planning Lavage"
+
+[[pages]]
+path = "pages/06_Previsions_Ventes.py"
+name = "📈 Prévisions Ventes"
+
+[[pages]]
+path = "pages/07_Affectation_Stock.py"
+name = "🔗 Affectation Stock"
+
+[[pages]]
+path = "pages/08_Planning_Production.py"
+name = "🏭 Planning Production"
+
+[[pages]]
+path = "pages/09_Valorisation_Lots.py"
+name = "💰 Valorisation Lots"
