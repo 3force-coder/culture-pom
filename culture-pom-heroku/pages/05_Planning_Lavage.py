@@ -430,17 +430,26 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
         if not job:
             return False, "❌ Job introuvable ou pas EN_COURS"
         
-        # Récupérer l'emplacement source BRUT
+        # Récupérer l'emplacement source BRUT (ou NULL = stock créé manuellement)
         cursor.execute("""
-            SELECT id, nombre_unites, poids_total_kg
+            SELECT id, nombre_unites, poids_total_kg, site_stockage, emplacement_stockage
             FROM stock_emplacements
-            WHERE lot_id = %s AND statut_lavage = 'BRUT' AND is_active = TRUE
+            WHERE lot_id = %s 
+              AND (statut_lavage = 'BRUT' OR statut_lavage IS NULL)
+              AND is_active = TRUE
             ORDER BY id
             LIMIT 1
         """, (job['lot_id'],))
         stock_brut = cursor.fetchone()
         if not stock_brut:
             return False, "❌ Stock BRUT source introuvable"
+        
+        # S'assurer que le stock source a bien statut_lavage = 'BRUT'
+        cursor.execute("""
+            UPDATE stock_emplacements 
+            SET statut_lavage = 'BRUT', type_stock = 'PRINCIPAL'
+            WHERE id = %s AND statut_lavage IS NULL
+        """, (stock_brut['id'],))
         
         # Calculs tares
         poids_brut = float(job['poids_brut_kg'])
@@ -489,8 +498,8 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
         cursor.execute("""
             INSERT INTO stock_emplacements 
             (lot_id, site_stockage, emplacement_stockage, nombre_unites, 
-             type_conditionnement, poids_total_kg, statut_lavage, lavage_job_id, is_active)
-            VALUES (%s, %s, %s, %s, 'Pallox', %s, 'LAVÉ', %s, TRUE)
+             type_conditionnement, poids_total_kg, type_stock, statut_lavage, lavage_job_id, is_active)
+            VALUES (%s, %s, %s, %s, 'Pallox', %s, 'LAVÉ', 'LAVÉ', %s, TRUE)
             RETURNING id
         """, (job['lot_id'], site_dest, emplacement_dest, quantite_pallox, 
               poids_lave, job_id))
@@ -506,8 +515,8 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
             cursor.execute("""
                 INSERT INTO stock_emplacements 
                 (lot_id, site_stockage, emplacement_stockage, nombre_unites, 
-                 type_conditionnement, poids_total_kg, statut_lavage, lavage_job_id, is_active)
-                VALUES (%s, %s, %s, %s, 'Pallox', %s, 'GRENAILLES', %s, TRUE)
+                 type_conditionnement, poids_total_kg, type_stock, statut_lavage, lavage_job_id, is_active)
+                VALUES (%s, %s, %s, %s, 'Pallox', %s, 'GRENAILLES', 'GRENAILLES', %s, TRUE)
                 RETURNING id
             """, (job['lot_id'], site_dest, emplacement_dest, nb_pallox_gren, 
                   poids_grenailles, job_id))
@@ -537,32 +546,32 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
         # ============================================================
         # 5. ENREGISTRER MOUVEMENTS DE STOCK
         # ============================================================
-        # Mouvement LAVAGE_SORTIE (déduction brut)
+        # Mouvement LAVAGE_BRUT_REDUIT (déduction brut)
         cursor.execute("""
             INSERT INTO stock_mouvements 
             (lot_id, type_mouvement, site_origine, emplacement_origine,
              quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
-            VALUES (%s, 'LAVAGE_SORTIE', %s, %s, %s, 'Pallox', %s, %s, %s, %s)
-        """, (job['lot_id'], 'SAINT_FLAVY', 'BRUT', quantite_pallox, 
-              poids_brut, terminated_by, f"Job #{job_id} - Sortie lavage", terminated_by))
+            VALUES (%s, 'LAVAGE_BRUT_REDUIT', %s, %s, %s, 'Pallox', %s, %s, %s, %s)
+        """, (job['lot_id'], stock_brut['site_stockage'], stock_brut['emplacement_stockage'], 
+              quantite_pallox, poids_brut, terminated_by, f"Job #{job_id} - Sortie lavage", terminated_by))
         
-        # Mouvement LAVAGE_ENTREE_LAVE
+        # Mouvement LAVAGE_CREATION_LAVE
         cursor.execute("""
             INSERT INTO stock_mouvements 
             (lot_id, type_mouvement, site_destination, emplacement_destination,
              quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
-            VALUES (%s, 'LAVAGE_ENTREE_LAVE', %s, %s, %s, 'Pallox', %s, %s, %s, %s)
+            VALUES (%s, 'LAVAGE_CREATION_LAVE', %s, %s, %s, 'Pallox', %s, %s, %s, %s)
         """, (job['lot_id'], site_dest, emplacement_dest, quantite_pallox, 
               poids_lave, terminated_by, f"Job #{job_id} - Entrée lavé", terminated_by))
         
-        # Mouvement LAVAGE_ENTREE_GRENAILLES (si > 0)
+        # Mouvement LAVAGE_CREATION_GRENAILLES (si > 0)
         if poids_grenailles > 0:
             cursor.execute("""
                 INSERT INTO stock_mouvements 
                 (lot_id, type_mouvement, site_destination, emplacement_destination,
                  quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
-                VALUES (%s, 'LAVAGE_ENTREE_GRENAILLES', %s, %s, %s, 'Pallox', %s, %s, %s, %s)
-            """, (job['lot_id'], site_dest, emplacement_dest, 1, 
+                VALUES (%s, 'LAVAGE_CREATION_GRENAILLES', %s, %s, %s, 'Pallox', %s, %s, %s, %s)
+            """, (job['lot_id'], site_dest, emplacement_dest, nb_pallox_gren, 
                   poids_grenailles, terminated_by, f"Job #{job_id} - Entrée grenailles", terminated_by))
         
         conn.commit()
@@ -610,7 +619,7 @@ def get_lots_bruts_disponibles():
             JOIN stock_emplacements se ON l.id = se.lot_id
             LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
             WHERE se.is_active = TRUE 
-              AND se.statut_lavage = 'BRUT'
+              AND (se.statut_lavage = 'BRUT' OR se.statut_lavage IS NULL)
               AND se.nombre_unites > 0
             ORDER BY l.code_lot_interne
         """)
@@ -757,11 +766,11 @@ def annuler_job_termine(job_id):
         # ============================================================
         # 2. RESTAURER LE STOCK BRUT SOURCE
         # ============================================================
-        # Chercher le stock BRUT du lot (actif ou non)
+        # Chercher le stock BRUT du lot (actif ou non, incluant NULL pour anciens stocks)
         cursor.execute("""
             SELECT id, nombre_unites, poids_total_kg, is_active
             FROM stock_emplacements
-            WHERE lot_id = %s AND statut_lavage = 'BRUT'
+            WHERE lot_id = %s AND (statut_lavage = 'BRUT' OR statut_lavage IS NULL)
             ORDER BY id
             LIMIT 1
         """, (lot_id,))
