@@ -1,25 +1,56 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from datetime import datetime
 from database import get_connection
 from components import show_footer
-from auth import is_authenticated, is_admin
-import streamlit.components.v1 as components
+from auth import is_authenticated
+import io
 
-# CSS espacements réduits
+st.set_page_config(page_title="Détails Stock - Culture Pom", page_icon="📍", layout="wide")
+
+# CSS compact
 st.markdown("""
 <style>
     .block-container {
         padding-top: 2rem !important;
         padding-bottom: 0.5rem !important;
+        padding-left: 2rem !important;
+        padding-right: 2rem !important;
     }
     h1, h2, h3, h4 {
         margin-top: 0.3rem !important;
         margin-bottom: 0.3rem !important;
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
     }
     .stSelectbox, .stButton, .stCheckbox {
         margin-bottom: 0.3rem !important;
         margin-top: 0.3rem !important;
+    }
+    .stDataFrame {
+        margin-top: 0.5rem !important;
+        margin-bottom: 0.5rem !important;
+    }
+    [data-testid="stMetricValue"] {
+        font-size: 1.4rem !important;
+    }
+    [data-testid="metric-container"] {
+        padding: 0.3rem !important;
+    }
+    hr {
+        margin-top: 0.5rem !important;
+        margin-bottom: 0.5rem !important;
+    }
+    [data-testid="column"] {
+        padding: 0.2rem !important;
+    }
+    .lot-card {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 0.5rem 0;
+        border-left: 4px solid #1f77b4;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -28,147 +59,109 @@ if not is_authenticated():
     st.warning("⚠️ Veuillez vous connecter pour accéder à cette page")
     st.stop()
 
-# Bloc utilisateur sidebar
-def show_user_info():
-    if st.session_state.get('authenticated', False):
-        with st.sidebar:
-            st.markdown("---")
-            st.write(f"👤 {st.session_state.get('name', 'Utilisateur')}")
-            st.caption(f"📧 {st.session_state.get('email', '')}")
-            st.caption(f"🔑 {st.session_state.get('role', 'USER')}")
-            st.markdown("---")
-            if st.button("🚪 Déconnexion", use_container_width=True, key="btn_logout_sidebar"):
-                for key in list(st.session_state.keys()):
-                    del st.session_state[key]
-                st.rerun()
-
-show_user_info()
+st.title("📍 Détails Stock par Lot")
+st.caption("*Gestion des emplacements de stockage par lot*")
+st.markdown("---")
 
 # ============================================================================
-# FONCTIONS
+# FONCTIONS UTILITAIRES
 # ============================================================================
 
 def get_sites_stockage():
-    """Récupère la liste des sites de stockage depuis ref_sites_stockage"""
+    """Récupère tous les sites de stockage actifs"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        
-        query = """
-        SELECT DISTINCT code_site 
-        FROM ref_sites_stockage 
-        WHERE is_active = TRUE 
-        ORDER BY code_site
-        """
-        
-        cursor.execute(query)
+        cursor.execute("""
+            SELECT DISTINCT code_site 
+            FROM ref_sites_stockage 
+            WHERE is_active = TRUE 
+            ORDER BY code_site
+        """)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        
-        if rows:
-            return [row['code_site'] for row in rows]
-        return []
+        return [row['code_site'] for row in rows]
     except Exception as e:
-        st.error(f"❌ Erreur chargement sites : {str(e)}")
+        st.error(f"❌ Erreur : {str(e)}")
         return []
 
-def get_emplacements_by_site(code_site):
-    """Récupère les emplacements d'un site depuis ref_sites_stockage"""
+def get_emplacements_by_site(site):
+    """Récupère les emplacements d'un site donné"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        
-        query = """
-        SELECT code_emplacement, nom_complet
-        FROM ref_sites_stockage 
-        WHERE code_site = %s AND is_active = TRUE 
-        ORDER BY code_emplacement
-        """
-        
-        cursor.execute(query, (code_site,))
+        cursor.execute("""
+            SELECT code_emplacement, nom_complet
+            FROM ref_sites_stockage
+            WHERE code_site = %s AND is_active = TRUE
+            ORDER BY code_emplacement
+        """, (site,))
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        
-        if rows:
-            return [(row['code_emplacement'], row['nom_complet']) for row in rows]
-        return []
+        return [(row['code_emplacement'], row['nom_complet']) for row in rows]
     except Exception as e:
-        st.error(f"❌ Erreur chargement emplacements : {str(e)}")
+        st.error(f"❌ Erreur : {str(e)}")
         return []
 
 def get_lot_info(lot_id):
-    """Récupère les informations complètes d'un lot"""
+    """Récupère les infos d'un lot"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
         query = """
-        SELECT 
-            l.id,
-            l.code_lot_interne,
-            l.nom_usage,
-            COALESCE(v.nom_variete, l.code_variete) as nom_variete,
-            p.nom as nom_producteur,
-            l.date_entree_stock,
-            l.nombre_unites,
-            l.poids_total_brut_kg,
-            l.valeur_lot_euro,
-            l.statut as statut_libelle,
-            COALESCE((CURRENT_DATE - l.date_entree_stock::DATE), 0) as age_jours
-        FROM lots_bruts l
-        LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
-        LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
-        WHERE l.id = %s
+            SELECT 
+                l.id,
+                l.code_lot_interne,
+                l.nom_usage,
+                l.code_variete,
+                COALESCE(v.nom_variete, l.code_variete) as nom_variete,
+                l.code_producteur,
+                COALESCE(p.nom, l.code_producteur) as nom_producteur,
+                l.date_entree_stock,
+                l.calibre_min,
+                l.calibre_max,
+                l.poids_total_brut_kg,
+                l.statut,
+                COALESCE((CURRENT_DATE - l.date_entree_stock::DATE), 0) as age_jours
+            FROM lots_bruts l
+            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+            LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
+            WHERE l.id = %s AND l.is_active = TRUE
         """
         
         cursor.execute(query, (lot_id,))
-        result = cursor.fetchone()
+        row = cursor.fetchone()
         cursor.close()
         conn.close()
         
-        if result:
-            return {
-                'id': result['id'],
-                'code_lot_interne': result['code_lot_interne'],
-                'nom_usage': result['nom_usage'],
-                'nom_variete': result['nom_variete'],
-                'nom_producteur': result['nom_producteur'],
-                'date_entree_stock': result['date_entree_stock'],
-                'nombre_unites': result['nombre_unites'],
-                'poids_total_brut_kg': result['poids_total_brut_kg'],
-                'valeur_lot_euro': result['valeur_lot_euro'],
-                'statut_libelle': result['statut_libelle'],
-                'age_jours': int(result['age_jours']) if result['age_jours'] else 0
-            }
-        return None
+        return dict(row) if row else None
+        
     except Exception as e:
-        st.error(f"❌ Erreur chargement lot : {str(e)}")
+        st.error(f"❌ Erreur : {str(e)}")
         return None
 
 def get_lot_emplacements(lot_id):
-    """Récupère tous les emplacements d'un lot"""
+    """Récupère les emplacements d'un lot avec statut lavage emoji"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
         query = """
-        SELECT 
-            id,
-            site_stockage,
-            emplacement_stockage,
-            nombre_unites,
-            poids_total_kg,
-            type_stock,
-            type_conditionnement,
-            statut_lavage,
-            is_active,
-            created_at,
-            updated_at
-        FROM stock_emplacements
-        WHERE lot_id = %s AND is_active = TRUE
-        ORDER BY created_at DESC
+            SELECT 
+                se.id,
+                se.site_stockage,
+                se.emplacement_stockage,
+                se.nombre_unites,
+                se.type_conditionnement,
+                se.poids_total_kg,
+                se.statut_lavage,
+                se.is_active
+            FROM stock_emplacements se
+            WHERE se.lot_id = %s AND se.is_active = TRUE
+            ORDER BY se.site_stockage, se.emplacement_stockage
         """
         
         cursor.execute(query, (lot_id,))
@@ -177,33 +170,32 @@ def get_lot_emplacements(lot_id):
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=[
-                'id', 'site_stockage', 'emplacement_stockage', 
-                'nombre_unites', 'poids_total_kg', 'type_stock', 'type_conditionnement',
-                'statut_lavage', 'is_active', 'created_at', 'updated_at'
-            ])
+            df = pd.DataFrame(rows)
+            # Convertir colonnes numériques
+            numeric_cols = ['nombre_unites', 'poids_total_kg']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
             
-            # ⭐ Colonne Statut avec emoji (remplace Lavé + Grenailles)
-            def get_statut_emoji(statut):
-                if statut == 'LAVÉ':
-                    return '🧼 LAVÉ'
-                elif statut == 'GRENAILLES':
-                    return '🌾 GRENAILLES'
-                elif statut == 'BRUT':
-                    return '🟢 BRUT'
-                else:
-                    return '⚪ ' + str(statut or 'N/A')
-            
-            df['statut_emoji'] = df['statut_lavage'].apply(get_statut_emoji)
-            
-            # Garder colonnes calculées pour compatibilité
-            df['est_lave'] = df['statut_lavage'].apply(lambda x: 'OUI' if x == 'LAVÉ' else 'NON')
-            df['est_grenailles'] = df['statut_lavage'].apply(lambda x: 'OUI' if x == 'GRENAILLES' else 'NON')
+            # ⭐ Ajouter emoji statut
+            if 'statut_lavage' in df.columns:
+                def get_statut_emoji(statut):
+                    if statut == 'BRUT':
+                        return '🟢 BRUT'
+                    elif statut == 'LAVÉ':
+                        return '🧼 LAVÉ'
+                    elif statut == 'GRENAILLES':
+                        return '🌾 GRENAILLES'
+                    else:
+                        return statut
+                
+                df['statut_lavage_display'] = df['statut_lavage'].apply(get_statut_emoji)
             
             return df
         return pd.DataFrame()
+        
     except Exception as e:
-        st.error(f"❌ Erreur chargement emplacements : {str(e)}")
+        st.error(f"❌ Erreur : {str(e)}")
         return pd.DataFrame()
 
 def get_lot_mouvements(lot_id, limit=10):
@@ -213,22 +205,22 @@ def get_lot_mouvements(lot_id, limit=10):
         cursor = conn.cursor()
         
         query = """
-        SELECT 
-            type_mouvement,
-            site_origine,
-            emplacement_origine,
-            site_destination,
-            emplacement_destination,
-            quantite,
-            type_conditionnement,
-            poids_kg,
-            notes,
-            created_at,
-            created_by
-        FROM stock_mouvements
-        WHERE lot_id = %s
-        ORDER BY created_at DESC
-        LIMIT %s
+            SELECT 
+                type_mouvement,
+                site_origine,
+                emplacement_origine,
+                site_destination,
+                emplacement_destination,
+                quantite,
+                type_conditionnement,
+                poids_kg,
+                user_action,
+                notes,
+                created_at
+            FROM stock_mouvements
+            WHERE lot_id = %s
+            ORDER BY created_at DESC
+            LIMIT %s
         """
         
         cursor.execute(query, (lot_id, limit))
@@ -238,894 +230,782 @@ def get_lot_mouvements(lot_id, limit=10):
         
         if rows:
             df = pd.DataFrame(rows)
+            # Convertir colonnes numériques
+            numeric_cols = ['quantite', 'poids_kg']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
             return df
         return pd.DataFrame()
+        
     except Exception as e:
-        st.error(f"❌ Erreur chargement mouvements : {str(e)}")
+        st.error(f"❌ Erreur : {str(e)}")
         return pd.DataFrame()
 
-# ============================================================================
-# FONCTIONS ACTIONS SUR EMPLACEMENTS
-# ============================================================================
-
-def add_emplacement(lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock="PRINCIPAL", type_conditionnement=None, statut_lavage="BRUT"):
-    """Ajoute un nouvel emplacement pour un lot"""
+def add_emplacement(lot_id, site, emplacement, nombre_unites, type_cond, statut_lavage='BRUT'):
+    """Ajoute un emplacement"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Insérer l'emplacement avec statut_lavage
-        query = """
-        INSERT INTO stock_emplacements 
-        (lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock, type_conditionnement, statut_lavage, is_active, created_at, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        RETURNING id
-        """
-        
-        cursor.execute(query, (lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock, type_conditionnement, statut_lavage))
-        emplacement_id = cursor.fetchone()['id']
-        
-        # Enregistrer le mouvement
-        user = st.session_state.get('username', 'system')
-        
-        mouvement_query = """
-        INSERT INTO stock_mouvements
-        (lot_id, type_mouvement, site_destination, emplacement_destination,
-         quantite, type_conditionnement, poids_kg, user_action, created_by, notes)
-        VALUES (%s, 'AJOUT_STOCK', %s, %s, %s, %s, %s, %s, %s, %s)
-        """
-        
-        notes = f"Ajout stock : {nombre_unites} {type_conditionnement or 'unités'} à {site_stockage}/{emplacement_stockage}"
-        
-        cursor.execute(mouvement_query, (
-            lot_id, 
-            site_stockage, 
-            emplacement_stockage, 
-            nombre_unites, 
-            type_conditionnement or 'Pallox', 
-            poids_total_kg,
-            user,
-            user,
-            notes
-        ))
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        return True, f"✅ Emplacement ajouté avec succès (ID: {emplacement_id})"
-        
-    except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
-            conn.close()
-        
-        error_msg = str(e).lower()
-        
-        # Erreur colonne manquante type_conditionnement
-        if "type_conditionnement" in error_msg and "does not exist" in error_msg:
-            return False, "❌ La colonne 'type_conditionnement' n'existe pas dans la table. Veuillez exécuter le script SQL de mise à jour."
-        
-        # Erreur code_lot_interne
-        elif "code_lot_interne" in error_msg:
-            return False, "❌ Erreur structure table : colonne 'code_lot_interne' manquante. Veuillez vérifier la structure de la base de données."
-        
-        # Autres erreurs
+        # Calcul poids selon type conditionnement
+        if type_cond == 'Pallox':
+            poids_unitaire = 1900.0
+        elif type_cond == 'Petit Pallox':
+            poids_unitaire = 1200.0
+        elif type_cond == 'Big Bag':
+            poids_unitaire = 1600.0
         else:
-            return False, f"❌ Erreur : {str(e)}"
-
-def update_emplacement(emplacement_id, nombre_unites=None, poids_total_kg=None, type_conditionnement=None):
-    """Modifie la quantité d'un emplacement"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
+            poids_unitaire = 1900.0
         
-        # Récupérer les anciennes valeurs
-        cursor.execute("SELECT lot_id, nombre_unites, poids_total_kg, site_stockage, emplacement_stockage FROM stock_emplacements WHERE id = %s", (emplacement_id,))
-        old_data = cursor.fetchone()
+        poids_total = nombre_unites * poids_unitaire
         
-        if not old_data:
-            return False, "❌ Emplacement introuvable"
-        
-        # Préparer les mises à jour
-        updates = []
-        values = []
-        
-        if nombre_unites is not None:
-            updates.append("nombre_unites = %s")
-            values.append(nombre_unites)
-        
-        if poids_total_kg is not None:
-            updates.append("poids_total_kg = %s")
-            values.append(poids_total_kg)
-        
-        if type_conditionnement is not None:
-            updates.append("type_conditionnement = %s")
-            values.append(type_conditionnement)
-        
-        if not updates:
-            return False, "❌ Aucune modification à apporter"
-        
-        updates.append("updated_at = CURRENT_TIMESTAMP")
-        values.append(emplacement_id)
-        
-        # Mettre à jour
-        query = f"UPDATE stock_emplacements SET {', '.join(updates)} WHERE id = %s"
-        cursor.execute(query, values)
-        
-        # Enregistrer le mouvement
-        user = st.session_state.get('username', 'system')
-        
-        # Construire notes
-        notes = f"Modification {old_data['site_stockage']}/{old_data['emplacement_stockage']}"
-        if nombre_unites is not None:
-            notes += f" : {old_data['nombre_unites']} → {nombre_unites} pallox"
-        if poids_total_kg is not None:
-            notes += f", poids : {old_data['poids_total_kg']:.1f} → {poids_total_kg:.1f} kg"
-        
-        mouvement_query = """
-        INSERT INTO stock_mouvements
-        (lot_id, type_mouvement, site_origine, emplacement_origine,
-         quantite, type_conditionnement, poids_kg, user_action, created_by, notes)
-        VALUES (%s, 'MODIFICATION', %s, %s, %s, %s, %s, %s, %s, %s)
+        # Insérer emplacement
+        query = """
+            INSERT INTO stock_emplacements (
+                lot_id, site_stockage, emplacement_stockage, 
+                nombre_unites, type_conditionnement, poids_total_kg, 
+                statut_lavage, is_active
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE)
         """
         
-        cursor.execute(mouvement_query, (
-            old_data['lot_id'],
-            old_data['site_stockage'],
-            old_data['emplacement_stockage'],
-            nombre_unites or old_data['nombre_unites'],
-            type_conditionnement or 'Pallox',
-            poids_total_kg or old_data['poids_total_kg'],
-            user,
-            user,
-            notes
+        cursor.execute(query, (
+            int(lot_id), site, emplacement, 
+            int(nombre_unites), type_cond, float(poids_total),
+            statut_lavage
+        ))
+        
+        # Enregistrer mouvement
+        user = st.session_state.get('username', 'system')
+        
+        query_mvt = """
+            INSERT INTO stock_mouvements (
+                lot_id, type_mouvement, site_destination, emplacement_destination,
+                quantite, type_conditionnement, poids_kg, user_action
+            ) VALUES (%s, 'AJOUT', %s, %s, %s, %s, %s, %s)
+        """
+        
+        cursor.execute(query_mvt, (
+            int(lot_id), site, emplacement,
+            int(nombre_unites), type_cond, float(poids_total), user
         ))
         
         conn.commit()
         cursor.close()
         conn.close()
         
-        return True, "✅ Emplacement modifié avec succès"
+        return True, "✅ Emplacement ajouté"
         
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
-def delete_emplacement(emplacement_id):
-    """Supprime (soft delete) un emplacement"""
+def transfer_emplacement(lot_id, empl_source_id, quantite_transfert, site_dest, empl_dest):
+    """Transfère du stock d'un emplacement vers un autre"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Récupérer les infos pour le mouvement
-        cursor.execute("SELECT lot_id, nombre_unites, poids_total_kg, site_stockage, emplacement_stockage FROM stock_emplacements WHERE id = %s", (emplacement_id,))
-        data = cursor.fetchone()
-        
-        if not data:
-            return False, "❌ Emplacement introuvable"
-        
-        # Soft delete
-        cursor.execute("UPDATE stock_emplacements SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s", (emplacement_id,))
-        
-        # Enregistrer le mouvement
-        user = st.session_state.get('username', 'system')
-        notes = f"Suppression {data['site_stockage']}/{data['emplacement_stockage']}"
-        
-        mouvement_query = """
-        INSERT INTO stock_mouvements
-        (lot_id, type_mouvement, site_origine, emplacement_origine,
-         quantite, type_conditionnement, poids_kg, user_action, created_by, notes)
-        VALUES (%s, 'SUPPRESSION', %s, %s, %s, %s, %s, %s, %s, %s)
-        """
-        
-        cursor.execute(mouvement_query, (
-            data['lot_id'],
-            data['site_stockage'],
-            data['emplacement_stockage'],
-            data['nombre_unites'],
-            'Pallox',
-            float(data['poids_total_kg']) if data['poids_total_kg'] else 0.0,
-            user,
-            user,
-            notes
-        ))
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        return True, "✅ Emplacement supprimé avec succès"
-        
-    except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
-        return False, f"❌ Erreur : {str(e)}"
-
-def transfer_emplacement(emplacement_source_id, site_destination, emplacement_destination, quantite_transfert, poids_transfert, type_conditionnement=None):
-    """Transfère une quantité de pallox d'un emplacement vers un autre"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Récupérer l'emplacement source
+        # Récupérer infos source
         cursor.execute("""
-            SELECT lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock, type_conditionnement
-            FROM stock_emplacements 
+            SELECT site_stockage, emplacement_stockage, nombre_unites, 
+                   type_conditionnement, poids_total_kg, statut_lavage
+            FROM stock_emplacements
             WHERE id = %s AND is_active = TRUE
-        """, (emplacement_source_id,))
+        """, (empl_source_id,))
         
         source = cursor.fetchone()
         
         if not source:
             return False, "❌ Emplacement source introuvable"
         
-        # Validation : quantité suffisante ?
-        if source['nombre_unites'] < quantite_transfert:
-            return False, f"❌ Quantité insuffisante (disponible: {source['nombre_unites']} pallox)"
+        if int(quantite_transfert) > int(source['nombre_unites']):
+            return False, f"❌ Quantité insuffisante (disponible: {source['nombre_unites']})"
         
-        if source['poids_total_kg'] < poids_transfert:
-            return False, f"❌ Poids insuffisant (disponible: {source['poids_total_kg']:.1f} kg)"
-        
-        # 1. Diminuer l'emplacement source
-        new_nb_source = source['nombre_unites'] - quantite_transfert
-        new_poids_source = source['poids_total_kg'] - poids_transfert
-        
-        if new_nb_source > 0:
-            # Mettre à jour
-            cursor.execute("""
-                UPDATE stock_emplacements 
-                SET nombre_unites = %s, poids_total_kg = %s, updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s
-            """, (new_nb_source, new_poids_source, emplacement_source_id))
+        # Calcul poids
+        if source['type_conditionnement'] == 'Pallox':
+            poids_unitaire = 1900.0
+        elif source['type_conditionnement'] == 'Petit Pallox':
+            poids_unitaire = 1200.0
+        elif source['type_conditionnement'] == 'Big Bag':
+            poids_unitaire = 1600.0
         else:
-            # Vider complètement (soft delete)
+            poids_unitaire = 1900.0
+        
+        poids_transfere = quantite_transfert * poids_unitaire
+        
+        # Déduire de la source
+        nouvelle_quantite_source = int(source['nombre_unites']) - int(quantite_transfert)
+        nouveau_poids_source = nouvelle_quantite_source * poids_unitaire
+        
+        if nouvelle_quantite_source == 0:
+            # Supprimer source
             cursor.execute("""
                 UPDATE stock_emplacements 
-                SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+                SET is_active = FALSE 
                 WHERE id = %s
-            """, (emplacement_source_id,))
+            """, (empl_source_id,))
+        else:
+            # Mettre à jour source
+            cursor.execute("""
+                UPDATE stock_emplacements 
+                SET nombre_unites = %s, poids_total_kg = %s 
+                WHERE id = %s
+            """, (nouvelle_quantite_source, nouveau_poids_source, empl_source_id))
         
-        # 2. Chercher ou créer l'emplacement destination
+        # Vérifier si destination existe déjà
         cursor.execute("""
             SELECT id, nombre_unites, poids_total_kg
             FROM stock_emplacements
-            WHERE lot_id = %s AND site_stockage = %s AND emplacement_stockage = %s AND is_active = TRUE
-        """, (source['lot_id'], site_destination, emplacement_destination))
+            WHERE lot_id = %s 
+              AND site_stockage = %s 
+              AND emplacement_stockage = %s 
+              AND type_conditionnement = %s
+              AND statut_lavage = %s
+              AND is_active = TRUE
+        """, (int(lot_id), site_dest, empl_dest, source['type_conditionnement'], source['statut_lavage']))
         
-        destination = cursor.fetchone()
+        dest_existant = cursor.fetchone()
         
-        # Utiliser type_conditionnement du formulaire ou celui de la source
-        type_cond_final = type_conditionnement if type_conditionnement else source.get('type_conditionnement')
-        
-        if destination:
-            # Augmenter l'emplacement destination existant
-            new_nb_dest = destination['nombre_unites'] + quantite_transfert
-            new_poids_dest = destination['poids_total_kg'] + poids_transfert
+        if dest_existant:
+            # Ajouter à l'existant
+            nouvelle_quantite_dest = int(dest_existant['nombre_unites']) + int(quantite_transfert)
+            nouveau_poids_dest = float(dest_existant['poids_total_kg']) + poids_transfere
             
             cursor.execute("""
-                UPDATE stock_emplacements
-                SET nombre_unites = %s, poids_total_kg = %s, updated_at = CURRENT_TIMESTAMP
+                UPDATE stock_emplacements 
+                SET nombre_unites = %s, poids_total_kg = %s 
                 WHERE id = %s
-            """, (new_nb_dest, new_poids_dest, destination['id']))
+            """, (nouvelle_quantite_dest, nouveau_poids_dest, dest_existant['id']))
         else:
-            # Créer nouvel emplacement destination
+            # Créer nouveau
             cursor.execute("""
-                INSERT INTO stock_emplacements
-                (lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock, type_conditionnement, is_active, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """, (source['lot_id'], site_destination, emplacement_destination, quantite_transfert, poids_transfert, source['type_stock'], type_cond_final))
+                INSERT INTO stock_emplacements (
+                    lot_id, site_stockage, emplacement_stockage,
+                    nombre_unites, type_conditionnement, poids_total_kg,
+                    statut_lavage, is_active
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE)
+            """, (int(lot_id), site_dest, empl_dest, int(quantite_transfert), 
+                  source['type_conditionnement'], poids_transfere, source['statut_lavage']))
         
-        # 3. Enregistrer le mouvement
+        # Enregistrer mouvement
         user = st.session_state.get('username', 'system')
-        notes = f"Transfert {source['site_stockage']}/{source['emplacement_stockage']} → {site_destination}/{emplacement_destination}"
         
-        mouvement_query = """
-        INSERT INTO stock_mouvements
-        (lot_id, type_mouvement, 
-         site_origine, emplacement_origine,
-         site_destination, emplacement_destination,
-         quantite, type_conditionnement, poids_kg, user_action, created_by, notes)
-        VALUES (%s, 'TRANSFERT', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """
-        
-        cursor.execute(mouvement_query, (
-            source['lot_id'],
-            source['site_stockage'],
-            source['emplacement_stockage'],
-            site_destination,
-            emplacement_destination,
-            quantite_transfert,
-            type_cond_final or 'Pallox',
-            poids_transfert,
-            user,
-            user,
-            notes
-        ))
+        cursor.execute("""
+            INSERT INTO stock_mouvements (
+                lot_id, type_mouvement, 
+                site_origine, emplacement_origine,
+                site_destination, emplacement_destination,
+                quantite, type_conditionnement, poids_kg, user_action
+            ) VALUES (%s, 'TRANSFERT', %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (int(lot_id), source['site_stockage'], source['emplacement_stockage'],
+              site_dest, empl_dest, int(quantite_transfert), 
+              source['type_conditionnement'], poids_transfere, user))
         
         conn.commit()
         cursor.close()
         conn.close()
         
-        return True, f"✅ Transfert effectué : {quantite_transfert} pallox ({poids_transfert:.1f} kg)"
+        return True, "✅ Transfert effectué"
         
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
-# ============================================================================
-# INTERFACE
-# ============================================================================
-
-# ⭐ Récupérer les IDs des lots sélectionnés depuis session_state
-selected_lot_ids = st.session_state.get('selected_lots_for_emplacements', [])
-
-if not selected_lot_ids:
-    st.error("❌ Aucun lot sélectionné")
-    st.info("💡 Veuillez cocher un ou plusieurs lots dans la page Stock, puis cliquer sur 'Voir Emplacements'")
-    if st.button("← Retour à la liste des lots", use_container_width=True):
-        st.switch_page("pages/02_Lots.py")
-    st.stop()
-
-# Vérifier que ce sont bien des entiers
-try:
-    selected_lot_ids = [int(lot_id) for lot_id in selected_lot_ids]
-except:
-    st.error("❌ IDs de lots invalides")
-    if st.button("← Retour à la liste des lots", use_container_width=True):
-        st.switch_page("pages/02_Lots.py")
-    st.stop()
-
-# ============================================================================
-# TITRE & NAVIGATION
-# ============================================================================
-
-col_title, col_back = st.columns([4, 1])
-
-with col_title:
-    nb_lots = len(selected_lot_ids)
-    if nb_lots == 1:
-        st.title(f"📦 Détails Stock du Lot")
-    else:
-        st.title(f"📦 Détails Stock de {nb_lots} Lots")
-
-with col_back:
-    if st.button("← Retour Stock", use_container_width=True):
-        st.switch_page("pages/02_Lots.py")
-
-st.markdown("---")
-
-# ============================================================================
-# VUE D'ENSEMBLE CONSOLIDÉE (tous les lots)
-# ============================================================================
-
-st.subheader("📊 Vue Consolidée")
-
-# Calculer totaux pour tous les lots
-total_lots = len(selected_lot_ids)
-total_pallox_global = 0
-total_tonnage_global = 0
-total_emplacements_global = 0
-
-# Charger données de tous les lots
-lots_data = []
-
-for lot_id in selected_lot_ids:
-    lot_info = get_lot_info(lot_id)
-    if lot_info:
-        emplacements_df = get_lot_emplacements(lot_id)
+def modify_emplacement(empl_id, nouvelle_quantite):
+    """Modifie la quantité d'un emplacement"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
         
-        nb_emplacements = len(emplacements_df)
-        total_pallox = emplacements_df['nombre_unites'].sum() if not emplacements_df.empty else 0
-        total_tonnage = (emplacements_df['poids_total_kg'].sum() / 1000) if not emplacements_df.empty and 'poids_total_kg' in emplacements_df.columns else 0
+        # Récupérer infos
+        cursor.execute("""
+            SELECT lot_id, site_stockage, emplacement_stockage, 
+                   nombre_unites, type_conditionnement
+            FROM stock_emplacements
+            WHERE id = %s AND is_active = TRUE
+        """, (empl_id,))
         
-        lots_data.append({
-            'lot_id': lot_id,
-            'lot_info': lot_info,
-            'emplacements_df': emplacements_df,
-            'nb_emplacements': nb_emplacements,
-            'total_pallox': total_pallox,
-            'total_tonnage': total_tonnage
-        })
+        empl = cursor.fetchone()
         
-        total_pallox_global += total_pallox
-        total_tonnage_global += total_tonnage
-        total_emplacements_global += nb_emplacements
+        if not empl:
+            return False, "❌ Emplacement introuvable"
+        
+        # Calcul poids
+        if empl['type_conditionnement'] == 'Pallox':
+            poids_unitaire = 1900.0
+        elif empl['type_conditionnement'] == 'Petit Pallox':
+            poids_unitaire = 1200.0
+        elif empl['type_conditionnement'] == 'Big Bag':
+            poids_unitaire = 1600.0
+        else:
+            poids_unitaire = 1900.0
+        
+        nouveau_poids = nouvelle_quantite * poids_unitaire
+        
+        # Mettre à jour
+        cursor.execute("""
+            UPDATE stock_emplacements 
+            SET nombre_unites = %s, poids_total_kg = %s 
+            WHERE id = %s
+        """, (int(nouvelle_quantite), float(nouveau_poids), empl_id))
+        
+        # Enregistrer mouvement
+        user = st.session_state.get('username', 'system')
+        
+        cursor.execute("""
+            INSERT INTO stock_mouvements (
+                lot_id, type_mouvement, 
+                site_destination, emplacement_destination,
+                quantite, type_conditionnement, poids_kg, user_action,
+                notes
+            ) VALUES (%s, 'MODIFICATION', %s, %s, %s, %s, %s, %s, %s)
+        """, (int(empl['lot_id']), empl['site_stockage'], empl['emplacement_stockage'],
+              int(nouvelle_quantite), empl['type_conditionnement'], float(nouveau_poids), user,
+              f"Ancienne quantité: {empl['nombre_unites']}"))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, "✅ Emplacement modifié"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
 
-# KPIs Consolidés
-col1, col2, col3, col4 = st.columns(4)
+def delete_emplacement(empl_id):
+    """Supprime (soft delete) un emplacement"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Récupérer infos pour mouvement
+        cursor.execute("""
+            SELECT lot_id, site_stockage, emplacement_stockage, 
+                   nombre_unites, type_conditionnement, poids_total_kg
+            FROM stock_emplacements
+            WHERE id = %s AND is_active = TRUE
+        """, (empl_id,))
+        
+        empl = cursor.fetchone()
+        
+        if not empl:
+            return False, "❌ Emplacement introuvable"
+        
+        # Soft delete
+        cursor.execute("""
+            UPDATE stock_emplacements 
+            SET is_active = FALSE 
+            WHERE id = %s
+        """, (empl_id,))
+        
+        # Enregistrer mouvement
+        user = st.session_state.get('username', 'system')
+        
+        cursor.execute("""
+            INSERT INTO stock_mouvements (
+                lot_id, type_mouvement, 
+                site_origine, emplacement_origine,
+                quantite, type_conditionnement, poids_kg, user_action
+            ) VALUES (%s, 'SUPPRESSION', %s, %s, %s, %s, %s, %s)
+        """, (int(empl['lot_id']), empl['site_stockage'], empl['emplacement_stockage'],
+              int(empl['nombre_unites']), empl['type_conditionnement'], 
+              float(empl['poids_total_kg']), user))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, "✅ Emplacement supprimé"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
 
-with col1:
-    st.metric("📦 Total Lots", total_lots)
+def get_all_lots():
+    """Récupère tous les lots actifs"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        query = """
+            SELECT 
+                l.id,
+                l.code_lot_interne,
+                l.nom_usage,
+                COALESCE(v.nom_variete, l.code_variete) as nom_variete,
+                COALESCE(p.nom, l.code_producteur) as nom_producteur
+            FROM lots_bruts l
+            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+            LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
+            WHERE l.is_active = TRUE
+            ORDER BY l.code_lot_interne
+        """
+        
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if rows:
+            return pd.DataFrame(rows)
+        return pd.DataFrame()
+        
+    except Exception as e:
+        st.error(f"❌ Erreur : {str(e)}")
+        return pd.DataFrame()
 
-with col2:
-    st.metric("📦 Total Pallox", f"{int(total_pallox_global)}")
-
-with col3:
-    st.metric("⚖️ Total Tonnage", f"{total_tonnage_global:.1f} T")
-
-with col4:
-    st.metric("📍 Total Emplacements", total_emplacements_global)
-
-st.markdown("---")
+def get_lots_for_dropdown():
+    """Récupère les lots pour dropdown avec format"""
+    df = get_all_lots()
+    if not df.empty:
+        return {f"{row['id']} - {row['code_lot_interne']} - {row['nom_usage']}": row['id'] 
+                for _, row in df.iterrows()}
+    return {}
 
 # ============================================================================
-# DÉTAIL PAR LOT (Vue Compacte avec Expanders)
+# ⭐ RÉCUPÉRATION LOT_ID DEPUIS QUERY PARAMS OU SESSION_STATE
 # ============================================================================
 
-st.subheader("📍 Détail par Lot")
+# Récupérer depuis query params (navigation depuis page Lots)
+query_params = st.query_params
+lot_id_from_params = query_params.get("lot_id")
 
-for lot_data in lots_data:
-    lot_info = lot_data['lot_info']
-    emplacements_df = lot_data['emplacements_df']
+# Récupérer depuis session_state (sélection multiple page Lots)
+selected_lots_from_session = st.session_state.get('selected_lots_for_details', [])
+
+# ⭐ DÉTERMINER LOTS À AFFICHER
+lots_to_display = []
+
+if lot_id_from_params:
+    # Navigation depuis page Lots (un seul lot)
+    try:
+        lots_to_display = [int(lot_id_from_params)]
+    except:
+        pass
+
+if selected_lots_from_session and len(selected_lots_from_session) > 0:
+    # Sélection multiple depuis page Lots
+    lots_to_display = selected_lots_from_session
+
+# ============================================================================
+# AFFICHAGE - BOUCLE SUR TOUS LES LOTS SÉLECTIONNÉS
+# ============================================================================
+
+if len(lots_to_display) > 0:
+    st.success(f"📦 **{len(lots_to_display)} lot(s) sélectionné(s)** depuis la page Lots")
+    st.markdown("---")
     
-    # ⭐ EXPANDER POUR CHAQUE LOT - Fermé par défaut pour meilleure lisibilité
-    with st.expander(
-        f"🔽 {lot_info['code_lot_interne']} - {lot_info['nom_usage']} "
-        f"({int(lot_data['total_pallox'])} pallox, {lot_data['total_tonnage']:.1f}T)",
-        expanded=False
-    ):
-        
-        # Infos lot (compact - 2 colonnes)
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write(f"**Variété** : {lot_info['nom_variete'] or 'N/A'}")
-            st.write(f"**Producteur** : {lot_info['nom_producteur'] or 'N/A'}")
-            st.write(f"**Âge** : {lot_info['age_jours']} jours")
-        
-        with col2:
-            statut_display = lot_info['statut_libelle'] or "N/A"
-            # Ajouter emoji selon le statut
-            if statut_display == "EN_STOCK":
-                statut_display = "📦 En stock"
-            st.write(f"**Statut** : {statut_display}")
-            valeur_display = f"{lot_info['valeur_lot_euro']:,.0f} €" if lot_info['valeur_lot_euro'] else "N/A"
-            st.write(f"**Valeur** : {valeur_display}")
-            st.write(f"**Emplacements** : {lot_data['nb_emplacements']}")
-        
-        st.markdown("---")
-        
-        # ⭐ BOUTON AJOUTER EMPLACEMENT
-        col_add, col_space = st.columns([1, 3])
-        
-        with col_add:
-            if st.button(f"➕ Ajouter du stock sur le lot", key=f"btn_add_empl_{lot_data['lot_id']}", use_container_width=True, type="primary"):
-                st.session_state[f'show_add_form_{lot_data["lot_id"]}'] = not st.session_state.get(f'show_add_form_{lot_data["lot_id"]}', False)
-                st.rerun()
-        
-        # ⭐ FORMULAIRE AJOUT EMPLACEMENT
-        if st.session_state.get(f'show_add_form_{lot_data["lot_id"]}', False):
-            st.markdown("#### ➕ Ajouter du stock sur le lot")
-            
-            # Charger les sites disponibles
-            sites_disponibles = get_sites_stockage()
-            
-            if not sites_disponibles:
-                st.warning("⚠️ Aucun site de stockage trouvé dans les références. Veuillez d'abord ajouter des sites dans la page Sources.")
-            else:
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    new_site = st.selectbox(
-                        "Site de stockage *",
-                        options=[""] + sites_disponibles,
-                        key=f"new_site_{lot_data['lot_id']}"
-                    )
-                    
-                    # Type de conditionnement
-                    new_type_conditionnement = st.selectbox(
-                        "Type de conditionnement *",
-                        options=["", "Pallox", "Petit Pallox", "Big Bag"],
-                        key=f"new_type_cond_{lot_data['lot_id']}"
-                    )
-                    
-                    new_nombre_unites = st.number_input("Nombre d'unités *", min_value=0, value=0, step=1, key=f"new_nb_{lot_data['lot_id']}")
-                
-                with col2:
-                    # Charger emplacements pour le site sélectionné
-                    if new_site:
-                        emplacements_disponibles = get_emplacements_by_site(new_site)
-                        empl_options = [""] + [e[0] for e in emplacements_disponibles]
-                    else:
-                        empl_options = [""]
-                    
-                    new_emplacement = st.selectbox(
-                        "Emplacement *",
-                        options=empl_options,
-                        key=f"new_empl_{lot_data['lot_id']}"
-                    )
-                    
-                    # Calcul automatique du poids total
-                    poids_unitaire = 0
-                    if new_type_conditionnement == "Pallox":
-                        poids_unitaire = 1900
-                    elif new_type_conditionnement == "Petit Pallox":
-                        poids_unitaire = 1200
-                    elif new_type_conditionnement == "Big Bag":
-                        poids_unitaire = 1600
-                    
-                    poids_total_calcule = poids_unitaire * new_nombre_unites
-                    
-                    # Afficher le poids calculé (non éditable)
-                    st.metric("Poids total calculé", f"{poids_total_calcule} kg")
-                
-                new_type = st.selectbox(
-                    "Type de stock",
-                    options=["PRINCIPAL", "SECONDAIRE", "RESERVE"],
-                    key=f"new_type_{lot_data['lot_id']}"
-                )
-                
-                col_save, col_cancel = st.columns(2)
-                
-                with col_save:
-                    if st.button("💾 Enregistrer", key=f"btn_save_add_{lot_data['lot_id']}", use_container_width=True, type="primary"):
-                        # Validation
-                        if not new_site or not new_emplacement or not new_type_conditionnement or new_nombre_unites <= 0:
-                            st.error("❌ Tous les champs obligatoires doivent être remplis avec des valeurs > 0")
-                        else:
-                            success, message = add_emplacement(
-                                lot_data['lot_id'],
-                                new_site,
-                                new_emplacement,
-                                new_nombre_unites,
-                                poids_total_calcule,
-                                new_type,
-                                new_type_conditionnement
-                            )
-                            
-                            if success:
-                                st.success(message)
-                                st.session_state[f'show_add_form_{lot_data["lot_id"]}'] = False
-                                st.rerun()
-                            else:
-                                st.error(message)
-                
-                with col_cancel:
-                    if st.button("❌ Annuler", key=f"btn_cancel_add_{lot_data['lot_id']}", use_container_width=True):
-                        st.session_state[f'show_add_form_{lot_data["lot_id"]}'] = False
-                        st.rerun()
-            
+    # ⭐ BOUCLE - AFFICHER CHAQUE LOT
+    for idx, lot_id in enumerate(lots_to_display):
+        # Séparateur entre lots
+        if idx > 0:
+            st.markdown("---")
             st.markdown("---")
         
-        # Tableau emplacements
-        if not emplacements_df.empty:
-            # Formatter poids en tonnes AVANT de sélectionner les colonnes
-            emplacements_df['poids_total_t'] = emplacements_df['poids_total_kg'].apply(
-                lambda x: f"{x/1000:.1f} T" if pd.notna(x) else "N/A"
-            )
+        lot_info = get_lot_info(lot_id)
+        
+        if lot_info:
+            # ⭐ CARTE INFO LOT
+            st.markdown(f"""
+            <div class="lot-card">
+                <h3>📦 Lot #{lot_info['id']} - {lot_info['code_lot_interne']}</h3>
+                <strong>Nom:</strong> {lot_info['nom_usage']}<br>
+                <strong>Variété:</strong> {lot_info['nom_variete']}<br>
+                <strong>Producteur:</strong> {lot_info['nom_producteur']}<br>
+                <strong>Date entrée:</strong> {lot_info['date_entree_stock']}<br>
+                <strong>Âge:</strong> {lot_info['age_jours']} jours
+            </div>
+            """, unsafe_allow_html=True)
             
-            # ⭐ Afficher : Site, Emplacement, Pallox, Type Cond., Poids, Statut Lavage, Type Stock
-            display_df = emplacements_df[[
-                'site_stockage', 
-                'emplacement_stockage', 
-                'nombre_unites', 
-                'type_conditionnement', 
-                'poids_total_t',
-                'statut_emoji',    # 🟢 BRUT / 🧼 LAVÉ / 🌾 GRENAILLES
-                'type_stock'       # PRINCIPAL / SECONDAIRE / RESERVE
-            ]].copy()
+            # KPIs emplacement
+            df_empl = get_lot_emplacements(lot_id)
             
-            # Renommer colonnes
-            display_df.columns = ['Site', 'Emplacement', 'Pallox', 'Type Cond.', 'Poids', 'Statut', 'Type']
-            
-            # Afficher tableau
-            st.dataframe(
-                display_df,
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            # ⭐ ACTIONS SUR EMPLACEMENTS
-            st.markdown("#### ⚙️ Actions sur les emplacements")
-            
-            # Dropdown pour sélectionner l'emplacement
-            emplacement_options = []
-            for idx, row in emplacements_df.iterrows():
-                label = f"{row['site_stockage']} / {row['emplacement_stockage']} ({int(row['nombre_unites'])} pallox)"
-                emplacement_options.append((row['id'], label))
-            
-            if emplacement_options:
-                selected_empl = st.selectbox(
-                    "Sélectionner un emplacement",
-                    options=[opt[0] for opt in emplacement_options],
-                    format_func=lambda x: next(opt[1] for opt in emplacement_options if opt[0] == x),
-                    key=f"select_empl_{lot_data['lot_id']}"
+            if not df_empl.empty:
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("📍 Emplacements", len(df_empl))
+                
+                with col2:
+                    total_pallox = df_empl['nombre_unites'].sum()
+                    st.metric("📦 Pallox total", int(total_pallox))
+                
+                with col3:
+                    total_tonnage = df_empl['poids_total_kg'].sum() / 1000
+                    st.metric("⚖️ Tonnage", f"{total_tonnage:.1f} T")
+                
+                with col4:
+                    statuts = df_empl['statut_lavage'].value_counts()
+                    statut_principal = statuts.index[0] if len(statuts) > 0 else 'N/A'
+                    
+                    if statut_principal == 'BRUT':
+                        emoji = '🟢'
+                    elif statut_principal == 'LAVÉ':
+                        emoji = '🧼'
+                    elif statut_principal == 'GRENAILLES':
+                        emoji = '🌾'
+                    else:
+                        emoji = '❓'
+                    
+                    st.metric("🏷️ Statut principal", f"{emoji} {statut_principal}")
+                
+                st.markdown("---")
+                
+                # Tableau emplacements
+                st.subheader(f"📋 Emplacements - Lot {lot_info['code_lot_interne']}")
+                
+                display_cols = ['id', 'site_stockage', 'emplacement_stockage', 'nombre_unites', 
+                               'type_conditionnement', 'poids_total_kg', 'statut_lavage_display']
+                
+                df_display = df_empl[display_cols].copy()
+                
+                df_display = df_display.rename(columns={
+                    'id': 'ID',
+                    'site_stockage': 'Site',
+                    'emplacement_stockage': 'Emplacement',
+                    'nombre_unites': 'Pallox',
+                    'type_conditionnement': 'Type',
+                    'poids_total_kg': 'Poids (kg)',
+                    'statut_lavage_display': 'Statut'
+                })
+                
+                st.dataframe(
+                    df_display,
+                    use_container_width=True,
+                    hide_index=True
                 )
                 
-                # Récupérer les données de l'emplacement sélectionné
-                empl_data = emplacements_df[emplacements_df['id'] == selected_empl].iloc[0]
+                # ⭐ BOUTONS ACTIONS
+                st.markdown("---")
+                st.subheader(f"⚙️ Actions - Lot {lot_info['code_lot_interne']}")
                 
-                # Boutons d'actions
-                col_modify, col_transfer, col_delete, col_space = st.columns([1, 1, 1, 1])
+                col1, col2, col3, col4 = st.columns(4)
                 
-                with col_modify:
-                    if st.button("✏️ Modifier", key=f"btn_modify_{lot_data['lot_id']}", use_container_width=True, type="secondary"):
-                        st.session_state[f'show_modify_form_{lot_data["lot_id"]}'] = not st.session_state.get(f'show_modify_form_{lot_data["lot_id"]}', False)
-                        st.session_state[f'show_transfer_form_{lot_data["lot_id"]}'] = False
-                        st.session_state[f'selected_empl_id_{lot_data["lot_id"]}'] = selected_empl
+                with col1:
+                    if st.button(f"➕ Ajouter", key=f"btn_add_{lot_id}", use_container_width=True):
+                        st.session_state[f'show_add_form_{lot_id}'] = True
                         st.rerun()
                 
-                with col_transfer:
-                    if st.button("🔄 Transférer", key=f"btn_transfer_{lot_data['lot_id']}", use_container_width=True, type="secondary"):
-                        st.session_state[f'show_transfer_form_{lot_data["lot_id"]}'] = not st.session_state.get(f'show_transfer_form_{lot_data["lot_id"]}', False)
-                        st.session_state[f'show_modify_form_{lot_data["lot_id"]}'] = False
-                        st.session_state[f'selected_empl_id_{lot_data["lot_id"]}'] = selected_empl
+                with col2:
+                    if st.button(f"🔄 Transférer", key=f"btn_transfer_{lot_id}", use_container_width=True):
+                        st.session_state[f'show_transfer_form_{lot_id}'] = True
                         st.rerun()
                 
-                with col_delete:
-                    if st.button("🗑️ Supprimer", key=f"btn_delete_{lot_data['lot_id']}", use_container_width=True, type="secondary"):
-                        if st.session_state.get(f'confirm_delete_{lot_data["lot_id"]}_{selected_empl}', False):
-                            success, message = delete_emplacement(selected_empl)
-                            if success:
-                                st.success(message)
-                                st.session_state.pop(f'confirm_delete_{lot_data["lot_id"]}_{selected_empl}', None)
-                                st.rerun()
-                            else:
-                                st.error(message)
-                        else:
-                            st.session_state[f'confirm_delete_{lot_data["lot_id"]}_{selected_empl}'] = True
-                            st.rerun()
+                with col3:
+                    if st.button(f"✏️ Modifier", key=f"btn_modify_{lot_id}", use_container_width=True):
+                        st.session_state[f'show_modify_form_{lot_id}'] = True
+                        st.rerun()
                 
-                # Message de confirmation suppression
-                if st.session_state.get(f'confirm_delete_{lot_data["lot_id"]}_{selected_empl}', False):
-                    st.warning(f"⚠️ Confirmer la suppression de {empl_data['site_stockage']} / {empl_data['emplacement_stockage']} ? Cliquez à nouveau sur 'Supprimer'")
+                with col4:
+                    if st.button(f"🗑️ Supprimer", key=f"btn_delete_{lot_id}", use_container_width=True):
+                        st.session_state[f'show_delete_form_{lot_id}'] = True
+                        st.rerun()
                 
-                # ⭐ FORMULAIRE MODIFICATION
-                if st.session_state.get(f'show_modify_form_{lot_data["lot_id"]}', False) and st.session_state.get(f'selected_empl_id_{lot_data["lot_id"]}') == selected_empl:
-                    st.markdown("##### ✏️ Modifier l'emplacement")
-                    
-                    # Récupérer type_conditionnement actuel (peut être None)
-                    current_type_cond = empl_data.get('type_conditionnement', 'Pallox')
-                    if not current_type_cond or current_type_cond == '':
-                        current_type_cond = 'Pallox'  # Défaut si vide
+                # ⭐ FORMULAIRE AJOUTER
+                if st.session_state.get(f'show_add_form_{lot_id}', False):
+                    st.markdown("---")
+                    st.markdown(f"##### ➕ Ajouter Emplacement - Lot {lot_info['code_lot_interne']}")
                     
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        # Type de conditionnement
-                        mod_type_conditionnement = st.selectbox(
-                            "Type de conditionnement *",
-                            options=["Pallox", "Petit Pallox", "Big Bag"],
-                            index=["Pallox", "Petit Pallox", "Big Bag"].index(current_type_cond) if current_type_cond in ["Pallox", "Petit Pallox", "Big Bag"] else 0,
-                            key=f"mod_type_cond_{lot_data['lot_id']}"
-                        )
+                        sites = get_sites_stockage()
+                        site = st.selectbox("Site *", options=[""] + sites, key=f"add_site_{lot_id}")
                         
-                        mod_nombre_unites = st.number_input(
-                            "Nombre de pallox *",
-                            min_value=0,
-                            value=int(empl_data['nombre_unites']),
-                            step=1,
-                            key=f"mod_nb_{lot_data['lot_id']}"
-                        )
-                    
-                    with col2:
-                        # Calcul automatique du poids selon type conditionnement
-                        mod_poids_unitaire = 0
-                        if mod_type_conditionnement == "Pallox":
-                            mod_poids_unitaire = 1900
-                        elif mod_type_conditionnement == "Petit Pallox":
-                            mod_poids_unitaire = 1200
-                        elif mod_type_conditionnement == "Big Bag":
-                            mod_poids_unitaire = 1600
-                        
-                        mod_poids_calcule = mod_poids_unitaire * mod_nombre_unites
-                        
-                        # Afficher le poids calculé (non éditable)
-                        st.metric("Poids total calculé", f"{mod_poids_calcule} kg")
-                    
-                    col_save, col_cancel = st.columns(2)
-                    
-                    with col_save:
-                        if st.button("💾 Enregistrer", key=f"btn_save_mod_{lot_data['lot_id']}", use_container_width=True, type="primary"):
-                            success, message = update_emplacement(
-                                selected_empl,
-                                nombre_unites=mod_nombre_unites,
-                                poids_total_kg=mod_poids_calcule,
-                                type_conditionnement=mod_type_conditionnement
-                            )
-                            
-                            if success:
-                                st.success(message)
-                                st.session_state[f'show_modify_form_{lot_data["lot_id"]}'] = False
-                                st.rerun()
-                            else:
-                                st.error(message)
-                    
-                    with col_cancel:
-                        if st.button("❌ Annuler", key=f"btn_cancel_mod_{lot_data['lot_id']}", use_container_width=True):
-                            st.session_state[f'show_modify_form_{lot_data["lot_id"]}'] = False
-                            st.rerun()
-                
-                # ⭐ FORMULAIRE TRANSFERT
-                if st.session_state.get(f'show_transfer_form_{lot_data["lot_id"]}', False) and st.session_state.get(f'selected_empl_id_{lot_data["lot_id"]}') == selected_empl:
-                    st.markdown("##### 🔄 Transférer des pallox")
-                    
-                    st.info(f"📍 Source : **{empl_data['site_stockage']} / {empl_data['emplacement_stockage']}** - Disponible : {int(empl_data['nombre_unites'])} pallox ({empl_data['poids_total_kg']:.1f} kg)")
-                    
-                    # Charger les sites disponibles
-                    sites_disponibles = get_sites_stockage()
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        transfer_site = st.selectbox(
-                            "Site destination *",
-                            options=[""] + sites_disponibles,
-                            key=f"transfer_site_{lot_data['lot_id']}"
-                        )
-                        
-                        # Type de conditionnement (même logique que ajout)
-                        transfer_type_conditionnement = st.selectbox(
-                            "Type de conditionnement *",
-                            options=["", "Pallox", "Petit Pallox", "Big Bag"],
-                            key=f"transfer_type_cond_{lot_data['lot_id']}"
-                        )
-                        
-                        transfer_quantite = st.number_input(
-                            "Quantité à transférer (pallox) *",
-                            min_value=1,
-                            max_value=int(empl_data['nombre_unites']),
-                            value=min(1, int(empl_data['nombre_unites'])),
-                            step=1,
-                            key=f"transfer_qty_{lot_data['lot_id']}",
-                            help=f"Maximum disponible : {int(empl_data['nombre_unites'])} pallox"
-                        )
-                    
-                    with col2:
-                        # Charger emplacements pour le site destination sélectionné
-                        if transfer_site:
-                            emplacements_dest = get_emplacements_by_site(transfer_site)
-                            empl_dest_options = [""] + [e[0] for e in emplacements_dest]
+                        if site:
+                            emplacements = get_emplacements_by_site(site)
+                            empl_options = [""] + [e[0] for e in emplacements]
+                            emplacement = st.selectbox("Emplacement *", options=empl_options, key=f"add_empl_{lot_id}")
                         else:
-                            empl_dest_options = [""]
+                            emplacement = None
+                    
+                    with col2:
+                        nombre = st.number_input("Nombre unités *", min_value=1, value=5, key=f"add_nb_{lot_id}")
                         
-                        dest_emplacement = st.selectbox(
-                            "Emplacement destination *",
-                            options=empl_dest_options,
-                            key=f"transfer_empl_{lot_data['lot_id']}"
-                        )
+                        TYPES = ["Pallox", "Petit Pallox", "Big Bag"]
+                        type_cond = st.selectbox("Type *", options=TYPES, key=f"add_type_{lot_id}")
                         
-                        # Calcul automatique du poids total selon type conditionnement
-                        transfer_poids_unitaire = 0
-                        if transfer_type_conditionnement == "Pallox":
-                            transfer_poids_unitaire = 1900
-                        elif transfer_type_conditionnement == "Petit Pallox":
-                            transfer_poids_unitaire = 1200
-                        elif transfer_type_conditionnement == "Big Bag":
-                            transfer_poids_unitaire = 1600
+                        # Calcul auto poids
+                        if type_cond == 'Pallox':
+                            poids_unit = 1900
+                        elif type_cond == 'Petit Pallox':
+                            poids_unit = 1200
+                        else:
+                            poids_unit = 1600
                         
-                        transfer_poids_calcule = transfer_poids_unitaire * transfer_quantite
-                        
-                        # Afficher le poids calculé (non éditable)
-                        st.metric("Poids à transférer", f"{transfer_poids_calcule} kg")
+                        poids_calc = nombre * poids_unit
+                        st.metric("Poids calculé", f"{poids_calc:,.0f} kg")
                     
                     col_save, col_cancel = st.columns(2)
                     
                     with col_save:
-                        if st.button("🚚 Transférer", key=f"btn_save_transfer_{lot_data['lot_id']}", use_container_width=True, type="primary"):
-                            # Validation
-                            if not transfer_site or not dest_emplacement or not transfer_type_conditionnement:
-                                st.error("❌ Site, emplacement et type de conditionnement sont obligatoires")
-                            elif transfer_quantite <= 0:
-                                st.error("❌ Quantité doit être > 0")
-                            elif transfer_quantite > empl_data['nombre_unites']:
-                                st.error(f"❌ Quantité trop élevée (max: {int(empl_data['nombre_unites'])} pallox)")
-                            elif transfer_poids_calcule > empl_data['poids_total_kg']:
-                                st.error(f"❌ Poids calculé trop élevé (max: {empl_data['poids_total_kg']:.1f} kg)")
-                            else:
-                                success, message = transfer_emplacement(
-                                    selected_empl,
-                                    transfer_site,
-                                    dest_emplacement,
-                                    transfer_quantite,
-                                    transfer_poids_calcule,
-                                    transfer_type_conditionnement
-                                )
-                                
+                        if st.button("💾 Enregistrer", key=f"save_add_{lot_id}", type="primary", use_container_width=True):
+                            if site and emplacement and nombre and type_cond:
+                                success, message = add_emplacement(lot_id, site, emplacement, nombre, type_cond)
                                 if success:
                                     st.success(message)
-                                    st.session_state[f'show_transfer_form_{lot_data["lot_id"]}'] = False
+                                    st.session_state.pop(f'show_add_form_{lot_id}')
                                     st.rerun()
                                 else:
                                     st.error(message)
+                            else:
+                                st.error("❌ Tous les champs sont obligatoires")
                     
                     with col_cancel:
-                        if st.button("❌ Annuler", key=f"btn_cancel_transfer_{lot_data['lot_id']}", use_container_width=True):
-                            st.session_state[f'show_transfer_form_{lot_data["lot_id"]}'] = False
+                        if st.button("❌ Annuler", key=f"cancel_add_{lot_id}", use_container_width=True):
+                            st.session_state.pop(f'show_add_form_{lot_id}')
                             st.rerun()
-            
-            st.markdown("---")
-            
-            # Historique (5 derniers mouvements seulement)
-            st.markdown("**📜 Historique récent**")
-            mouvements_df = get_lot_mouvements(lot_data['lot_id'], limit=5)
-            
-            if not mouvements_df.empty:
-                display_mouvements = mouvements_df.copy()
                 
-                display_mouvements['Date'] = pd.to_datetime(display_mouvements['created_at']).dt.strftime('%d/%m %H:%M')
-                
-                type_labels = {
-                    'CREATION_LOT': '🆕 Création',
-                    'AJOUT_STOCK': '➕ Ajout stock',
-                    'MODIFICATION': '✏️ Modification',
-                    'TRANSFERT': '🔄 Transfert',
-                    'TRANSFERT_DEPART': '🚚 Départ',
-                    'TRANSFERT_ARRIVEE': '📥 Arrivée',
-                    'DIVISION_LOT': '✂️ Division',
-                    'SUPPRESSION': '🗑️ Suppression',
-                    'LAVAGE': '🧼 Lavage',
-                    'LAVAGE_BRUT_REDUIT': '🧼 Lavage (Brut réduit)',
-                    'LAVAGE_CREATION_LAVE': '✨ Lavage (Création Lavé)',
-                    'LAVAGE_CREATION_GRENAILLES': '🌾 Lavage (Création Grenailles)',
-                    'AJUSTEMENT_MANUEL': '✏️ Ajustement',
-                    'VENTE': '💰 Vente',
-                    'PERTE': '⚠️ Perte'
-                }
-                display_mouvements['Type'] = display_mouvements['type_mouvement'].map(type_labels).fillna(display_mouvements['type_mouvement'])
-                
-                # ⭐ Déduire Statut Lavage du type de mouvement
-                def get_statut_from_mouvement(type_mvt):
-                    if type_mvt == 'LAVAGE_BRUT_REDUIT':
-                        return '🟢 BRUT'
-                    elif type_mvt == 'LAVAGE_CREATION_LAVE':
-                        return '🧼 LAVÉ'
-                    elif type_mvt == 'LAVAGE_CREATION_GRENAILLES':
-                        return '🌾 GRENAILLES'
-                    elif type_mvt == 'AJOUT_STOCK':
-                        return '🟢 BRUT'
+                # ⭐ FORMULAIRE TRANSFÉRER
+                if st.session_state.get(f'show_transfer_form_{lot_id}', False):
+                    st.markdown("---")
+                    st.markdown(f"##### 🔄 Transférer Stock - Lot {lot_info['code_lot_interne']}")
+                    
+                    # Sélection source
+                    empl_options = {f"{row['id']} - {row['site_stockage']} / {row['emplacement_stockage']} ({int(row['nombre_unites'])} pallox)": row['id'] 
+                                   for _, row in df_empl.iterrows()}
+                    
+                    selected_source = st.selectbox("Emplacement source *", options=[""] + list(empl_options.keys()), key=f"transfer_source_{lot_id}")
+                    
+                    if selected_source and selected_source != "":
+                        empl_source_id = empl_options[selected_source]
+                        
+                        # Récupérer quantité max
+                        empl_data = df_empl[df_empl['id'] == empl_source_id].iloc[0]
+                        quantite_max = int(empl_data['nombre_unites'])
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            quantite_transfert = st.slider(
+                                "Quantité à transférer *",
+                                min_value=1,
+                                max_value=quantite_max,
+                                value=min(5, quantite_max),
+                                key=f"transfer_qty_{lot_id}"
+                            )
+                        
+                        with col2:
+                            sites = get_sites_stockage()
+                            site_dest = st.selectbox("Site destination *", options=[""] + sites, key=f"transfer_site_{lot_id}")
+                            
+                            if site_dest:
+                                emplacements = get_emplacements_by_site(site_dest)
+                                empl_options_dest = [""] + [e[0] for e in emplacements]
+                                empl_dest = st.selectbox("Emplacement destination *", options=empl_options_dest, key=f"transfer_empl_{lot_id}")
+                            else:
+                                empl_dest = None
+                        
+                        col_save, col_cancel = st.columns(2)
+                        
+                        with col_save:
+                            if st.button("💾 Transférer", key=f"save_transfer_{lot_id}", type="primary", use_container_width=True):
+                                if site_dest and empl_dest:
+                                    success, message = transfer_emplacement(lot_id, empl_source_id, quantite_transfert, site_dest, empl_dest)
+                                    if success:
+                                        st.success(message)
+                                        st.session_state.pop(f'show_transfer_form_{lot_id}')
+                                        st.rerun()
+                                    else:
+                                        st.error(message)
+                                else:
+                                    st.error("❌ Site et emplacement destination obligatoires")
+                        
+                        with col_cancel:
+                            if st.button("❌ Annuler", key=f"cancel_transfer_{lot_id}", use_container_width=True):
+                                st.session_state.pop(f'show_transfer_form_{lot_id}')
+                                st.rerun()
                     else:
-                        return '-'
+                        st.info("👆 Sélectionnez un emplacement source")
                 
-                display_mouvements['Statut'] = display_mouvements['type_mouvement'].apply(get_statut_from_mouvement)
+                # ⭐ FORMULAIRE MODIFIER
+                if st.session_state.get(f'show_modify_form_{lot_id}', False):
+                    st.markdown("---")
+                    st.markdown(f"##### ✏️ Modifier Quantité - Lot {lot_info['code_lot_interne']}")
+                    
+                    # Sélection emplacement
+                    empl_options = {f"{row['id']} - {row['site_stockage']} / {row['emplacement_stockage']} ({int(row['nombre_unites'])} pallox)": row['id'] 
+                                   for _, row in df_empl.iterrows()}
+                    
+                    selected_empl = st.selectbox("Emplacement *", options=[""] + list(empl_options.keys()), key=f"modify_empl_{lot_id}")
+                    
+                    if selected_empl and selected_empl != "":
+                        empl_id = empl_options[selected_empl]
+                        
+                        empl_data = df_empl[df_empl['id'] == empl_id].iloc[0]
+                        quantite_actuelle = int(empl_data['nombre_unites'])
+                        
+                        nouvelle_quantite = st.number_input(
+                            f"Nouvelle quantité (actuelle: {quantite_actuelle}) *",
+                            min_value=0,
+                            value=quantite_actuelle,
+                            step=1,
+                            key=f"modify_qty_{lot_id}"
+                        )
+                        
+                        col_save, col_cancel = st.columns(2)
+                        
+                        with col_save:
+                            if st.button("💾 Modifier", key=f"save_modify_{lot_id}", type="primary", use_container_width=True):
+                                if nouvelle_quantite != quantite_actuelle:
+                                    success, message = modify_emplacement(empl_id, nouvelle_quantite)
+                                    if success:
+                                        st.success(message)
+                                        st.session_state.pop(f'show_modify_form_{lot_id}')
+                                        st.rerun()
+                                    else:
+                                        st.error(message)
+                                else:
+                                    st.info("ℹ️ Quantité inchangée")
+                        
+                        with col_cancel:
+                            if st.button("❌ Annuler", key=f"cancel_modify_{lot_id}", use_container_width=True):
+                                st.session_state.pop(f'show_modify_form_{lot_id}')
+                                st.rerun()
+                    else:
+                        st.info("👆 Sélectionnez un emplacement")
                 
-                # Trajet : origine → destination
-                display_mouvements['Trajet'] = display_mouvements.apply(
-                    lambda row: f"{row['site_origine'] or '-'}/{row['emplacement_origine'] or '-'} → {row['site_destination'] or '-'}/{row['emplacement_destination'] or '-'}",
-                    axis=1
-                )
+                # ⭐ FORMULAIRE SUPPRIMER
+                if st.session_state.get(f'show_delete_form_{lot_id}', False):
+                    st.markdown("---")
+                    st.markdown(f"##### 🗑️ Supprimer Emplacement - Lot {lot_info['code_lot_interne']}")
+                    
+                    # Sélection emplacement
+                    empl_options = {f"{row['id']} - {row['site_stockage']} / {row['emplacement_stockage']} ({int(row['nombre_unites'])} pallox)": row['id'] 
+                                   for _, row in df_empl.iterrows()}
+                    
+                    selected_empl = st.selectbox("Emplacement à supprimer *", options=[""] + list(empl_options.keys()), key=f"delete_empl_{lot_id}")
+                    
+                    if selected_empl and selected_empl != "":
+                        empl_id = empl_options[selected_empl]
+                        
+                        st.warning(f"⚠️ Confirmer la suppression de : **{selected_empl}**")
+                        
+                        col_confirm, col_cancel = st.columns(2)
+                        
+                        with col_confirm:
+                            if st.button("✅ CONFIRMER", key=f"confirm_delete_{lot_id}", type="primary", use_container_width=True):
+                                success, message = delete_emplacement(empl_id)
+                                if success:
+                                    st.success(message)
+                                    st.session_state.pop(f'show_delete_form_{lot_id}')
+                                    st.rerun()
+                                else:
+                                    st.error(message)
+                        
+                        with col_cancel:
+                            if st.button("❌ ANNULER", key=f"cancel_delete_{lot_id}", use_container_width=True):
+                                st.session_state.pop(f'show_delete_form_{lot_id}')
+                                st.rerun()
+                    else:
+                        st.info("👆 Sélectionnez un emplacement")
                 
-                # Info : notes (contient numéro de job pour lavages)
-                display_mouvements['Info'] = display_mouvements['notes'].fillna('-')
+                # Historique mouvements
+                st.markdown("---")
+                st.subheader(f"📜 Historique (10 derniers) - Lot {lot_info['code_lot_interne']}")
                 
-                # ⭐ Afficher avec Statut
-                final_df = display_mouvements[['Date', 'Type', 'Statut', 'Trajet', 'Info']]
+                df_mvt = get_lot_mouvements(lot_id)
                 
-                st.dataframe(
-                    final_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    height=200
-                )
+                if not df_mvt.empty:
+                    st.dataframe(df_mvt, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Aucun mouvement enregistré")
+            
             else:
-                st.caption("Aucun mouvement enregistré")
+                st.warning(f"⚠️ Aucun emplacement pour le lot #{lot_id}")
+                st.info("💡 Utilisez le bouton '➕ Ajouter' ci-dessous pour créer un emplacement")
+                
+                # Permettre ajout même si aucun emplacement
+                if st.button(f"➕ Ajouter Premier Emplacement", key=f"btn_add_first_{lot_id}", use_container_width=True, type="primary"):
+                    st.session_state[f'show_add_form_{lot_id}'] = True
+                    st.rerun()
+                
+                # Formulaire ajout (même si aucun emplacement)
+                if st.session_state.get(f'show_add_form_{lot_id}', False):
+                    st.markdown("---")
+                    st.markdown(f"##### ➕ Ajouter Emplacement - Lot {lot_info['code_lot_interne']}")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        sites = get_sites_stockage()
+                        site = st.selectbox("Site *", options=[""] + sites, key=f"add_site_first_{lot_id}")
+                        
+                        if site:
+                            emplacements = get_emplacements_by_site(site)
+                            empl_options = [""] + [e[0] for e in emplacements]
+                            emplacement = st.selectbox("Emplacement *", options=empl_options, key=f"add_empl_first_{lot_id}")
+                        else:
+                            emplacement = None
+                    
+                    with col2:
+                        nombre = st.number_input("Nombre unités *", min_value=1, value=5, key=f"add_nb_first_{lot_id}")
+                        
+                        TYPES = ["Pallox", "Petit Pallox", "Big Bag"]
+                        type_cond = st.selectbox("Type *", options=TYPES, key=f"add_type_first_{lot_id}")
+                        
+                        if type_cond == 'Pallox':
+                            poids_unit = 1900
+                        elif type_cond == 'Petit Pallox':
+                            poids_unit = 1200
+                        else:
+                            poids_unit = 1600
+                        
+                        poids_calc = nombre * poids_unit
+                        st.metric("Poids calculé", f"{poids_calc:,.0f} kg")
+                    
+                    col_save, col_cancel = st.columns(2)
+                    
+                    with col_save:
+                        if st.button("💾 Enregistrer", key=f"save_add_first_{lot_id}", type="primary", use_container_width=True):
+                            if site and emplacement and nombre and type_cond:
+                                success, message = add_emplacement(lot_id, site, emplacement, nombre, type_cond)
+                                if success:
+                                    st.success(message)
+                                    st.session_state.pop(f'show_add_form_{lot_id}')
+                                    st.rerun()
+                                else:
+                                    st.error(message)
+                            else:
+                                st.error("❌ Tous les champs sont obligatoires")
+                    
+                    with col_cancel:
+                        if st.button("❌ Annuler", key=f"cancel_add_first_{lot_id}", use_container_width=True):
+                            st.session_state.pop(f'show_add_form_{lot_id}')
+                            st.rerun()
+        
         else:
-            st.warning("⚠️ Aucun emplacement trouvé pour ce lot")
+            st.error(f"❌ Lot #{lot_id} introuvable")
 
-st.markdown("---")
+else:
+    # Aucun lot sélectionné - Afficher sélection manuelle
+    st.info("ℹ️ Aucun lot sélectionné depuis la page Lots")
+    st.markdown("---")
+    st.subheader("🔍 Sélectionner un lot manuellement")
+    
+    lots_dict = get_lots_for_dropdown()
+    
+    if lots_dict:
+        selected_lot_str = st.selectbox(
+            "Choisir un lot",
+            options=[""] + list(lots_dict.keys()),
+            key="manual_lot_selection"
+        )
+        
+        if selected_lot_str and selected_lot_str != "":
+            selected_lot_id = lots_dict[selected_lot_str]
+            
+            if st.button("📦 Afficher ce lot", type="primary", use_container_width=True):
+                # Mettre en session_state et rerun
+                st.session_state.selected_lots_for_details = [selected_lot_id]
+                st.rerun()
+    else:
+        st.warning("⚠️ Aucun lot disponible")
 
-# ============================================================================
-# ACTIONS RAPIDES
-# ============================================================================
-
-st.subheader("⚡ Actions Rapides")
-
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    if st.button("🚚 Créer un Transfert", use_container_width=True, type="primary"):
-        st.info("🚧 Fonctionnalité disponible en Phase B (Planning Transferts)")
-
-with col2:
-    if st.button("📊 Voir Historique Complet", use_container_width=True):
-        st.info("🚧 Fonctionnalité disponible en Phase C (Historique Stock)")
-
-with col3:
-    if st.button("← Retour à la Liste", use_container_width=True):
-        st.switch_page("pages/02_Lots.py")
-
-# Footer
 show_footer()
