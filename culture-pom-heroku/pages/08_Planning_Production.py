@@ -507,6 +507,87 @@ def annuler_job_en_cours(job_id):
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
+def annuler_job_termine(job_id):
+    """Annule un job TERMINÉ : supprime stock produit fini + mouvement, remet en PRÉVU"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Vérifier que le job est TERMINÉ
+        cursor.execute("SELECT statut, lot_id FROM production_jobs WHERE id = %s", (job_id,))
+        job = cursor.fetchone()
+        if not job:
+            return False, "❌ Job introuvable"
+        if job['statut'] != 'TERMINÉ':
+            return False, f"❌ Job n'est pas TERMINÉ (statut: {job['statut']})"
+        
+        # Supprimer le stock produit fini créé
+        cursor.execute("""
+            DELETE FROM stock_emplacements 
+            WHERE production_job_id = %s AND type_stock = 'PRODUIT_FINI'
+        """, (job_id,))
+        
+        # Supprimer le mouvement stock
+        cursor.execute("""
+            DELETE FROM stock_mouvements 
+            WHERE lot_id = %s AND type_mouvement = 'PRODUCTION_SORTIE' 
+              AND notes LIKE %s
+        """, (job['lot_id'], f"Job #{job_id}%"))
+        
+        # Remettre le job en PRÉVU
+        cursor.execute("""
+            UPDATE production_jobs
+            SET statut = 'PRÉVU',
+                date_activation = NULL,
+                activated_by = NULL,
+                date_terminaison = NULL,
+                terminated_by = NULL,
+                quantite_sortie_tonnes = NULL,
+                numero_lot_sortie = NULL,
+                site_destination = NULL,
+                emplacement_destination = NULL
+            WHERE id = %s
+        """, (job_id,))
+        
+        # Supprimer du planning si présent
+        cursor.execute("DELETE FROM production_planning_elements WHERE job_id = %s", (job_id,))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, "✅ Job TERMINÉ annulé et remis en PRÉVU"
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+def supprimer_job_force(job_id):
+    """Supprime un job (PRÉVU ou EN_COURS) avec tous ses éléments liés"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT statut FROM production_jobs WHERE id = %s", (job_id,))
+        result = cursor.fetchone()
+        if not result:
+            return False, "❌ Job introuvable"
+        if result['statut'] == 'TERMINÉ':
+            return False, "❌ Utilisez 'Annuler' pour les jobs TERMINÉ"
+        
+        # Supprimer du planning
+        cursor.execute("DELETE FROM production_planning_elements WHERE job_id = %s", (job_id,))
+        # Supprimer le job
+        cursor.execute("DELETE FROM production_jobs WHERE id = %s", (job_id,))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, "✅ Job supprimé"
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
 def creer_temps_custom(code, libelle, emoji, duree_minutes):
     """Crée un nouveau temps custom"""
     try:
@@ -1073,10 +1154,11 @@ with tab4:
         with admin_tab1:
             st.markdown("### Gestion des Jobs")
             
-            col_prevus, col_encours = st.columns(2)
+            col_prevus, col_encours, col_termines = st.columns(3)
             
             with col_prevus:
-                st.markdown("#### 🟢 PRÉVU - Supprimer")
+                st.markdown("#### 🟢 PRÉVU")
+                st.caption("🗑️ Supprimer")
                 try:
                     conn = get_connection()
                     cursor = conn.cursor()
@@ -1095,10 +1177,10 @@ with tab4:
                         for job in jobs_prevus:
                             col_info, col_btn = st.columns([4, 1])
                             with col_info:
-                                st.markdown(f"**#{job['id']}** {job['code_lot_interne']} - {job['quantite_entree_tonnes']:.1f}T")
+                                st.markdown(f"**#{job['id']}** {job['code_lot_interne'][:15]}")
                             with col_btn:
                                 if st.button("🗑️", key=f"del_job_{job['id']}"):
-                                    success, msg = supprimer_job(job['id'])
+                                    success, msg = supprimer_job_force(job['id'])
                                     if success:
                                         st.success(msg)
                                         st.rerun()
@@ -1110,7 +1192,8 @@ with tab4:
                     st.error(f"Erreur : {str(e)}")
             
             with col_encours:
-                st.markdown("#### 🟠 EN_COURS - Annuler")
+                st.markdown("#### 🟠 EN_COURS")
+                st.caption("↩️ Annuler | 🗑️ Supprimer")
                 try:
                     conn = get_connection()
                     cursor = conn.cursor()
@@ -1127,12 +1210,56 @@ with tab4:
                     
                     if jobs_encours:
                         for job in jobs_encours:
+                            col_info, col_btn1, col_btn2 = st.columns([3, 1, 1])
+                            with col_info:
+                                st.markdown(f"**#{job['id']}** {job['code_lot_interne'][:12]}")
+                            with col_btn1:
+                                if st.button("↩️", key=f"cancel_{job['id']}", help="Remettre en PRÉVU"):
+                                    success, msg = annuler_job_en_cours(job['id'])
+                                    if success:
+                                        st.success(msg)
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
+                            with col_btn2:
+                                if st.button("🗑️", key=f"del_encours_{job['id']}", help="Supprimer"):
+                                    success, msg = supprimer_job_force(job['id'])
+                                    if success:
+                                        st.success(msg)
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
+                    else:
+                        st.info("Aucun")
+                except Exception as e:
+                    st.error(f"Erreur : {str(e)}")
+            
+            with col_termines:
+                st.markdown("#### ✅ TERMINÉ")
+                st.caption("↩️ Annuler (supprime stock)")
+                try:
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT id, code_lot_interne, quantite_sortie_tonnes, date_terminaison
+                        FROM production_jobs
+                        WHERE statut = 'TERMINÉ'
+                        ORDER BY date_terminaison DESC
+                        LIMIT 15
+                    """)
+                    jobs_termines = cursor.fetchall()
+                    cursor.close()
+                    conn.close()
+                    
+                    if jobs_termines:
+                        for job in jobs_termines:
                             col_info, col_btn = st.columns([4, 1])
                             with col_info:
-                                st.markdown(f"**#{job['id']}** {job['code_lot_interne']}")
+                                qte = job['quantite_sortie_tonnes'] or 0
+                                st.markdown(f"**#{job['id']}** {job['code_lot_interne'][:12]} ({qte:.1f}T)")
                             with col_btn:
-                                if st.button("↩️", key=f"cancel_{job['id']}"):
-                                    success, msg = annuler_job_en_cours(job['id'])
+                                if st.button("↩️", key=f"annul_term_{job['id']}", help="Annuler et supprimer stock"):
+                                    success, msg = annuler_job_termine(job['id'])
                                     if success:
                                         st.success(msg)
                                         st.rerun()
