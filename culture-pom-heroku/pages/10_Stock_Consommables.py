@@ -428,7 +428,9 @@ if kpis:
     with col1:
         st.metric("📋 Références", kpis['nb_refs'])
     with col2:
-        st.metric("💰 Valeur Stock", f"{kpis['valeur_totale']:,.0f} €")
+        # Format français : espace pour milliers, 2 décimales
+        valeur_str = f"{kpis['valeur_totale']:,.2f}".replace(",", " ")
+        st.metric("💰 Valeur Stock", f"{valeur_str} €")
     with col3:
         st.metric("📍 Emplacements", kpis['nb_emplacements'])
     with col4:
@@ -489,7 +491,8 @@ with tab1:
         
         # Total
         total_valeur = df_stock['valeur'].sum()
-        st.info(f"**{len(df_stock)} ligne(s)** - Valeur totale : **{total_valeur:,.2f} €**")
+        total_valeur_str = f"{total_valeur:,.2f}".replace(",", " ")
+        st.info(f"**{len(df_stock)} ligne(s)** - Valeur totale : **{total_valeur_str} €**")
         
         # Export
         buffer = io.BytesIO()
