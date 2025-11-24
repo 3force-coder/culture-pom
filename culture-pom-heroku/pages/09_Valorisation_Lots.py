@@ -79,7 +79,7 @@ st.markdown("---")
 # FONCTIONS UTILITAIRES
 # ============================================================
 
-def get_lots_non_qualifies(filtre_variete=None, filtre_producteur=None, filtre_site=None):
+def get_lots_non_qualifies(filtre_nom=None, filtre_variete=None, filtre_producteur=None):
     """Récupère les lots sans prix OU sans tare"""
     try:
         conn = get_connection()
@@ -98,7 +98,6 @@ def get_lots_non_qualifies(filtre_variete=None, filtre_producteur=None, filtre_s
             l.calibre_max,
             l.date_entree_stock,
             l.poids_total_brut_kg,
-            l.site_stockage,
             l.prix_achat_euro_tonne,
             l.tare_achat_pct,
             l.qualified_by,
@@ -112,6 +111,10 @@ def get_lots_non_qualifies(filtre_variete=None, filtre_producteur=None, filtre_s
         
         params = []
         
+        if filtre_nom:
+            query += " AND l.nom_usage ILIKE %s"
+            params.append(f"%{filtre_nom}%")
+        
         if filtre_variete and filtre_variete != "Tous":
             query += " AND l.code_variete = %s"
             params.append(filtre_variete)
@@ -119,10 +122,6 @@ def get_lots_non_qualifies(filtre_variete=None, filtre_producteur=None, filtre_s
         if filtre_producteur and filtre_producteur != "Tous":
             query += " AND l.code_producteur = %s"
             params.append(filtre_producteur)
-        
-        if filtre_site and filtre_site != "Tous":
-            query += " AND l.site_stockage = %s"
-            params.append(filtre_site)
         
         query += " ORDER BY l.date_entree_stock DESC, l.code_lot_interne"
         
@@ -143,7 +142,7 @@ def get_lots_non_qualifies(filtre_variete=None, filtre_producteur=None, filtre_s
         st.error(f"❌ Erreur : {str(e)}")
         return pd.DataFrame()
 
-def get_lots_qualifies(filtre_variete=None, filtre_producteur=None, filtre_site=None):
+def get_lots_qualifies(filtre_nom=None, filtre_variete=None, filtre_producteur=None):
     """Récupère tous les lots qualifiés (avec prix ET tare)"""
     try:
         conn = get_connection()
@@ -162,7 +161,6 @@ def get_lots_qualifies(filtre_variete=None, filtre_producteur=None, filtre_site=
             l.calibre_max,
             l.date_entree_stock,
             l.poids_total_brut_kg,
-            l.site_stockage,
             l.prix_achat_euro_tonne,
             l.tare_achat_pct,
             l.valeur_lot_euro,
@@ -178,6 +176,10 @@ def get_lots_qualifies(filtre_variete=None, filtre_producteur=None, filtre_site=
         
         params = []
         
+        if filtre_nom:
+            query += " AND l.nom_usage ILIKE %s"
+            params.append(f"%{filtre_nom}%")
+        
         if filtre_variete and filtre_variete != "Tous":
             query += " AND l.code_variete = %s"
             params.append(filtre_variete)
@@ -185,10 +187,6 @@ def get_lots_qualifies(filtre_variete=None, filtre_producteur=None, filtre_site=
         if filtre_producteur and filtre_producteur != "Tous":
             query += " AND l.code_producteur = %s"
             params.append(filtre_producteur)
-        
-        if filtre_site and filtre_site != "Tous":
-            query += " AND l.site_stockage = %s"
-            params.append(filtre_site)
         
         query += " ORDER BY l.qualified_at DESC NULLS LAST, l.date_entree_stock DESC"
         
@@ -231,20 +229,12 @@ def get_filtres_options():
         """)
         producteurs = ["Tous"] + [r['code_producteur'] for r in cursor.fetchall()]
         
-        cursor.execute("""
-            SELECT DISTINCT l.site_stockage 
-            FROM lots_bruts l 
-            WHERE l.is_active = TRUE AND l.site_stockage IS NOT NULL
-            ORDER BY l.site_stockage
-        """)
-        sites = ["Tous"] + [r['site_stockage'] for r in cursor.fetchall()]
-        
         cursor.close()
         conn.close()
         
-        return varietes, producteurs, sites
+        return varietes, producteurs
     except Exception as e:
-        return ["Tous"], ["Tous"], ["Tous"]
+        return ["Tous"], ["Tous"]
 
 def sauvegarder_qualification(lot_id, prix, tare, is_modification=False, ancien_prix=None, ancienne_tare=None, ancienne_valeur=None):
     """Sauvegarde la qualification d'un lot avec historique"""
@@ -595,21 +585,21 @@ tab1, tab2, tab3, tab4 = st.tabs(["📝 Qualification", "🔧 Modifier", "📊 S
 
 with tab1:
     
-    varietes, producteurs, sites = get_filtres_options()
+    varietes, producteurs = get_filtres_options()
     
     st.markdown("### 🔍 Filtres")
     col_f1, col_f2, col_f3 = st.columns(3)
     
     with col_f1:
-        filtre_variete_q = st.selectbox("Variété", varietes, key="filtre_var_q")
+        filtre_nom_q = st.text_input("🔍 Rechercher nom lot", key="filtre_nom_q", placeholder="Ex: BOSSELER")
     with col_f2:
-        filtre_producteur_q = st.selectbox("Producteur", producteurs, key="filtre_prod_q")
+        filtre_variete_q = st.selectbox("Variété", varietes, key="filtre_var_q")
     with col_f3:
-        filtre_site_q = st.selectbox("Site", sites, key="filtre_site_q")
+        filtre_producteur_q = st.selectbox("Producteur", producteurs, key="filtre_prod_q")
     
     st.markdown("---")
     
-    df_lots = get_lots_non_qualifies(filtre_variete_q, filtre_producteur_q, filtre_site_q)
+    df_lots = get_lots_non_qualifies(filtre_nom_q if filtre_nom_q else None, filtre_variete_q, filtre_producteur_q)
     
     if df_lots.empty:
         st.markdown("""
@@ -634,7 +624,7 @@ with tab1:
         df_edit = df_lots[[
             'id', 'code_lot_interne', 'nom_usage', 'producteur_nom', 'variete_nom',
             'calibre_min', 'calibre_max', 'date_entree_stock', 'poids_total_brut_kg',
-            'site_stockage', 'prix_achat_euro_tonne', 'tare_achat_pct'
+            'prix_achat_euro_tonne', 'tare_achat_pct'
         ]].copy()
         
         df_edit = df_edit.rename(columns={
@@ -646,7 +636,6 @@ with tab1:
             'calibre_max': 'Cal Max',
             'date_entree_stock': 'Date Entrée',
             'poids_total_brut_kg': 'Poids (kg)',
-            'site_stockage': 'Site',
             'prix_achat_euro_tonne': 'Prix (€/T)',
             'tare_achat_pct': 'Tare (%)'
         })
@@ -661,7 +650,6 @@ with tab1:
             'Cal Max': st.column_config.NumberColumn('Cal Max', disabled=True, format="%d", width="small"),
             'Date Entrée': st.column_config.DateColumn('Date Entrée', disabled=True, width="small"),
             'Poids (kg)': st.column_config.NumberColumn('Poids (kg)', disabled=True, format="%.0f", width="small"),
-            'Site': st.column_config.TextColumn('Site', disabled=True, width="small"),
             'Prix (€/T)': st.column_config.NumberColumn('Prix (€/T)', min_value=50, max_value=1500, step=10, format="%.0f", width="small"),
             'Tare (%)': st.column_config.NumberColumn('Tare (%)', min_value=0, max_value=100, step=1, format="%.1f", width="small")
         }
@@ -720,19 +708,19 @@ with tab2:
     </div>
     """, unsafe_allow_html=True)
     
-    varietes, producteurs, sites = get_filtres_options()
+    varietes, producteurs = get_filtres_options()
     
     col_f1, col_f2, col_f3 = st.columns(3)
     with col_f1:
-        filtre_variete_m = st.selectbox("Variété", varietes, key="filtre_var_m")
+        filtre_nom_m = st.text_input("🔍 Rechercher nom lot", key="filtre_nom_m", placeholder="Ex: BOSSELER")
     with col_f2:
-        filtre_producteur_m = st.selectbox("Producteur", producteurs, key="filtre_prod_m")
+        filtre_variete_m = st.selectbox("Variété", varietes, key="filtre_var_m")
     with col_f3:
-        filtre_site_m = st.selectbox("Site", sites, key="filtre_site_m")
+        filtre_producteur_m = st.selectbox("Producteur", producteurs, key="filtre_prod_m")
     
     st.markdown("---")
     
-    df_qualifies = get_lots_qualifies(filtre_variete_m, filtre_producteur_m, filtre_site_m)
+    df_qualifies = get_lots_qualifies(filtre_nom_m if filtre_nom_m else None, filtre_variete_m, filtre_producteur_m)
     
     if df_qualifies.empty:
         st.info("Aucun lot qualifié avec ces filtres")
@@ -742,7 +730,7 @@ with tab2:
         # Préparer DataFrame pour édition
         df_edit_m = df_qualifies[[
             'id', 'code_lot_interne', 'nom_usage', 'producteur_nom', 'variete_nom',
-            'date_entree_stock', 'poids_total_brut_kg', 'site_stockage',
+            'date_entree_stock', 'poids_total_brut_kg',
             'prix_achat_euro_tonne', 'tare_achat_pct', 'valeur_lot_euro',
             'qualified_by', 'qualified_at'
         ]].copy()
@@ -754,7 +742,6 @@ with tab2:
             'variete_nom': 'Variété',
             'date_entree_stock': 'Date Entrée',
             'poids_total_brut_kg': 'Poids (kg)',
-            'site_stockage': 'Site',
             'prix_achat_euro_tonne': 'Prix (€/T)',
             'tare_achat_pct': 'Tare (%)',
             'valeur_lot_euro': 'Valeur (€)',
@@ -773,7 +760,6 @@ with tab2:
             'Variété': st.column_config.TextColumn('Variété', disabled=True, width="small"),
             'Date Entrée': st.column_config.DateColumn('Date Entrée', disabled=True, width="small"),
             'Poids (kg)': st.column_config.NumberColumn('Poids (kg)', disabled=True, format="%.0f", width="small"),
-            'Site': st.column_config.TextColumn('Site', disabled=True, width="small"),
             'Prix (€/T)': st.column_config.NumberColumn('Prix (€/T)', min_value=50, max_value=1500, step=10, format="%.0f", width="small"),
             'Tare (%)': st.column_config.NumberColumn('Tare (%)', min_value=0, max_value=100, step=1, format="%.1f", width="small"),
             'Valeur (€)': st.column_config.NumberColumn('Valeur (€)', disabled=True, format="%.0f", width="small"),
