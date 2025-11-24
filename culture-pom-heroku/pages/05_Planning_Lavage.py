@@ -413,21 +413,34 @@ def demarrer_job(job_id):
 
 def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
                 site_dest, emplacement_dest, notes=""):
-    """Termine un job avec calcul temps réel"""
+    """Termine un job avec création stocks LAVÉ/GRENAILLES et déduction BRUT"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Récupérer job
+        # Récupérer job complet
         cursor.execute("""
-            SELECT lot_id, quantite_pallox, poids_brut_kg,
-                   code_lot_interne, ligne_lavage, date_activation
-            FROM lavages_jobs
-            WHERE id = %s AND statut = 'EN_COURS'
+            SELECT lj.lot_id, lj.quantite_pallox, lj.poids_brut_kg,
+                   lj.code_lot_interne, lj.ligne_lavage, lj.date_activation,
+                   lj.variete
+            FROM lavages_jobs lj
+            WHERE lj.id = %s AND lj.statut = 'EN_COURS'
         """, (job_id,))
         job = cursor.fetchone()
         if not job:
             return False, "❌ Job introuvable ou pas EN_COURS"
+        
+        # Récupérer l'emplacement source BRUT
+        cursor.execute("""
+            SELECT id, nombre_unites, poids_total_kg
+            FROM stock_emplacements
+            WHERE lot_id = %s AND statut_lavage = 'BRUT' AND is_active = TRUE
+            ORDER BY id
+            LIMIT 1
+        """, (job['lot_id'],))
+        stock_brut = cursor.fetchone()
+        if not stock_brut:
+            return False, "❌ Stock BRUT source introuvable"
         
         # Calculs tares
         poids_brut = float(job['poids_brut_kg'])
@@ -435,9 +448,9 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
         tare_reelle = ((poids_dechets + poids_terre) / poids_brut) * 100
         rendement = ((poids_lave + poids_grenailles) / poids_brut) * 100
         
-        # Validation
+        # Validation cohérence
         if abs(poids_brut - (poids_lave + poids_grenailles + poids_dechets + poids_terre)) > 1:
-            return False, f"❌ Poids incohérents !"
+            return False, f"❌ Poids incohérents ! Brut={poids_brut:.0f} vs Total={poids_lave+poids_grenailles+poids_dechets+poids_terre:.0f}"
         
         # Calcul temps réel (en minutes)
         temps_reel_minutes = None
@@ -446,7 +459,11 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
             temps_reel_minutes = int(delta.total_seconds() / 60)
         
         terminated_by = st.session_state.get('username', 'system')
+        quantite_pallox = int(job['quantite_pallox'])
         
+        # ============================================================
+        # 1. METTRE À JOUR LE JOB
+        # ============================================================
         cursor.execute("""
             UPDATE lavages_jobs
             SET statut = 'TERMINÉ',
@@ -466,12 +483,94 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
               tare_reelle, rendement, site_dest, emplacement_dest,
               terminated_by, notes, job_id))
         
+        # ============================================================
+        # 2. CRÉER STOCK LAVÉ
+        # ============================================================
+        cursor.execute("""
+            INSERT INTO stock_emplacements 
+            (lot_id, site_stockage, emplacement_stockage, nombre_unites, 
+             type_conditionnement, poids_total_kg, statut_lavage, lavage_job_id, is_active)
+            VALUES (%s, %s, %s, %s, 'Pallox', %s, 'LAVÉ', %s, TRUE)
+            RETURNING id
+        """, (job['lot_id'], site_dest, emplacement_dest, quantite_pallox, 
+              poids_lave, job_id))
+        stock_lave_id = cursor.fetchone()['id']
+        
+        # ============================================================
+        # 3. CRÉER STOCK GRENAILLES (si > 0)
+        # ============================================================
+        stock_grenailles_id = None
+        if poids_grenailles > 0:
+            # Calculer nb pallox grenailles (estimation : 1 pallox = 500kg grenailles)
+            nb_pallox_gren = max(1, int(poids_grenailles / 500))
+            cursor.execute("""
+                INSERT INTO stock_emplacements 
+                (lot_id, site_stockage, emplacement_stockage, nombre_unites, 
+                 type_conditionnement, poids_total_kg, statut_lavage, lavage_job_id, is_active)
+                VALUES (%s, %s, %s, %s, 'Pallox', %s, 'GRENAILLES', %s, TRUE)
+                RETURNING id
+            """, (job['lot_id'], site_dest, emplacement_dest, nb_pallox_gren, 
+                  poids_grenailles, job_id))
+            stock_grenailles_id = cursor.fetchone()['id']
+        
+        # ============================================================
+        # 4. DÉDUIRE DU STOCK BRUT SOURCE
+        # ============================================================
+        nouveau_nb_unites = int(stock_brut['nombre_unites']) - quantite_pallox
+        nouveau_poids = float(stock_brut['poids_total_kg']) - poids_brut
+        
+        if nouveau_nb_unites <= 0:
+            # Stock épuisé - désactiver
+            cursor.execute("""
+                UPDATE stock_emplacements
+                SET nombre_unites = 0, poids_total_kg = 0, is_active = FALSE
+                WHERE id = %s
+            """, (stock_brut['id'],))
+        else:
+            # Stock restant
+            cursor.execute("""
+                UPDATE stock_emplacements
+                SET nombre_unites = %s, poids_total_kg = %s
+                WHERE id = %s
+            """, (nouveau_nb_unites, nouveau_poids, stock_brut['id']))
+        
+        # ============================================================
+        # 5. ENREGISTRER MOUVEMENTS DE STOCK
+        # ============================================================
+        # Mouvement LAVAGE_SORTIE (déduction brut)
+        cursor.execute("""
+            INSERT INTO stock_mouvements 
+            (lot_id, type_mouvement, site_origine, emplacement_origine,
+             quantite, type_conditionnement, poids_kg, user_action, notes)
+            VALUES (%s, 'LAVAGE_SORTIE', %s, %s, %s, 'Pallox', %s, %s, %s)
+        """, (job['lot_id'], 'SAINT_FLAVY', 'BRUT', quantite_pallox, 
+              poids_brut, terminated_by, f"Job #{job_id} - Sortie lavage"))
+        
+        # Mouvement LAVAGE_ENTREE_LAVE
+        cursor.execute("""
+            INSERT INTO stock_mouvements 
+            (lot_id, type_mouvement, site_destination, emplacement_destination,
+             quantite, type_conditionnement, poids_kg, user_action, notes)
+            VALUES (%s, 'LAVAGE_ENTREE_LAVE', %s, %s, %s, 'Pallox', %s, %s, %s)
+        """, (job['lot_id'], site_dest, emplacement_dest, quantite_pallox, 
+              poids_lave, terminated_by, f"Job #{job_id} - Entrée lavé"))
+        
+        # Mouvement LAVAGE_ENTREE_GRENAILLES (si > 0)
+        if poids_grenailles > 0:
+            cursor.execute("""
+                INSERT INTO stock_mouvements 
+                (lot_id, type_mouvement, site_destination, emplacement_destination,
+                 quantite, type_conditionnement, poids_kg, user_action, notes)
+                VALUES (%s, 'LAVAGE_ENTREE_GRENAILLES', %s, %s, %s, 'Pallox', %s, %s, %s)
+            """, (job['lot_id'], site_dest, emplacement_dest, 1, 
+                  poids_grenailles, terminated_by, f"Job #{job_id} - Entrée grenailles"))
+        
         conn.commit()
         cursor.close()
         conn.close()
         
         temps_str = f"{temps_reel_minutes // 60}h{temps_reel_minutes % 60:02d}" if temps_reel_minutes else "N/A"
-        return True, f"✅ Terminé ! Temps réel: {temps_str} - Rendement: {rendement:.1f}%"
+        return True, f"✅ Terminé ! Temps: {temps_str} - Rendement: {rendement:.1f}% - Stock LAVÉ créé"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
@@ -565,6 +664,152 @@ def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg,
         cursor.close()
         conn.close()
         return True, f"✅ Job #{job_id} créé"
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+def supprimer_job(job_id):
+    """Supprime un job PRÉVU (suppression complète)"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        # Vérifier que le job est PRÉVU
+        cursor.execute("SELECT statut FROM lavages_jobs WHERE id = %s", (job_id,))
+        result = cursor.fetchone()
+        if not result:
+            return False, "❌ Job introuvable"
+        if result['statut'] != 'PRÉVU':
+            return False, f"❌ Impossible de supprimer un job {result['statut']}"
+        
+        # Supprimer du planning si présent
+        cursor.execute("DELETE FROM lavages_planning_elements WHERE job_id = %s", (job_id,))
+        # Supprimer le job
+        cursor.execute("DELETE FROM lavages_jobs WHERE id = %s", (job_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, "✅ Job supprimé"
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+def annuler_job_en_cours(job_id):
+    """Annule un job EN_COURS : remet en PRÉVU"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        # Vérifier que le job est EN_COURS
+        cursor.execute("SELECT statut FROM lavages_jobs WHERE id = %s", (job_id,))
+        result = cursor.fetchone()
+        if not result:
+            return False, "❌ Job introuvable"
+        if result['statut'] != 'EN_COURS':
+            return False, f"❌ Ce job est {result['statut']}, pas EN_COURS"
+        
+        # Remettre en PRÉVU
+        cursor.execute("""
+            UPDATE lavages_jobs
+            SET statut = 'PRÉVU',
+                date_activation = NULL,
+                activated_by = NULL
+            WHERE id = %s
+        """, (job_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, "✅ Job remis en PRÉVU"
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+def annuler_job_termine(job_id):
+    """Annule un job TERMINÉ : remet en PRÉVU, restaure le stock BRUT, supprime stocks LAVÉ/GRENAILLES"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Vérifier que le job est TERMINÉ
+        cursor.execute("""
+            SELECT statut, lot_id, quantite_pallox, poids_brut_kg
+            FROM lavages_jobs WHERE id = %s
+        """, (job_id,))
+        result = cursor.fetchone()
+        if not result:
+            return False, "❌ Job introuvable"
+        if result['statut'] != 'TERMINÉ':
+            return False, f"❌ Ce job est {result['statut']}, pas TERMINÉ"
+        
+        lot_id = result['lot_id']
+        quantite_pallox = int(result['quantite_pallox'])
+        poids_brut = float(result['poids_brut_kg'])
+        
+        # ============================================================
+        # 1. SUPPRIMER LES STOCKS LAVÉ ET GRENAILLES CRÉÉS PAR CE JOB
+        # ============================================================
+        cursor.execute("""
+            DELETE FROM stock_emplacements 
+            WHERE lavage_job_id = %s AND statut_lavage IN ('LAVÉ', 'GRENAILLES')
+        """, (job_id,))
+        
+        # ============================================================
+        # 2. RESTAURER LE STOCK BRUT SOURCE
+        # ============================================================
+        # Chercher le stock BRUT du lot (actif ou non)
+        cursor.execute("""
+            SELECT id, nombre_unites, poids_total_kg, is_active
+            FROM stock_emplacements
+            WHERE lot_id = %s AND statut_lavage = 'BRUT'
+            ORDER BY id
+            LIMIT 1
+        """, (lot_id,))
+        stock_brut = cursor.fetchone()
+        
+        if stock_brut:
+            # Restaurer les quantités
+            nouveau_nb = int(stock_brut['nombre_unites']) + quantite_pallox
+            nouveau_poids = float(stock_brut['poids_total_kg']) + poids_brut
+            cursor.execute("""
+                UPDATE stock_emplacements
+                SET nombre_unites = %s, poids_total_kg = %s, is_active = TRUE
+                WHERE id = %s
+            """, (nouveau_nb, nouveau_poids, stock_brut['id']))
+        
+        # ============================================================
+        # 3. SUPPRIMER LES MOUVEMENTS DE STOCK LIÉS
+        # ============================================================
+        cursor.execute("""
+            DELETE FROM stock_mouvements 
+            WHERE notes LIKE %s
+        """, (f"Job #{job_id}%",))
+        
+        # ============================================================
+        # 4. REMETTRE LE JOB EN PRÉVU
+        # ============================================================
+        cursor.execute("""
+            UPDATE lavages_jobs
+            SET statut = 'PRÉVU',
+                date_activation = NULL,
+                date_terminaison = NULL,
+                activated_by = NULL,
+                terminated_by = NULL,
+                poids_lave_net_kg = NULL,
+                poids_grenailles_kg = NULL,
+                poids_dechets_kg = NULL,
+                poids_terre_calcule_kg = NULL,
+                tare_reelle_pct = NULL,
+                rendement_pct = NULL,
+                site_destination = NULL,
+                emplacement_destination = NULL
+            WHERE id = %s
+        """, (job_id,))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, f"✅ Job annulé - Stock BRUT restauré (+{quantite_pallox} pallox)"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
@@ -1080,36 +1325,198 @@ with tab4:
     else:
         st.subheader("⚙️ Administration")
         
-        col1, col2 = st.columns(2)
+        admin_tab1, admin_tab2, admin_tab3 = st.tabs(["🗑️ Gestion Jobs", "🔧 Temps Customs", "📊 Statistiques"])
         
-        with col1:
+        # --- GESTION JOBS ---
+        with admin_tab1:
+            st.markdown("### 🗑️ Gestion des Jobs")
+            
+            col_prevus, col_encours, col_termines = st.columns(3)
+            
+            with col_prevus:
+                st.markdown("#### 🟢 PRÉVU")
+                st.caption("Supprimer définitivement")
+                try:
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT id, code_lot_interne, variete, quantite_pallox, date_prevue
+                        FROM lavages_jobs
+                        WHERE statut = 'PRÉVU'
+                        ORDER BY date_prevue DESC
+                        LIMIT 15
+                    """)
+                    jobs_prevus = cursor.fetchall()
+                    cursor.close()
+                    conn.close()
+                    
+                    if jobs_prevus:
+                        for job in jobs_prevus:
+                            col_info, col_btn = st.columns([4, 1])
+                            with col_info:
+                                st.markdown(f"**#{job['id']}** {job['variete']} {job['quantite_pallox']}p")
+                            with col_btn:
+                                if st.button("🗑️", key=f"del_job_{job['id']}", help="Supprimer"):
+                                    success, msg = supprimer_job(job['id'])
+                                    if success:
+                                        st.success(msg)
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
+                    else:
+                        st.info("Aucun")
+                except Exception as e:
+                    st.error(f"Erreur : {str(e)}")
+            
+            with col_encours:
+                st.markdown("#### 🟠 EN_COURS")
+                st.caption("Remettre en PRÉVU")
+                try:
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT id, code_lot_interne, variete, quantite_pallox, date_activation
+                        FROM lavages_jobs
+                        WHERE statut = 'EN_COURS'
+                        ORDER BY date_activation DESC
+                        LIMIT 15
+                    """)
+                    jobs_encours = cursor.fetchall()
+                    cursor.close()
+                    conn.close()
+                    
+                    if jobs_encours:
+                        for job in jobs_encours:
+                            col_info, col_btn = st.columns([4, 1])
+                            with col_info:
+                                st.markdown(f"**#{job['id']}** {job['variete']} {job['quantite_pallox']}p")
+                            with col_btn:
+                                if st.button("↩️", key=f"cancel_encours_{job['id']}", help="Annuler"):
+                                    success, msg = annuler_job_en_cours(job['id'])
+                                    if success:
+                                        st.success(msg)
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
+                    else:
+                        st.info("Aucun")
+                except Exception as e:
+                    st.error(f"Erreur : {str(e)}")
+            
+            with col_termines:
+                st.markdown("#### ⬜ TERMINÉ")
+                st.caption("✅ Restaure le stock BRUT")
+                try:
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT id, code_lot_interne, variete, quantite_pallox, 
+                               date_terminaison, rendement_pct
+                        FROM lavages_jobs
+                        WHERE statut = 'TERMINÉ'
+                        ORDER BY date_terminaison DESC
+                        LIMIT 20
+                    """)
+                    jobs_termines = cursor.fetchall()
+                    cursor.close()
+                    conn.close()
+                    
+                    if jobs_termines:
+                        for job in jobs_termines:
+                            col_info, col_btn = st.columns([4, 1])
+                            with col_info:
+                                rend = f"{job['rendement_pct']:.1f}%" if job['rendement_pct'] else "N/A"
+                                st.markdown(f"**Job #{job['id']}** - {job['code_lot_interne']} - Rend: {rend}")
+                            with col_btn:
+                                if st.button("↩️", key=f"cancel_job_{job['id']}", help="Annuler"):
+                                    success, msg = annuler_job_termine(job['id'])
+                                    if success:
+                                        st.success(msg)
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
+                    else:
+                        st.info("Aucun job TERMINÉ")
+                except Exception as e:
+                    st.error(f"Erreur : {str(e)}")
+        
+        # --- TEMPS CUSTOMS ---
+        with admin_tab2:
             st.markdown("### 🔧 Temps Customs")
             temps_customs = get_temps_customs()
             for tc in temps_customs:
-                st.markdown(f"- {tc['emoji']} **{tc['libelle']}** ({tc['duree_minutes']} min)")
+                col_info, col_del = st.columns([5, 1])
+                with col_info:
+                    st.markdown(f"- {tc['emoji']} **{tc['libelle']}** ({tc['duree_minutes']} min)")
+                with col_del:
+                    if st.button("🗑️", key=f"del_tc_admin_{tc['id']}"):
+                        supprimer_temps_custom(tc['id'])
+                        st.rerun()
+            
+            st.markdown("---")
+            st.markdown("#### ➕ Créer un temps custom")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                new_lib = st.text_input("Libellé", key="new_tc_lib_admin")
+            with col2:
+                new_dur = st.number_input("Durée (min)", 5, 480, 20, key="new_tc_dur_admin")
+            with col3:
+                new_emo = st.selectbox("Emoji", ["⚙️", "☕", "🔧", "🍽️", "⏸️", "🧹", "🔄"], key="new_tc_emo_admin")
+            if st.button("✅ Créer", key="btn_create_tc_admin") and new_lib:
+                creer_temps_custom(new_lib.upper().replace(" ", "_")[:20], new_lib, new_emo, new_dur)
+                st.success("✅ Créé")
+                st.rerun()
         
-        with col2:
-            st.markdown("### 📊 Statistiques")
+        # --- STATISTIQUES ---
+        with admin_tab3:
+            st.markdown("### 📊 Statistiques Lavage")
             try:
                 conn = get_connection()
                 cursor = conn.cursor()
+                
+                # Stats globales
                 cursor.execute("""
                     SELECT 
+                        COUNT(*) as nb_jobs,
                         AVG(rendement_pct) as rend_moy,
-                        AVG(tare_reelle_pct) as tare_moy
+                        AVG(tare_reelle_pct) as tare_moy,
+                        SUM(poids_brut_kg) as tonnage_total
                     FROM lavages_jobs 
                     WHERE statut = 'TERMINÉ' AND rendement_pct IS NOT NULL
                 """)
                 stats = cursor.fetchone()
+                
+                if stats and stats['nb_jobs'] > 0:
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Jobs terminés", stats['nb_jobs'])
+                    col2.metric("Rendement moyen", f"{stats['rend_moy']:.1f}%")
+                    col3.metric("Tare moyenne", f"{stats['tare_moy']:.1f}%")
+                    col4.metric("Tonnage lavé", f"{stats['tonnage_total']/1000:.1f} T")
+                    
+                    st.markdown("---")
+                    st.markdown("#### Par variété")
+                    cursor.execute("""
+                        SELECT 
+                            variete,
+                            COUNT(*) as nb_jobs,
+                            AVG(rendement_pct) as rend_moy,
+                            AVG(tare_reelle_pct) as tare_moy
+                        FROM lavages_jobs 
+                        WHERE statut = 'TERMINÉ' AND rendement_pct IS NOT NULL
+                        GROUP BY variete
+                        ORDER BY nb_jobs DESC
+                    """)
+                    stats_var = cursor.fetchall()
+                    if stats_var:
+                        df_stats = pd.DataFrame(stats_var)
+                        df_stats.columns = ['Variété', 'Nb Jobs', 'Rendement %', 'Tare %']
+                        st.dataframe(df_stats, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Pas encore de statistiques")
+                
                 cursor.close()
                 conn.close()
-                
-                if stats and stats['rend_moy']:
-                    st.metric("Rendement moyen", f"{stats['rend_moy']:.1f}%")
-                    st.metric("Tare moyenne", f"{stats['tare_moy']:.1f}%")
-                else:
-                    st.info("Pas encore de stats")
-            except:
-                st.info("Pas de stats disponibles")
+            except Exception as e:
+                st.error(f"Erreur : {str(e)}")
 
 show_footer()
