@@ -24,9 +24,7 @@ def show_user_info():
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
                 st.rerun()
-
-st.set_page_config(page_title="Sources - Culture Pom", page_icon="📋", layout="wide")
-
+                
 # CSS custom pour réduire FORTEMENT les espacements
 st.markdown("""
 <style>
