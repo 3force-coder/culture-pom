@@ -6,8 +6,6 @@ from database import get_connection
 from components import show_footer
 from auth import is_authenticated
 
-st.set_page_config(page_title="Prévisions Ventes - Culture Pom", page_icon="📈", layout="wide")
-
 # CSS compact
 st.markdown("""
 <style>
