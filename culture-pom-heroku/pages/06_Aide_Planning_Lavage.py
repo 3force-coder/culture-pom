@@ -285,6 +285,42 @@ def get_planning_semaine(annee, semaine):
     except Exception as e:
         return pd.DataFrame()
 
+def verifier_chevauchement(planning_df, date_prevue, ligne_lavage, heure_debut, duree_minutes):
+    """
+    Vérifie si le créneau demandé chevauche un élément existant.
+    Retourne (ok, message, prochaine_heure_dispo)
+    """
+    jour_str = str(date_prevue)
+    
+    if planning_df.empty:
+        return True, None, None
+    
+    mask = (planning_df['date_prevue'].astype(str) == jour_str) & (planning_df['ligne_lavage'] == ligne_lavage)
+    elements = planning_df[mask]
+    
+    if elements.empty:
+        return True, None, None
+    
+    # Calculer l'heure de fin demandée
+    debut_minutes = heure_debut.hour * 60 + heure_debut.minute
+    fin_minutes = debut_minutes + duree_minutes
+    
+    # Vérifier chevauchement avec chaque élément
+    for _, elem in elements.iterrows():
+        if pd.isna(elem['heure_debut']) or pd.isna(elem['heure_fin']):
+            continue
+        
+        elem_debut = elem['heure_debut'].hour * 60 + elem['heure_debut'].minute
+        elem_fin = elem['heure_fin'].hour * 60 + elem['heure_fin'].minute
+        
+        # Chevauchement si : début demandé < fin existant ET fin demandée > début existant
+        if debut_minutes < elem_fin and fin_minutes > elem_debut:
+            # Trouver la prochaine heure disponible (fin de cet élément arrondie au quart d'heure)
+            prochaine_heure = arrondir_quart_heure_sup(elem['heure_fin'])
+            return False, f"⚠️ Créneau occupé ! Prochaine heure disponible : **{prochaine_heure.strftime('%H:%M')}**", prochaine_heure
+    
+    return True, None, None
+
 def get_horaire_fin_jour(jour_semaine, horaires_config):
     """Retourne l'heure de fin pour un jour donné"""
     if jour_semaine in horaires_config:
@@ -680,25 +716,33 @@ with col_left:
                     
                     duree_min = int(job['temps_estime_heures'] * 60)
                     
-                    # ⭐ VÉRIFICATION DURÉE SUFFISANTE
-                    h_fin_jour = get_horaire_fin_jour(jour_idx, horaires_config)
-                    debut_minutes = heure_debut.hour * 60 + heure_debut.minute
-                    fin_minutes = debut_minutes + duree_min
-                    fin_jour_minutes = h_fin_jour.hour * 60 + h_fin_jour.minute
+                    # ⭐ VÉRIFICATION CHEVAUCHEMENT
+                    ok, msg_chevauche, _ = verifier_chevauchement(
+                        planning_df, date_cible, st.session_state.selected_ligne, heure_debut, duree_min
+                    )
                     
-                    if fin_minutes > fin_jour_minutes:
-                        st.error(f"⚠️ Fin prévue {fin_minutes//60}h{fin_minutes%60:02d} > fin journée {h_fin_jour.strftime('%H:%M')}")
+                    if not ok:
+                        st.error(msg_chevauche)
                     else:
-                        if st.button(f"✅ Placer", key=f"confirm_job_{job['id']}", type="primary", use_container_width=True):
-                            success, msg = ajouter_element_planning(
-                                'JOB', int(job['id']), None, date_cible, 
-                                st.session_state.selected_ligne, duree_min, annee, semaine, heure_debut
-                            )
-                            if success:
-                                st.success(msg)
-                                st.rerun()
-                            else:
-                                st.error(msg)
+                        # ⭐ VÉRIFICATION DURÉE SUFFISANTE
+                        h_fin_jour = get_horaire_fin_jour(jour_idx, horaires_config)
+                        debut_minutes = heure_debut.hour * 60 + heure_debut.minute
+                        fin_minutes = debut_minutes + duree_min
+                        fin_jour_minutes = h_fin_jour.hour * 60 + h_fin_jour.minute
+                        
+                        if fin_minutes > fin_jour_minutes:
+                            st.error(f"⚠️ Fin prévue {fin_minutes//60}h{fin_minutes%60:02d} > fin journée {h_fin_jour.strftime('%H:%M')}")
+                        else:
+                            if st.button(f"✅ Placer", key=f"confirm_job_{job['id']}", type="primary", use_container_width=True):
+                                success, msg = ajouter_element_planning(
+                                    'JOB', int(job['id']), None, date_cible, 
+                                    st.session_state.selected_ligne, duree_min, annee, semaine, heure_debut
+                                )
+                                if success:
+                                    st.success(msg)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
                 
                 st.markdown("<hr style='margin: 0.5rem 0; border: none; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
     
@@ -765,25 +809,33 @@ with col_left:
                     
                     duree_min = int(tc['duree_minutes'])
                     
-                    # ⭐ VÉRIFICATION DURÉE SUFFISANTE
-                    h_fin_jour = get_horaire_fin_jour(jour_idx, horaires_config)
-                    debut_minutes = heure_debut.hour * 60 + heure_debut.minute
-                    fin_minutes = debut_minutes + duree_min
-                    fin_jour_minutes = h_fin_jour.hour * 60 + h_fin_jour.minute
+                    # ⭐ VÉRIFICATION CHEVAUCHEMENT
+                    ok, msg_chevauche, _ = verifier_chevauchement(
+                        planning_df, date_cible, st.session_state.selected_ligne, heure_debut, duree_min
+                    )
                     
-                    if fin_minutes > fin_jour_minutes:
-                        st.error(f"⚠️ Durée insuffisante !")
+                    if not ok:
+                        st.error(msg_chevauche)
                     else:
-                        if st.button(f"✅ Placer", key=f"confirm_tc_{tc['id']}", type="primary", use_container_width=True):
-                            success, msg = ajouter_element_planning(
-                                'CUSTOM', None, int(tc['id']), date_cible,
-                                st.session_state.selected_ligne, duree_min, annee, semaine, heure_debut
-                            )
-                            if success:
-                                st.success(msg)
-                                st.rerun()
-                            else:
-                                st.error(msg)
+                        # ⭐ VÉRIFICATION DURÉE SUFFISANTE
+                        h_fin_jour = get_horaire_fin_jour(jour_idx, horaires_config)
+                        debut_minutes = heure_debut.hour * 60 + heure_debut.minute
+                        fin_minutes = debut_minutes + duree_min
+                        fin_jour_minutes = h_fin_jour.hour * 60 + h_fin_jour.minute
+                        
+                        if fin_minutes > fin_jour_minutes:
+                            st.error(f"⚠️ Durée insuffisante !")
+                        else:
+                            if st.button(f"✅ Placer", key=f"confirm_tc_{tc['id']}", type="primary", use_container_width=True):
+                                success, msg = ajouter_element_planning(
+                                    'CUSTOM', None, int(tc['id']), date_cible,
+                                    st.session_state.selected_ligne, duree_min, annee, semaine, heure_debut
+                                )
+                                if success:
+                                    st.success(msg)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
     
     # Créer temps custom
     st.markdown("---")
