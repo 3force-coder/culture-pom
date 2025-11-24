@@ -399,8 +399,7 @@ def demarrer_job(job_id):
             UPDATE lavages_jobs
             SET statut = 'EN_COURS',
                 date_activation = CURRENT_TIMESTAMP,
-                activated_by = %s,
-                updated_at = CURRENT_TIMESTAMP
+                activated_by = %s
             WHERE id = %s AND statut = 'PRÉVU'
         """, (activated_by, job_id))
         conn.commit()
@@ -461,8 +460,7 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
                 site_destination = %s,
                 emplacement_destination = %s,
                 terminated_by = %s,
-                notes = %s,
-                updated_at = CURRENT_TIMESTAMP
+                notes = %s
             WHERE id = %s
         """, (poids_lave, poids_grenailles, poids_dechets, poids_terre,
               tare_reelle, rendement, site_dest, emplacement_dest,
