@@ -37,7 +37,7 @@ with st.sidebar:
         st.rerun()
 
 # ============================================================
-# DÉFINITION DES PAGES AVEC NOMS ET EMOJIS PERSONNALISÉS
+# DÉFINITION DES PAGES - NOMS EXACTS DES FICHIERS
 # ============================================================
 
 pages = {
@@ -49,7 +49,7 @@ pages = {
     ],
     "📦 Stock": [
         st.Page("pages/02_Lots.py", title="Lots", icon="📦"),
-        st.Page("pages/03_Details_stock.py", title="Détails Stock", icon="🗃️"),
+        st.Page("pages/03_Détails stock.py", title="Détails Stock", icon="🗃️"),
         st.Page("pages/04_Stock_Global.py", title="Stock Global", icon="📊"),
     ],
     "🏭 Production": [
