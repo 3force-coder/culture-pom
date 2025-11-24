@@ -604,7 +604,11 @@ def get_emplacements_saint_flavy():
         return []
 
 def get_lots_bruts_disponibles():
-    """Récupère les lots bruts disponibles pour créer un job"""
+    """Récupère les lots bruts disponibles pour créer un job
+    
+    IMPORTANT: Soustrait les pallox déjà réservés par des jobs PRÉVU ou EN_COURS
+    pour éviter la sur-réservation du stock
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -614,13 +618,25 @@ def get_lots_bruts_disponibles():
                 l.calibre_min, l.calibre_max,
                 COALESCE(v.nom_variete, l.code_variete) as variete,
                 se.id as emplacement_id, se.site_stockage, se.emplacement_stockage,
-                se.nombre_unites, se.poids_total_kg, se.type_conditionnement
+                se.nombre_unites as stock_total,
+                COALESCE(jobs_reserves.pallox_reserves, 0) as pallox_reserves,
+                se.nombre_unites - COALESCE(jobs_reserves.pallox_reserves, 0) as nombre_unites,
+                se.poids_total_kg - COALESCE(jobs_reserves.poids_reserve, 0) as poids_total_kg,
+                se.type_conditionnement
             FROM lots_bruts l
             JOIN stock_emplacements se ON l.id = se.lot_id
             LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+            LEFT JOIN (
+                SELECT lot_id,
+                       SUM(quantite_pallox) as pallox_reserves,
+                       SUM(poids_brut_kg) as poids_reserve
+                FROM lavages_jobs
+                WHERE statut IN ('PRÉVU', 'EN_COURS')
+                GROUP BY lot_id
+            ) jobs_reserves ON l.id = jobs_reserves.lot_id
             WHERE se.is_active = TRUE 
               AND (se.statut_lavage = 'BRUT' OR se.statut_lavage IS NULL)
-              AND se.nombre_unites > 0
+              AND (se.nombre_unites - COALESCE(jobs_reserves.pallox_reserves, 0)) > 0
             ORDER BY l.code_lot_interne
         """)
         rows = cursor.fetchall()
@@ -628,7 +644,7 @@ def get_lots_bruts_disponibles():
         conn.close()
         if rows:
             df = pd.DataFrame(rows)
-            for col in ['nombre_unites', 'poids_total_kg', 'calibre_min', 'calibre_max']:
+            for col in ['nombre_unites', 'poids_total_kg', 'calibre_min', 'calibre_max', 'stock_total', 'pallox_reserves']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             return df
@@ -638,7 +654,10 @@ def get_lots_bruts_disponibles():
 
 def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg, 
                      date_prevue, ligne_lavage, capacite_th, notes=""):
-    """Crée un nouveau job de lavage"""
+    """Crée un nouveau job de lavage
+    
+    Vérifie que le stock disponible est suffisant (stock - jobs réservés)
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -647,6 +666,30 @@ def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg,
         quantite_pallox = int(quantite_pallox)
         poids_brut_kg = float(poids_brut_kg)
         capacite_th = float(capacite_th)
+        
+        # ============================================================
+        # VÉRIFICATION : Stock disponible suffisant ?
+        # ============================================================
+        cursor.execute("""
+            SELECT 
+                se.nombre_unites as stock_total,
+                COALESCE(jobs.pallox_reserves, 0) as pallox_reserves,
+                se.nombre_unites - COALESCE(jobs.pallox_reserves, 0) as stock_disponible
+            FROM stock_emplacements se
+            LEFT JOIN (
+                SELECT lot_id, SUM(quantite_pallox) as pallox_reserves
+                FROM lavages_jobs
+                WHERE statut IN ('PRÉVU', 'EN_COURS')
+                GROUP BY lot_id
+            ) jobs ON se.lot_id = jobs.lot_id
+            WHERE se.id = %s
+        """, (emplacement_id,))
+        stock_info = cursor.fetchone()
+        
+        if stock_info:
+            stock_disponible = int(stock_info['stock_disponible']) if stock_info['stock_disponible'] else int(stock_info['stock_total'])
+            if quantite_pallox > stock_disponible:
+                return False, f"❌ Stock insuffisant : {quantite_pallox} demandés mais seulement {stock_disponible} disponibles (déjà {int(stock_info['pallox_reserves'])} réservés)"
         
         cursor.execute("""
             SELECT l.code_lot_interne, COALESCE(v.nom_variete, l.code_variete) as variete
@@ -1288,12 +1331,32 @@ with tab3:
             lots_f = lots_f[lots_f['site_stockage'] == f_site]
         
         if not lots_f.empty:
-            st.markdown(f"**{len(lots_f)} lot(s) disponible(s)**")
+            st.markdown(f"**{len(lots_f)} lot(s) disponible(s)** - ⚠️ *Pallox Dispo = Stock - Jobs réservés (PRÉVU/EN_COURS)*")
             
-            df_display = lots_f[['lot_id', 'emplacement_id', 'code_lot_interne', 'variete', 'site_stockage', 'nombre_unites', 'poids_total_kg']].copy()
+            # Afficher Stock Total, Réservés et Disponible
+            df_display = lots_f[['lot_id', 'emplacement_id', 'code_lot_interne', 'variete', 'site_stockage', 'stock_total', 'pallox_reserves', 'nombre_unites', 'poids_total_kg']].copy()
+            df_display = df_display.rename(columns={
+                'code_lot_interne': 'Code Lot',
+                'variete': 'Variété',
+                'site_stockage': 'Site',
+                'stock_total': 'Stock',
+                'pallox_reserves': 'Réservés',
+                'nombre_unites': 'Dispo',
+                'poids_total_kg': 'Poids Dispo (kg)'
+            })
             df_display = df_display.reset_index(drop=True)
             
-            event = st.dataframe(df_display, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="lots_create")
+            # Config colonnes pour masquer IDs et formater nombres
+            column_config = {
+                "lot_id": None,
+                "emplacement_id": None,
+                "Stock": st.column_config.NumberColumn("Stock", format="%d", help="Pallox en stock physique"),
+                "Réservés": st.column_config.NumberColumn("Réservés", format="%d", help="Pallox réservés par jobs PRÉVU/EN_COURS"),
+                "Dispo": st.column_config.NumberColumn("Dispo", format="%d", help="Pallox disponibles pour nouveau job"),
+                "Poids Dispo (kg)": st.column_config.NumberColumn("Poids (kg)", format="%.0f")
+            }
+            
+            event = st.dataframe(df_display, column_config=column_config, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="lots_create")
             
             selected_rows = event.selection.rows if hasattr(event, 'selection') else []
             
@@ -1301,11 +1364,20 @@ with tab3:
                 row = df_display.iloc[selected_rows[0]]
                 lot_data = lots_dispo[lots_dispo['lot_id'] == row['lot_id']].iloc[0]
                 
-                st.success(f"✅ Sélectionné : {lot_data['code_lot_interne']} - {lot_data['variete']}")
+                # Afficher info stock avec réservés
+                reserves = int(lot_data['pallox_reserves']) if pd.notna(lot_data['pallox_reserves']) else 0
+                dispo = int(lot_data['nombre_unites'])
+                total = int(lot_data['stock_total']) if pd.notna(lot_data['stock_total']) else dispo
+                
+                if reserves > 0:
+                    st.warning(f"⚠️ **{lot_data['code_lot_interne']}** - Stock: {total} pallox, Réservés: {reserves}, **Disponible: {dispo}**")
+                else:
+                    st.success(f"✅ **{lot_data['code_lot_interne']}** - {lot_data['variete']} - **{dispo} pallox disponibles**")
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    quantite = st.slider("Pallox", 1, int(lot_data['nombre_unites']), min(5, int(lot_data['nombre_unites'])), key="qty_create")
+                    # Le slider utilise le stock disponible (déjà calculé)
+                    quantite = st.slider("Pallox", 1, dispo, min(5, dispo), key="qty_create")
                     date_prevue = st.date_input("Date", datetime.now().date(), key="date_create")
                 with col2:
                     lignes = get_lignes_lavage()
