@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as stc
 import pandas as pd
 from datetime import datetime, timedelta, time
 from database import get_connection
@@ -960,7 +961,7 @@ st.markdown("---")
 # ONGLETS PRINCIPAUX
 # ============================================================
 
-tab1, tab2, tab3, tab4 = st.tabs(["📅 Planning Semaine", "📋 Liste Jobs", "➕ Créer Job", "⚙️ Admin"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📅 Planning Semaine", "📋 Liste Jobs", "➕ Créer Job", "🖨️ Imprimer", "⚙️ Admin"])
 
 # ============================================================
 # ONGLET 1 : PLANNING SEMAINE (fusionné de page 06)
@@ -1409,10 +1410,276 @@ with tab3:
         st.warning("Aucun lot BRUT disponible")
 
 # ============================================================
-# ONGLET 4 : ADMIN
+# ONGLET 4 : IMPRIMER
 # ============================================================
 
 with tab4:
+    st.subheader("🖨️ Imprimer Planning Journée")
+    st.caption("*Générer une fiche imprimable pour une équipe de lavage*")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    # Charger les lignes de lavage
+    lignes_print = get_lignes_lavage()
+    
+    with col1:
+        date_print = st.date_input("📅 Jour", datetime.now().date(), key="print_date")
+    
+    with col2:
+        if lignes_print:
+            ligne_print_options = [f"{l['code']} - {l['libelle']} ({l['capacite_th']}T/h)" for l in lignes_print]
+            selected_ligne_print = st.selectbox("🔵 Ligne de lavage", ligne_print_options, key="print_ligne")
+            ligne_print_idx = ligne_print_options.index(selected_ligne_print)
+            ligne_print_code = lignes_print[ligne_print_idx]['code']
+            ligne_print_libelle = lignes_print[ligne_print_idx]['libelle']
+            ligne_print_capacite = lignes_print[ligne_print_idx]['capacite_th']
+        else:
+            st.warning("Aucune ligne de lavage")
+            ligne_print_code = None
+    
+    with col3:
+        amplitude_options = ["Journée complète (5h-22h)", "Matin (5h-13h)", "Après-midi (13h-22h)"]
+        selected_amplitude = st.selectbox("⏰ Amplitude", amplitude_options, key="print_amplitude")
+        
+        if selected_amplitude == "Matin (5h-13h)":
+            heure_debut_print = time(5, 0)
+            heure_fin_print = time(13, 0)
+        elif selected_amplitude == "Après-midi (13h-22h)":
+            heure_debut_print = time(13, 0)
+            heure_fin_print = time(22, 0)
+        else:
+            heure_debut_print = time(5, 0)
+            heure_fin_print = time(22, 0)
+    
+    st.markdown("---")
+    
+    # Charger les éléments planifiés pour ce jour/ligne
+    if ligne_print_code:
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    lpe.id,
+                    lpe.type_element,
+                    lpe.heure_debut,
+                    lpe.heure_fin,
+                    lpe.duree_minutes,
+                    lpe.ordre_jour,
+                    lj.id as job_id,
+                    lj.code_lot_interne,
+                    lj.variete,
+                    lj.quantite_pallox,
+                    lj.poids_brut_kg,
+                    lj.statut as job_statut,
+                    ltc.libelle as custom_libelle,
+                    ltc.emoji as custom_emoji
+                FROM lavages_planning_elements lpe
+                LEFT JOIN lavages_jobs lj ON lpe.job_id = lj.id
+                LEFT JOIN lavages_temps_customs ltc ON lpe.temps_custom_id = ltc.id
+                WHERE lpe.date_prevue = %s 
+                  AND lpe.ligne_lavage = %s
+                ORDER BY lpe.heure_debut, lpe.ordre_jour
+            """, (date_print, ligne_print_code))
+            
+            elements_print = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            
+            # Filtrer par amplitude horaire
+            elements_filtres = []
+            for el in elements_print:
+                if el['heure_debut']:
+                    h = el['heure_debut']
+                    if isinstance(h, str):
+                        h = datetime.strptime(h, "%H:%M:%S").time()
+                    if heure_debut_print <= h < heure_fin_print:
+                        elements_filtres.append(el)
+                else:
+                    elements_filtres.append(el)
+            
+            # Aperçu
+            jour_fr = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+            jour_nom = jour_fr[date_print.weekday()]
+            st.markdown(f"### 📋 Aperçu : {jour_nom} {date_print.strftime('%d/%m/%Y')} - {ligne_print_libelle}")
+            st.markdown(f"**Amplitude** : {heure_debut_print.strftime('%H:%M')} → {heure_fin_print.strftime('%H:%M')} | **Capacité** : {ligne_print_capacite} T/h")
+            
+            if elements_filtres:
+                st.markdown("---")
+                
+                for el in elements_filtres:
+                    heure_deb = el['heure_debut'].strftime('%H:%M') if el['heure_debut'] else "--:--"
+                    heure_f = el['heure_fin'].strftime('%H:%M') if el['heure_fin'] else "--:--"
+                    duree = el['duree_minutes'] or 0
+                    
+                    if el['type_element'] == 'JOB':
+                        statut_emoji = "🟢" if el['job_statut'] == 'PRÉVU' else ("🟠" if el['job_statut'] == 'EN_COURS' else "✅")
+                        poids_t = (el['poids_brut_kg'] or 0) / 1000
+                        st.markdown(f"""
+                        **{heure_deb} → {heure_f}** ({duree} min) {statut_emoji}  
+                        📦 **Job #{el['job_id']}** - {el['code_lot_interne']}  
+                        🥔 {el['variete']}  
+                        ⚖️ {el['quantite_pallox']} pallox ({poids_t:.2f} T)
+                        """)
+                    else:
+                        st.markdown(f"""
+                        **{heure_deb} → {heure_f}** ({duree} min)  
+                        {el['custom_emoji'] or '⚙️'} **{el['custom_libelle']}**
+                        """)
+                    st.markdown("---")
+                
+                # Calcul temps total
+                temps_total_min = sum(el['duree_minutes'] or 0 for el in elements_filtres)
+                temps_jobs = sum(el['duree_minutes'] or 0 for el in elements_filtres if el['type_element'] == 'JOB')
+                nb_jobs = len([el for el in elements_filtres if el['type_element'] == 'JOB'])
+                poids_total = sum((el['poids_brut_kg'] or 0) for el in elements_filtres if el['type_element'] == 'JOB') / 1000
+                
+                st.markdown(f"**Résumé** : {nb_jobs} job(s) | {poids_total:.1f} T | Temps total : {temps_total_min} min ({temps_total_min/60:.1f}h)")
+                
+                st.markdown("---")
+                
+                # Bouton imprimer avec HTML
+                if st.button("🖨️ Générer fiche imprimable", type="primary", use_container_width=True):
+                    
+                    # Générer HTML
+                    rows_html = ""
+                    for el in elements_filtres:
+                        heure_deb = el['heure_debut'].strftime('%H:%M') if el['heure_debut'] else "--:--"
+                        heure_f = el['heure_fin'].strftime('%H:%M') if el['heure_fin'] else "--:--"
+                        duree = el['duree_minutes'] or 0
+                        
+                        if el['type_element'] == 'JOB':
+                            statut = el['job_statut'] or ''
+                            poids_t = (el['poids_brut_kg'] or 0) / 1000
+                            rows_html += f"""
+                            <tr>
+                                <td style="text-align:center;font-weight:bold;">{heure_deb}</td>
+                                <td style="text-align:center;">{heure_f}</td>
+                                <td style="text-align:center;">{duree}</td>
+                                <td>Job #{el['job_id']} - {el['code_lot_interne']}</td>
+                                <td>{el['variete']}</td>
+                                <td style="text-align:center;">{el['quantite_pallox']}</td>
+                                <td style="text-align:center;">{poids_t:.2f} T</td>
+                                <td style="text-align:center;">{statut}</td>
+                                <td></td>
+                            </tr>
+                            """
+                        else:
+                            rows_html += f"""
+                            <tr style="background-color:#e8f5e9;">
+                                <td style="text-align:center;font-weight:bold;">{heure_deb}</td>
+                                <td style="text-align:center;">{heure_f}</td>
+                                <td style="text-align:center;">{duree}</td>
+                                <td colspan="5">{el['custom_emoji'] or '⚙️'} {el['custom_libelle']}</td>
+                                <td></td>
+                            </tr>
+                            """
+                    
+                    amplitude_txt = f"{heure_debut_print.strftime('%H:%M')} - {heure_fin_print.strftime('%H:%M')}"
+                    jour_txt = f"{jour_nom} {date_print.strftime('%d/%m/%Y')}"
+                    
+                    html_content = f"""
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <meta charset="UTF-8">
+                        <title>Planning Lavage - {jour_txt}</title>
+                        <style>
+                            body {{ font-family: Arial, sans-serif; margin: 20px; font-size: 12px; }}
+                            h1 {{ text-align: center; color: #333; margin-bottom: 5px; font-size: 18px; }}
+                            h2 {{ text-align: center; color: #666; margin-top: 0; font-size: 14px; }}
+                            .header-info {{ display: flex; justify-content: space-between; margin-bottom: 15px; padding: 10px; background: #f5f5f5; border-radius: 5px; }}
+                            .header-info div {{ text-align: center; }}
+                            .header-info strong {{ display: block; font-size: 14px; }}
+                            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+                            th {{ background: #1976d2; color: white; padding: 8px; text-align: left; font-size: 11px; }}
+                            td {{ border: 1px solid #ddd; padding: 6px; font-size: 11px; }}
+                            tr:nth-child(even) {{ background: #fafafa; }}
+                            .footer {{ margin-top: 20px; text-align: center; font-size: 10px; color: #999; }}
+                            .signature {{ margin-top: 30px; display: flex; justify-content: space-around; }}
+                            .signature div {{ width: 200px; border-top: 1px solid #333; padding-top: 5px; text-align: center; }}
+                            @media print {{
+                                body {{ margin: 10px; }}
+                                .no-print {{ display: none; }}
+                            }}
+                        </style>
+                    </head>
+                    <body>
+                        <h1>🧼 Planning Lavage</h1>
+                        <h2>{ligne_print_libelle} ({ligne_print_code})</h2>
+                        
+                        <div class="header-info">
+                            <div><strong>📅 Date</strong>{jour_txt}</div>
+                            <div><strong>⏰ Amplitude</strong>{amplitude_txt}</div>
+                            <div><strong>⚡ Capacité</strong>{ligne_print_capacite} T/h</div>
+                            <div><strong>📦 Jobs</strong>{nb_jobs}</div>
+                            <div><strong>⚖️ Tonnage</strong>{poids_total:.1f} T</div>
+                        </div>
+                        
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="width:60px;">Début</th>
+                                    <th style="width:60px;">Fin</th>
+                                    <th style="width:50px;">Durée</th>
+                                    <th>Lot / Opération</th>
+                                    <th>Variété</th>
+                                    <th style="width:60px;">Pallox</th>
+                                    <th style="width:60px;">Poids</th>
+                                    <th style="width:70px;">Statut</th>
+                                    <th style="width:80px;">Validé ✓</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {rows_html}
+                            </tbody>
+                        </table>
+                        
+                        <div class="signature">
+                            <div>Chef d'équipe</div>
+                            <div>Opérateur lavage</div>
+                            <div>Contrôle qualité</div>
+                        </div>
+                        
+                        <div class="footer">
+                            Imprimé le {datetime.now().strftime('%d/%m/%Y à %H:%M')} - Culture Pom
+                        </div>
+                        
+                        <script>
+                            window.onload = function() {{ window.print(); }}
+                        </script>
+                    </body>
+                    </html>
+                    """
+                    
+                    # Afficher dans un composant HTML avec bouton print
+                    stc.html(f"""
+                    <button onclick="openPrint()" style="background:#1976d2;color:white;border:none;padding:10px 20px;border-radius:5px;cursor:pointer;font-size:14px;">
+                        🖨️ Ouvrir fenêtre d'impression
+                    </button>
+                    <script>
+                        function openPrint() {{
+                            var win = window.open('', '_blank');
+                            win.document.write(`{html_content.replace('`', "'")}`);
+                            win.document.close();
+                        }}
+                    </script>
+                    """, height=60)
+                    
+                    st.success("✅ Cliquez sur le bouton ci-dessus pour ouvrir la fiche imprimable")
+            
+            else:
+                st.info(f"📭 Aucun élément planifié pour {date_print.strftime('%d/%m/%Y')} sur {ligne_print_libelle} ({heure_debut_print.strftime('%H:%M')}-{heure_fin_print.strftime('%H:%M')})")
+        
+        except Exception as e:
+            st.error(f"❌ Erreur : {str(e)}")
+
+# ============================================================
+# ONGLET 5 : ADMIN
+# ============================================================
+
+with tab5:
     if not is_admin():
         st.warning("⚠️ Accès réservé aux administrateurs")
     else:
