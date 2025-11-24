@@ -450,10 +450,10 @@ def terminer_job(job_id, quantite_sortie, numero_lot_sortie, site_dest, emplacem
         # Mouvement stock
         cursor.execute("""
             INSERT INTO stock_mouvements (lot_id, type_mouvement, site_destination, 
-                                          emplacement_destination, poids_kg, user_action, notes)
-            VALUES (%s, 'PRODUCTION_SORTIE', %s, %s, %s, %s, %s)
+                                          emplacement_destination, poids_kg, user_action, notes, created_by)
+            VALUES (%s, 'PRODUCTION_SORTIE', %s, %s, %s, %s, %s, %s)
         """, (job['lot_id'], site_dest, emplacement_dest, quantite_sortie * 1000,
-              terminated_by, f"Job #{job_id} - Produit fini"))
+              terminated_by, f"Job #{job_id} - Produit fini", terminated_by))
         
         conn.commit()
         cursor.close()
