@@ -6,7 +6,7 @@ from components import show_footer
 from auth import is_authenticated, is_admin
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Emplacements - Culture Pom", page_icon="📦", layout="wide")
+st.set_page_config(page_title="Détails Stock - Culture Pom", page_icon="📦", layout="wide")
 
 # CSS espacements réduits
 st.markdown("""
@@ -185,7 +185,20 @@ def get_lot_emplacements(lot_id):
                 'statut_lavage', 'is_active', 'created_at', 'updated_at'
             ])
             
-            # ⭐ Ajouter colonnes calculées Lavé et Grenailles
+            # ⭐ Colonne Statut avec emoji (remplace Lavé + Grenailles)
+            def get_statut_emoji(statut):
+                if statut == 'LAVÉ':
+                    return '🧼 LAVÉ'
+                elif statut == 'GRENAILLES':
+                    return '🌾 GRENAILLES'
+                elif statut == 'BRUT':
+                    return '🟢 BRUT'
+                else:
+                    return '⚪ ' + str(statut or 'N/A')
+            
+            df['statut_emoji'] = df['statut_lavage'].apply(get_statut_emoji)
+            
+            # Garder colonnes calculées pour compatibilité
             df['est_lave'] = df['statut_lavage'].apply(lambda x: 'OUI' if x == 'LAVÉ' else 'NON')
             df['est_grenailles'] = df['statut_lavage'].apply(lambda x: 'OUI' if x == 'GRENAILLES' else 'NON')
             
@@ -237,21 +250,21 @@ def get_lot_mouvements(lot_id, limit=10):
 # FONCTIONS ACTIONS SUR EMPLACEMENTS
 # ============================================================================
 
-def add_emplacement(lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock="PRINCIPAL", type_conditionnement=None):
+def add_emplacement(lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock="PRINCIPAL", type_conditionnement=None, statut_lavage="BRUT"):
     """Ajoute un nouvel emplacement pour un lot"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Insérer l'emplacement
+        # Insérer l'emplacement avec statut_lavage
         query = """
         INSERT INTO stock_emplacements 
-        (lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock, type_conditionnement, is_active, created_at, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        (lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock, type_conditionnement, statut_lavage, is_active, created_at, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         RETURNING id
         """
         
-        cursor.execute(query, (lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock, type_conditionnement))
+        cursor.execute(query, (lot_id, site_stockage, emplacement_stockage, nombre_unites, poids_total_kg, type_stock, type_conditionnement, statut_lavage))
         emplacement_id = cursor.fetchone()['id']
         
         # Enregistrer le mouvement
@@ -576,9 +589,9 @@ col_title, col_back = st.columns([4, 1])
 with col_title:
     nb_lots = len(selected_lot_ids)
     if nb_lots == 1:
-        st.title(f"📦 Emplacements du Lot")
+        st.title(f"📦 Détails Stock du Lot")
     else:
-        st.title(f"📦 Emplacements de {nb_lots} Lots")
+        st.title(f"📦 Détails Stock de {nb_lots} Lots")
 
 with col_back:
     if st.button("← Retour Stock", use_container_width=True):
@@ -786,20 +799,19 @@ for lot_data in lots_data:
                 lambda x: f"{x/1000:.1f} T" if pd.notna(x) else "N/A"
             )
             
-            # Afficher : Site, Emplacement, Pallox, Type conditionnement, Poids (T), Lavé, Grenailles, Type stock
+            # ⭐ Afficher : Site, Emplacement, Pallox, Type Cond., Poids, Statut Lavage, Type Stock
             display_df = emplacements_df[[
                 'site_stockage', 
                 'emplacement_stockage', 
                 'nombre_unites', 
                 'type_conditionnement', 
-                'poids_total_t',  # ⭐ Poids en tonnes (déjà formaté)
-                'est_lave', 
-                'est_grenailles', 
-                'type_stock'
+                'poids_total_t',
+                'statut_emoji',    # 🟢 BRUT / 🧼 LAVÉ / 🌾 GRENAILLES
+                'type_stock'       # PRINCIPAL / SECONDAIRE / RESERVE
             ]].copy()
             
-            # Renommer colonnes (dans le BON ordre)
-            display_df.columns = ['Site', 'Emplacement', 'Pallox', 'Type Cond.', 'Poids', 'Lavé', 'Grenailles', 'Type']
+            # Renommer colonnes
+            display_df.columns = ['Site', 'Emplacement', 'Pallox', 'Type Cond.', 'Poids', 'Statut', 'Type']
             
             # Afficher tableau
             st.dataframe(
@@ -1055,7 +1067,22 @@ for lot_data in lots_data:
                     'VENTE': '💰 Vente',
                     'PERTE': '⚠️ Perte'
                 }
-                display_mouvements['Type'] = display_mouvements['type_mouvement'].map(type_labels)
+                display_mouvements['Type'] = display_mouvements['type_mouvement'].map(type_labels).fillna(display_mouvements['type_mouvement'])
+                
+                # ⭐ Déduire Statut Lavage du type de mouvement
+                def get_statut_from_mouvement(type_mvt):
+                    if type_mvt == 'LAVAGE_BRUT_REDUIT':
+                        return '🟢 BRUT'
+                    elif type_mvt == 'LAVAGE_CREATION_LAVE':
+                        return '🧼 LAVÉ'
+                    elif type_mvt == 'LAVAGE_CREATION_GRENAILLES':
+                        return '🌾 GRENAILLES'
+                    elif type_mvt == 'AJOUT_STOCK':
+                        return '🟢 BRUT'
+                    else:
+                        return '-'
+                
+                display_mouvements['Statut'] = display_mouvements['type_mouvement'].apply(get_statut_from_mouvement)
                 
                 # Trajet : origine → destination
                 display_mouvements['Trajet'] = display_mouvements.apply(
@@ -1066,7 +1093,8 @@ for lot_data in lots_data:
                 # Info : notes (contient numéro de job pour lavages)
                 display_mouvements['Info'] = display_mouvements['notes'].fillna('-')
                 
-                final_df = display_mouvements[['Date', 'Type', 'Trajet', 'Info']]
+                # ⭐ Afficher avec Statut
+                final_df = display_mouvements[['Date', 'Type', 'Statut', 'Trajet', 'Info']]
                 
                 st.dataframe(
                     final_df,
