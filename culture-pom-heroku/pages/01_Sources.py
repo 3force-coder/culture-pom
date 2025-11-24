@@ -321,6 +321,16 @@ TABLES_CONFIG = {
     },
     
     # ⭐ NOUVELLE TABLE : Chaînes Production
+    "Sur-Emballages": {
+        "table": "ref_sur_emballages",
+        "columns": ["code", "libelle", "volume_tonnes", "cout_tonne", "description"],
+        "hidden_columns": ["is_active"],
+        "primary_key": "id",
+        "editable": ["libelle", "volume_tonnes", "cout_tonne", "description"],
+        "has_updated_at": True,
+        "required_fields": ["code", "libelle"]
+    },
+    
     "Chaînes Production": {
         "table": "production_lignes",
         "columns": ["site", "code", "libelle", "type_atelier", "capacite_th", "cout_tonne", "description"],
