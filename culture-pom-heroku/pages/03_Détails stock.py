@@ -587,6 +587,90 @@ def get_all_lots():
         st.error(f"❌ Erreur : {str(e)}")
         return pd.DataFrame()
 
+
+def get_recap_valorisation_lot(lot_id):
+    """Récap valorisation détaillé pour un lot spécifique"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Infos lot de base
+        cursor.execute("""
+            SELECT 
+                poids_total_brut_kg,
+                prix_achat_euro_tonne,
+                tare_achat_pct,
+                valeur_lot_euro
+            FROM lots_bruts
+            WHERE id = %s AND is_active = TRUE
+        """, (lot_id,))
+        
+        lot = cursor.fetchone()
+        
+        if not lot:
+            cursor.close()
+            conn.close()
+            return None
+        
+        # Vérifier si lot qualifié (prix + tare achat)
+        if not lot['prix_achat_euro_tonne'] or not lot['tare_achat_pct']:
+            cursor.close()
+            conn.close()
+            return None
+        
+        poids_brut = float(lot['poids_total_brut_kg'])
+        prix_achat = float(lot['prix_achat_euro_tonne'])
+        tare_achat = float(lot['tare_achat_pct'])
+        valeur_lot = float(lot['valeur_lot_euro'])
+        
+        # Tare production réelle (si jobs lavage terminés pour ce lot)
+        cursor.execute("""
+            SELECT AVG(tare_reelle_pct) as tare_prod
+            FROM lavages_jobs
+            WHERE lot_id = %s 
+              AND statut = 'TERMINÉ'
+              AND tare_reelle_pct IS NOT NULL
+        """, (lot_id,))
+        
+        tare_result = cursor.fetchone()
+        
+        if tare_result and tare_result['tare_prod']:
+            tare_production = float(tare_result['tare_prod'])
+            tare_prod_source = "✅ Mesurée"
+        else:
+            tare_production = 22.0  # Standard
+            tare_prod_source = "📊 Standard"
+        
+        cursor.close()
+        conn.close()
+        
+        # Calculs
+        poids_net_paye = poids_brut * (1 - tare_achat / 100)
+        poids_net_production = poids_brut * (1 - tare_production / 100)
+        
+        # Écarts
+        ecart_tare_vs_standard = tare_production - 22.0
+        poids_gagne = (22.0 - tare_production) / 100 * poids_brut
+        perte_vs_achat = poids_net_paye - poids_net_production
+        
+        return {
+            'poids_brut': poids_brut / 1000,
+            'tare_achat': tare_achat,
+            'poids_net_paye': poids_net_paye / 1000,
+            'valeur_lot': valeur_lot,
+            'prix_achat': prix_achat,
+            'tare_production': tare_production,
+            'tare_prod_source': tare_prod_source,
+            'poids_net_production': poids_net_production / 1000,
+            'ecart_tare_vs_standard': ecart_tare_vs_standard,
+            'poids_gagne': poids_gagne / 1000,
+            'perte_vs_achat': perte_vs_achat / 1000
+        }
+        
+    except Exception as e:
+        st.error(f"❌ Erreur récap valorisation : {str(e)}")
+        return None
+
 def get_lots_for_dropdown():
     """Récupère les lots pour dropdown avec format"""
     df = get_all_lots()
@@ -655,6 +739,21 @@ if len(lots_to_display) > 0:
             df_empl = get_lot_emplacements(lot_id)
             
             if not df_empl.empty:
+                st.markdown("---")
+                
+                # ============================================================================
+                # ONGLETS PRINCIPAUX
+                # ============================================================================
+                
+                tab1, tab2, tab3 = st.tabs(["📦 Emplacements", "📊 Valorisation", "📜 Historique"])
+                
+                # ============================================================================
+                # ONGLET 1 : EMPLACEMENTS (KPIs + Tableau + Actions)
+                # ============================================================================
+                
+                with tab1:
+                    st.markdown(f"### 📦 Emplacements - Lot {lot_info['code_lot_interne']}")
+                    
                 col1, col2, col3, col4 = st.columns(4)
                 
                 with col1:
@@ -952,24 +1051,83 @@ if len(lots_to_display) > 0:
                         st.info("👆 Sélectionnez un emplacement")
                 
                 # Historique mouvements
-                st.markdown("---")
-                st.subheader(f"📜 Historique (10 derniers) - Lot {lot_info['code_lot_interne']}")
+
+                # ============================================================================
+                # ONGLET 2 : VALORISATION
+                # ============================================================================
                 
-                df_mvt = get_lot_mouvements(lot_id)
+                with tab2:
+                    st.markdown(f"### 📊 Valorisation - Lot {lot_info['code_lot_interne']}")
+                    
+                    recap = get_recap_valorisation_lot(lot_id)
+                    
+                    if recap:
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.markdown(f"""
+                            <div style='background-color: #e3f2fd; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #2196f3; min-height: 250px;'>
+                                <h4 style='margin-top: 0; color: #1976d2;'>💰 VALEUR ACHAT</h4>
+                                <p style='margin: 0.3rem 0;'><strong>Poids brut:</strong> {recap['poids_brut']:.1f} T</p>
+                                <p style='margin: 0.3rem 0;'><strong>Tare achat négociée:</strong> {recap['tare_achat']:.1f}%</p>
+                                <p style='margin: 0.3rem 0;'><strong>Poids net payé:</strong> {recap['poids_net_paye']:.1f} T</p>
+                                <hr style='margin: 0.5rem 0;'>
+                                <p style='margin: 0.3rem 0; font-size: 1.1rem;'><strong>Prix achat:</strong> {recap['prix_achat']:.2f} €/T</p>
+                                <p style='margin: 0.3rem 0; font-size: 1.1rem;'><strong>Valeur lot:</strong> {recap['valeur_lot']:,.0f} €</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        
+                        with col2:
+                            # Couleur écart selon performance
+                            if recap['ecart_tare_vs_standard'] < 0:
+                                color_ecart = "#2e7d32"
+                                symbole_ecart = "✅"
+                            else:
+                                color_ecart = "#d32f2f"
+                                symbole_ecart = "⚠️"
+                            
+                            st.markdown(f"""
+                            <div style='background-color: #fff3e0; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #ff9800; min-height: 250px;'>
+                                <h4 style='margin-top: 0; color: #f57c00;'>🏭 MATIÈRE PREMIÈRE PRODUCTION</h4>
+                                <p style='margin: 0.3rem 0;'><strong>Tare production:</strong> {recap['tare_production']:.1f}% <span style='font-size: 0.85rem;'>{recap['tare_prod_source']}</span></p>
+                                <p style='margin: 0.3rem 0;'><strong>Poids net production:</strong> {recap['poids_net_production']:.1f} T</p>
+                                <hr style='margin: 0.5rem 0;'>
+                                <h4 style='margin-top: 0.5rem; margin-bottom: 0.3rem; color: {color_ecart};'>{symbole_ecart} ÉCARTS vs Standard 22%</h4>
+                                <p style='margin: 0.3rem 0; color: {color_ecart};'><strong>Écart tare:</strong> {recap['ecart_tare_vs_standard']:+.1f} points</p>
+                                <p style='margin: 0.3rem 0; color: {color_ecart};'><strong>Poids gagné/perdu:</strong> {recap['poids_gagne']:+.2f} T</p>
+                                <hr style='margin: 0.5rem 0;'>
+                                <h4 style='margin-top: 0.5rem; margin-bottom: 0.3rem;'>vs Achat payé</h4>
+                                <p style='margin: 0.3rem 0;'><strong>Perte production:</strong> {recap['perte_vs_achat']:.2f} T</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        
+                        st.caption("💡 **Tare achat** : Négociée avec producteur (valorisation financière) | **Tare production** : Réelle après lavage ou standard 22% (matière disponible)")
+                    else:
+                        st.info("📊 Lot non qualifié (prix ou tare d'achat manquant)")
+                        st.caption("💡 Qualifiez ce lot dans la page **Valorisation** pour voir le récap détaillé")
                 
-                if not df_mvt.empty:
-                    # Formatter colonnes numériques
-                    df_mvt_display = df_mvt.copy()
+                # ============================================================================
+                # ONGLET 3 : HISTORIQUE
+                # ============================================================================
+                
+                with tab3:
+                    st.markdown(f"### 📜 Historique - Lot {lot_info['code_lot_interne']}")
                     
-                    if 'quantite' in df_mvt_display.columns:
-                        df_mvt_display['quantite'] = df_mvt_display['quantite'].apply(format_number_fr)
+                    df_mvt = get_lot_mouvements(lot_id)
                     
-                    if 'poids_kg' in df_mvt_display.columns:
-                        df_mvt_display['poids_kg'] = df_mvt_display['poids_kg'].apply(lambda x: format_number_fr(x) if pd.notna(x) else "0")
-                    
-                    st.dataframe(df_mvt_display, use_container_width=True, hide_index=True)
-                else:
-                    st.info("Aucun mouvement enregistré")
+                    if not df_mvt.empty:
+                        # Formatter colonnes numériques
+                        df_mvt_display = df_mvt.copy()
+                        
+                        if 'quantite' in df_mvt_display.columns:
+                            df_mvt_display['quantite'] = df_mvt_display['quantite'].apply(format_number_fr)
+                        
+                        if 'poids_kg' in df_mvt_display.columns:
+                            df_mvt_display['poids_kg'] = df_mvt_display['poids_kg'].apply(lambda x: format_number_fr(x) if pd.notna(x) else "0")
+                        
+                        st.dataframe(df_mvt_display, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("Aucun mouvement enregistré")
             
             else:
                 st.warning(f"⚠️ Aucun emplacement pour le lot #{lot_id}")
