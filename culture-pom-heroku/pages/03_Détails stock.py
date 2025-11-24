@@ -67,6 +67,27 @@ st.markdown("---")
 # FONCTIONS UTILITAIRES
 # ============================================================================
 
+def format_number_fr(value):
+    """Formate un nombre avec des espaces pour les milliers (format français)"""
+    if pd.isna(value) or value is None:
+        return "0"
+    try:
+        return f"{int(value):,}".replace(',', ' ')
+    except:
+        return str(value)
+
+def format_float_fr(value, decimals=1):
+    """Formate un float avec des espaces pour les milliers (format français)"""
+    if pd.isna(value) or value is None:
+        return "0.0"
+    try:
+        formatted = f"{float(value):,.{decimals}f}".replace(',', ' ')
+        # Remplacer le point par une virgule pour la partie décimale si souhaité
+        # formatted = formatted.replace('.', ',')
+        return formatted
+    except:
+        return str(value)
+
 def get_sites_stockage():
     """Récupère tous les sites de stockage actifs"""
     try:
@@ -215,6 +236,7 @@ def get_lot_mouvements(lot_id, limit=10):
                 type_conditionnement,
                 poids_kg,
                 user_action,
+                created_by,
                 notes,
                 created_at
             FROM stock_mouvements
@@ -281,13 +303,13 @@ def add_emplacement(lot_id, site, emplacement, nombre_unites, type_cond, statut_
         query_mvt = """
             INSERT INTO stock_mouvements (
                 lot_id, type_mouvement, site_destination, emplacement_destination,
-                quantite, type_conditionnement, poids_kg, user_action
-            ) VALUES (%s, 'AJOUT', %s, %s, %s, %s, %s, %s)
+                quantite, type_conditionnement, poids_kg, user_action, created_by
+            ) VALUES (%s, 'AJOUT', %s, %s, %s, %s, %s, %s, %s)
         """
         
         cursor.execute(query_mvt, (
             int(lot_id), site, emplacement,
-            int(nombre_unites), type_cond, float(poids_total), user
+            int(nombre_unites), type_cond, float(poids_total), user, user
         ))
         
         conn.commit()
@@ -397,11 +419,11 @@ def transfer_emplacement(lot_id, empl_source_id, quantite_transfert, site_dest, 
                 lot_id, type_mouvement, 
                 site_origine, emplacement_origine,
                 site_destination, emplacement_destination,
-                quantite, type_conditionnement, poids_kg, user_action
-            ) VALUES (%s, 'TRANSFERT', %s, %s, %s, %s, %s, %s, %s, %s)
+                quantite, type_conditionnement, poids_kg, user_action, created_by
+            ) VALUES (%s, 'TRANSFERT', %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (int(lot_id), source['site_stockage'], source['emplacement_stockage'],
               site_dest, empl_dest, int(quantite_transfert), 
-              source['type_conditionnement'], poids_transfere, user))
+              source['type_conditionnement'], poids_transfere, user, user))
         
         conn.commit()
         cursor.close()
@@ -459,11 +481,11 @@ def modify_emplacement(empl_id, nouvelle_quantite):
             INSERT INTO stock_mouvements (
                 lot_id, type_mouvement, 
                 site_destination, emplacement_destination,
-                quantite, type_conditionnement, poids_kg, user_action,
+                quantite, type_conditionnement, poids_kg, user_action, created_by,
                 notes
-            ) VALUES (%s, 'MODIFICATION', %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, 'MODIFICATION', %s, %s, %s, %s, %s, %s, %s, %s)
         """, (int(empl['lot_id']), empl['site_stockage'], empl['emplacement_stockage'],
-              int(nouvelle_quantite), empl['type_conditionnement'], float(nouveau_poids), user,
+              int(nouvelle_quantite), empl['type_conditionnement'], float(nouveau_poids), user, user,
               f"Ancienne quantité: {empl['nombre_unites']}"))
         
         conn.commit()
@@ -510,11 +532,11 @@ def delete_emplacement(empl_id):
             INSERT INTO stock_mouvements (
                 lot_id, type_mouvement, 
                 site_origine, emplacement_origine,
-                quantite, type_conditionnement, poids_kg, user_action
-            ) VALUES (%s, 'SUPPRESSION', %s, %s, %s, %s, %s, %s)
+                quantite, type_conditionnement, poids_kg, user_action, created_by
+            ) VALUES (%s, 'SUPPRESSION', %s, %s, %s, %s, %s, %s, %s)
         """, (int(empl['lot_id']), empl['site_stockage'], empl['emplacement_stockage'],
               int(empl['nombre_unites']), empl['type_conditionnement'], 
-              float(empl['poids_total_kg']), user))
+              float(empl['poids_total_kg']), user, user))
         
         conn.commit()
         cursor.close()
@@ -539,7 +561,8 @@ def get_all_lots():
                 l.code_lot_interne,
                 l.nom_usage,
                 COALESCE(v.nom_variete, l.code_variete) as nom_variete,
-                COALESCE(p.nom, l.code_producteur) as nom_producteur
+                COALESCE(p.nom, l.code_producteur) as nom_producteur,
+                l.poids_total_brut_kg
             FROM lots_bruts l
             LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
             LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
@@ -553,7 +576,11 @@ def get_all_lots():
         conn.close()
         
         if rows:
-            return pd.DataFrame(rows)
+            df = pd.DataFrame(rows)
+            # Convertir poids
+            if 'poids_total_brut_kg' in df.columns:
+                df['poids_total_brut_kg'] = pd.to_numeric(df['poids_total_brut_kg'], errors='coerce')
+            return df
         return pd.DataFrame()
         
     except Exception as e:
@@ -619,7 +646,8 @@ if len(lots_to_display) > 0:
                 <strong>Variété:</strong> {lot_info['nom_variete']}<br>
                 <strong>Producteur:</strong> {lot_info['nom_producteur']}<br>
                 <strong>Date entrée:</strong> {lot_info['date_entree_stock']}<br>
-                <strong>Âge:</strong> {lot_info['age_jours']} jours
+                <strong>Âge:</strong> {lot_info['age_jours']} jours<br>
+                <strong>Poids total brut:</strong> {format_number_fr(lot_info['poids_total_brut_kg'])} kg ({format_float_fr(lot_info['poids_total_brut_kg']/1000)} T)
             </div>
             """, unsafe_allow_html=True)
             
@@ -634,11 +662,11 @@ if len(lots_to_display) > 0:
                 
                 with col2:
                     total_pallox = df_empl['nombre_unites'].sum()
-                    st.metric("📦 Pallox total", int(total_pallox))
+                    st.metric("📦 Pallox total", format_number_fr(total_pallox))
                 
                 with col3:
                     total_tonnage = df_empl['poids_total_kg'].sum() / 1000
-                    st.metric("⚖️ Tonnage", f"{total_tonnage:.1f} T")
+                    st.metric("⚖️ Tonnage", f"{format_float_fr(total_tonnage)} T")
                 
                 with col4:
                     statuts = df_empl['statut_lavage'].value_counts()
@@ -665,15 +693,22 @@ if len(lots_to_display) > 0:
                 
                 df_display = df_empl[display_cols].copy()
                 
+                # Formatter les colonnes numériques
+                df_display['nombre_unites_fmt'] = df_display['nombre_unites'].apply(format_number_fr)
+                df_display['poids_total_kg_fmt'] = df_display['poids_total_kg'].apply(lambda x: format_number_fr(x) if pd.notna(x) else "0")
+                
                 df_display = df_display.rename(columns={
                     'id': 'ID',
                     'site_stockage': 'Site',
                     'emplacement_stockage': 'Emplacement',
-                    'nombre_unites': 'Pallox',
+                    'nombre_unites_fmt': 'Pallox',
                     'type_conditionnement': 'Type',
-                    'poids_total_kg': 'Poids (kg)',
+                    'poids_total_kg_fmt': 'Poids (kg)',
                     'statut_lavage_display': 'Statut'
                 })
+                
+                # Supprimer colonnes non formatées
+                df_display = df_display.drop(['nombre_unites', 'poids_total_kg'], axis=1)
                 
                 st.dataframe(
                     df_display,
@@ -707,10 +742,18 @@ if len(lots_to_display) > 0:
                         st.session_state[f'show_delete_form_{lot_id}'] = True
                         st.rerun()
                 
-                # ⭐ FORMULAIRE AJOUTER
+                # ⭐ FORMULAIRE AJOUTER - AVEC DONNÉES DU LOT PRÉ-REMPLIES
                 if st.session_state.get(f'show_add_form_{lot_id}', False):
                     st.markdown("---")
                     st.markdown(f"##### ➕ Ajouter Emplacement - Lot {lot_info['code_lot_interne']}")
+                    
+                    # ⭐ Calculer nombre unités suggéré depuis lot
+                    poids_brut_lot = float(lot_info.get('poids_total_brut_kg', 0))
+                    
+                    # Estimer nombre pallox selon poids (Pallox standard 1900kg)
+                    nombre_suggere = max(1, int(round(poids_brut_lot / 1900)))
+                    
+                    st.info(f"💡 **Poids total lot** : {format_number_fr(poids_brut_lot)} kg → Suggéré : **{nombre_suggere} Pallox**")
                     
                     col1, col2 = st.columns(2)
                     
@@ -726,10 +769,12 @@ if len(lots_to_display) > 0:
                             emplacement = None
                     
                     with col2:
-                        nombre = st.number_input("Nombre unités *", min_value=1, value=5, key=f"add_nb_{lot_id}")
+                        # ⭐ Pré-remplir avec nombre suggéré
+                        nombre = st.number_input("Nombre unités *", min_value=1, value=nombre_suggere, key=f"add_nb_{lot_id}")
                         
+                        # ⭐ Type par défaut Pallox (le plus courant)
                         TYPES = ["Pallox", "Petit Pallox", "Big Bag"]
-                        type_cond = st.selectbox("Type *", options=TYPES, key=f"add_type_{lot_id}")
+                        type_cond = st.selectbox("Type *", options=TYPES, index=0, key=f"add_type_{lot_id}")
                         
                         # Calcul auto poids
                         if type_cond == 'Pallox':
@@ -740,7 +785,7 @@ if len(lots_to_display) > 0:
                             poids_unit = 1600
                         
                         poids_calc = nombre * poids_unit
-                        st.metric("Poids calculé", f"{poids_calc:,.0f} kg")
+                        st.metric("Poids calculé", f"{format_number_fr(poids_calc)} kg")
                     
                     col_save, col_cancel = st.columns(2)
                     
@@ -768,7 +813,7 @@ if len(lots_to_display) > 0:
                     st.markdown(f"##### 🔄 Transférer Stock - Lot {lot_info['code_lot_interne']}")
                     
                     # Sélection source
-                    empl_options = {f"{row['id']} - {row['site_stockage']} / {row['emplacement_stockage']} ({int(row['nombre_unites'])} pallox)": row['id'] 
+                    empl_options = {f"{row['id']} - {row['site_stockage']} / {row['emplacement_stockage']} ({format_number_fr(row['nombre_unites'])} pallox)": row['id'] 
                                    for _, row in df_empl.iterrows()}
                     
                     selected_source = st.selectbox("Emplacement source *", options=[""] + list(empl_options.keys()), key=f"transfer_source_{lot_id}")
@@ -830,7 +875,7 @@ if len(lots_to_display) > 0:
                     st.markdown(f"##### ✏️ Modifier Quantité - Lot {lot_info['code_lot_interne']}")
                     
                     # Sélection emplacement
-                    empl_options = {f"{row['id']} - {row['site_stockage']} / {row['emplacement_stockage']} ({int(row['nombre_unites'])} pallox)": row['id'] 
+                    empl_options = {f"{row['id']} - {row['site_stockage']} / {row['emplacement_stockage']} ({format_number_fr(row['nombre_unites'])} pallox)": row['id'] 
                                    for _, row in df_empl.iterrows()}
                     
                     selected_empl = st.selectbox("Emplacement *", options=[""] + list(empl_options.keys()), key=f"modify_empl_{lot_id}")
@@ -842,7 +887,7 @@ if len(lots_to_display) > 0:
                         quantite_actuelle = int(empl_data['nombre_unites'])
                         
                         nouvelle_quantite = st.number_input(
-                            f"Nouvelle quantité (actuelle: {quantite_actuelle}) *",
+                            f"Nouvelle quantité (actuelle: {format_number_fr(quantite_actuelle)}) *",
                             min_value=0,
                             value=quantite_actuelle,
                             step=1,
@@ -877,7 +922,7 @@ if len(lots_to_display) > 0:
                     st.markdown(f"##### 🗑️ Supprimer Emplacement - Lot {lot_info['code_lot_interne']}")
                     
                     # Sélection emplacement
-                    empl_options = {f"{row['id']} - {row['site_stockage']} / {row['emplacement_stockage']} ({int(row['nombre_unites'])} pallox)": row['id'] 
+                    empl_options = {f"{row['id']} - {row['site_stockage']} / {row['emplacement_stockage']} ({format_number_fr(row['nombre_unites'])} pallox)": row['id'] 
                                    for _, row in df_empl.iterrows()}
                     
                     selected_empl = st.selectbox("Emplacement à supprimer *", options=[""] + list(empl_options.keys()), key=f"delete_empl_{lot_id}")
@@ -913,7 +958,16 @@ if len(lots_to_display) > 0:
                 df_mvt = get_lot_mouvements(lot_id)
                 
                 if not df_mvt.empty:
-                    st.dataframe(df_mvt, use_container_width=True, hide_index=True)
+                    # Formatter colonnes numériques
+                    df_mvt_display = df_mvt.copy()
+                    
+                    if 'quantite' in df_mvt_display.columns:
+                        df_mvt_display['quantite'] = df_mvt_display['quantite'].apply(format_number_fr)
+                    
+                    if 'poids_kg' in df_mvt_display.columns:
+                        df_mvt_display['poids_kg'] = df_mvt_display['poids_kg'].apply(lambda x: format_number_fr(x) if pd.notna(x) else "0")
+                    
+                    st.dataframe(df_mvt_display, use_container_width=True, hide_index=True)
                 else:
                     st.info("Aucun mouvement enregistré")
             
@@ -926,10 +980,16 @@ if len(lots_to_display) > 0:
                     st.session_state[f'show_add_form_{lot_id}'] = True
                     st.rerun()
                 
-                # Formulaire ajout (même si aucun emplacement)
+                # Formulaire ajout (même si aucun emplacement) - AVEC DONNÉES DU LOT
                 if st.session_state.get(f'show_add_form_{lot_id}', False):
                     st.markdown("---")
                     st.markdown(f"##### ➕ Ajouter Emplacement - Lot {lot_info['code_lot_interne']}")
+                    
+                    # ⭐ Calculer nombre unités suggéré depuis lot
+                    poids_brut_lot = float(lot_info.get('poids_total_brut_kg', 0))
+                    nombre_suggere = max(1, int(round(poids_brut_lot / 1900)))
+                    
+                    st.info(f"💡 **Poids total lot** : {format_number_fr(poids_brut_lot)} kg → Suggéré : **{nombre_suggere} Pallox**")
                     
                     col1, col2 = st.columns(2)
                     
@@ -945,10 +1005,10 @@ if len(lots_to_display) > 0:
                             emplacement = None
                     
                     with col2:
-                        nombre = st.number_input("Nombre unités *", min_value=1, value=5, key=f"add_nb_first_{lot_id}")
+                        nombre = st.number_input("Nombre unités *", min_value=1, value=nombre_suggere, key=f"add_nb_first_{lot_id}")
                         
                         TYPES = ["Pallox", "Petit Pallox", "Big Bag"]
-                        type_cond = st.selectbox("Type *", options=TYPES, key=f"add_type_first_{lot_id}")
+                        type_cond = st.selectbox("Type *", options=TYPES, index=0, key=f"add_type_first_{lot_id}")
                         
                         if type_cond == 'Pallox':
                             poids_unit = 1900
@@ -958,7 +1018,7 @@ if len(lots_to_display) > 0:
                             poids_unit = 1600
                         
                         poids_calc = nombre * poids_unit
-                        st.metric("Poids calculé", f"{poids_calc:,.0f} kg")
+                        st.metric("Poids calculé", f"{format_number_fr(poids_calc)} kg")
                     
                     col_save, col_cancel = st.columns(2)
                     
@@ -984,27 +1044,66 @@ if len(lots_to_display) > 0:
             st.error(f"❌ Lot #{lot_id} introuvable")
 
 else:
-    # Aucun lot sélectionné - Afficher sélection manuelle
+    # Aucun lot sélectionné - Afficher sélection manuelle AVEC FILTRES
     st.info("ℹ️ Aucun lot sélectionné depuis la page Lots")
     st.markdown("---")
     st.subheader("🔍 Sélectionner un lot manuellement")
     
-    lots_dict = get_lots_for_dropdown()
+    # ⭐ CHARGER TOUS LES LOTS
+    df_all_lots = get_all_lots()
     
-    if lots_dict:
-        selected_lot_str = st.selectbox(
-            "Choisir un lot",
-            options=[""] + list(lots_dict.keys()),
-            key="manual_lot_selection"
-        )
+    if not df_all_lots.empty:
+        # ⭐ FILTRES (comme page 02_Lots)
+        st.markdown("#### Filtres")
+        col1, col2, col3 = st.columns(3)
         
-        if selected_lot_str and selected_lot_str != "":
-            selected_lot_id = lots_dict[selected_lot_str]
+        with col1:
+            search_nom = st.text_input("Nom usage", key="filter_nom_manual", placeholder="Rechercher...")
+        
+        with col2:
+            varietes = ['Toutes'] + sorted(df_all_lots['nom_variete'].dropna().unique().tolist())
+            selected_variete = st.selectbox("Variété", varietes, key="filter_variete_manual")
+        
+        with col3:
+            producteurs = ['Tous'] + sorted(df_all_lots['nom_producteur'].dropna().unique().tolist())
+            selected_producteur = st.selectbox("Producteur", producteurs, key="filter_producteur_manual")
+        
+        # Appliquer filtres
+        df_filtered = df_all_lots.copy()
+        
+        if search_nom:
+            df_filtered = df_filtered[df_filtered['nom_usage'].str.contains(search_nom, case=False, na=False)]
+        
+        if selected_variete != 'Toutes':
+            df_filtered = df_filtered[df_filtered['nom_variete'] == selected_variete]
+        
+        if selected_producteur != 'Tous':
+            df_filtered = df_filtered[df_filtered['nom_producteur'] == selected_producteur]
+        
+        st.markdown("---")
+        
+        if not df_filtered.empty:
+            st.info(f"📊 {len(df_filtered)} lot(s) affiché(s) sur {len(df_all_lots)} total")
             
-            if st.button("📦 Afficher ce lot", type="primary", use_container_width=True):
-                # Mettre en session_state et rerun
-                st.session_state.selected_lots_for_details = [selected_lot_id]
-                st.rerun()
+            # Dropdown depuis lots filtrés
+            lots_dict_filtered = {f"{row['id']} - {row['code_lot_interne']} - {row['nom_usage']}": row['id'] 
+                                 for _, row in df_filtered.iterrows()}
+            
+            selected_lot_str = st.selectbox(
+                "Choisir un lot",
+                options=[""] + list(lots_dict_filtered.keys()),
+                key="manual_lot_selection"
+            )
+            
+            if selected_lot_str and selected_lot_str != "":
+                selected_lot_id = lots_dict_filtered[selected_lot_str]
+                
+                if st.button("📦 Afficher ce lot", type="primary", use_container_width=True):
+                    # Mettre en session_state et rerun
+                    st.session_state.selected_lots_for_details = [selected_lot_id]
+                    st.rerun()
+        else:
+            st.warning(f"⚠️ Aucun lot trouvé avec ces filtres")
     else:
         st.warning("⚠️ Aucun lot disponible")
 
