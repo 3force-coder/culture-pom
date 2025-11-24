@@ -489,6 +489,80 @@ def get_evolution_tare_temps():
     except:
         return pd.DataFrame()
 
+def get_recap_valorisation_global():
+    """Récap complet valorisation : Achat vs Production"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Poids brut total actif
+        cursor.execute("""
+            SELECT COALESCE(SUM(poids_total_brut_kg), 0) as poids_brut_total
+            FROM lots_bruts
+            WHERE is_active = TRUE
+        """)
+        poids_brut_total = float(cursor.fetchone()['poids_brut_total'])
+        
+        # Tare achat moyenne
+        cursor.execute("""
+            SELECT ROUND(AVG(tare_achat_pct)::numeric, 1) as tare_achat_moy
+            FROM lots_bruts 
+            WHERE is_active = TRUE AND tare_achat_pct IS NOT NULL
+        """)
+        result = cursor.fetchone()
+        tare_achat_moy = float(result['tare_achat_moy']) if result['tare_achat_moy'] else 0
+        
+        # Valeur totale (somme valeur_lot_euro)
+        cursor.execute("""
+            SELECT COALESCE(SUM(valeur_lot_euro), 0) as valeur_totale
+            FROM lots_bruts 
+            WHERE is_active = TRUE AND valeur_lot_euro IS NOT NULL
+        """)
+        valeur_totale = float(cursor.fetchone()['valeur_totale'])
+        
+        # Tare production moyenne (réelle si lavé, sinon 22%)
+        cursor.execute("""
+            SELECT ROUND(AVG(
+                COALESCE(
+                    (SELECT AVG(lj.tare_reelle_pct) 
+                     FROM lavages_jobs lj 
+                     WHERE lj.lot_id = l.id AND lj.statut = 'TERMINÉ'),
+                    22.0
+                )
+            )::numeric, 1) as tare_prod_moy
+            FROM lots_bruts l
+            WHERE l.is_active = TRUE
+        """)
+        result = cursor.fetchone()
+        tare_prod_moy = float(result['tare_prod_moy']) if result['tare_prod_moy'] else 22.0
+        
+        cursor.close()
+        conn.close()
+        
+        # Calculs
+        poids_net_paye = poids_brut_total * (1 - tare_achat_moy / 100)
+        poids_net_production = poids_brut_total * (1 - tare_prod_moy / 100)
+        perte_production = poids_net_paye - poids_net_production
+        pct_perte = (perte_production / poids_net_paye * 100) if poids_net_paye > 0 else 0
+        
+        # Valeur MP réelle (valeur stock × ratio production/achat)
+        valeur_mp_reelle = valeur_totale * (poids_net_production / poids_net_paye) if poids_net_paye > 0 else 0
+        
+        return {
+            'poids_brut_total': poids_brut_total / 1000,  # Conversion tonnes
+            'tare_achat_moy': tare_achat_moy,
+            'poids_net_paye': poids_net_paye / 1000,
+            'valeur_totale': valeur_totale,
+            'tare_prod_moy': tare_prod_moy,
+            'poids_net_production': poids_net_production / 1000,
+            'perte_production': perte_production / 1000,
+            'pct_perte': pct_perte,
+            'valeur_mp_reelle': valeur_mp_reelle
+        }
+    except Exception as e:
+        st.error(f"Erreur récap valorisation: {str(e)}")
+        return None
+
 def get_kpis_valorisation():
     """KPIs globaux de valorisation"""
     try:
@@ -525,13 +599,30 @@ def get_kpis_valorisation():
         result = cursor.fetchone()
         prix_moyen = float(result['prix_moyen']) if result['prix_moyen'] else 0
         
+        # ✅ CORRECTION : Tare PRODUCTION moyenne (réelle si lavé, sinon 22% standard)
         cursor.execute("""
-            SELECT ROUND(AVG(tare_achat_pct)::numeric, 1) as tare_moyenne
+            SELECT ROUND(AVG(
+                COALESCE(
+                    (SELECT AVG(lj.tare_reelle_pct) 
+                     FROM lavages_jobs lj 
+                     WHERE lj.lot_id = l.id AND lj.statut = 'TERMINÉ'),
+                    22.0
+                )
+            )::numeric, 1) as tare_production_moyenne
+            FROM lots_bruts l
+            WHERE l.is_active = TRUE
+        """)
+        result = cursor.fetchone()
+        tare_production_moyenne = float(result['tare_production_moyenne']) if result['tare_production_moyenne'] else 22.0
+        
+        # Tare achat moyenne (pour comparaison)
+        cursor.execute("""
+            SELECT ROUND(AVG(tare_achat_pct)::numeric, 1) as tare_achat_moyenne
             FROM lots_bruts 
             WHERE is_active = TRUE AND tare_achat_pct IS NOT NULL
         """)
         result = cursor.fetchone()
-        tare_moyenne = float(result['tare_moyenne']) if result['tare_moyenne'] else 0
+        tare_achat_moyenne = float(result['tare_achat_moyenne']) if result['tare_achat_moyenne'] else 0
         
         cursor.close()
         conn.close()
@@ -542,7 +633,8 @@ def get_kpis_valorisation():
             'lots_a_qualifier': lots_a_qualifier,
             'valeur_totale': valeur_totale,
             'prix_moyen': prix_moyen,
-            'tare_moyenne': tare_moyenne,
+            'tare_production_moyenne': tare_production_moyenne,
+            'tare_achat_moyenne': tare_achat_moyenne,
             'pct_qualifies': (lots_qualifies / total_lots * 100) if total_lots > 0 else 0
         }
     except Exception as e:
@@ -569,7 +661,58 @@ if kpis:
     with col5:
         st.metric("📈 Prix Moyen", f"{kpis['prix_moyen']:.0f} €/T")
     with col6:
-        st.metric("📉 Tare Moyenne", f"{kpis['tare_moyenne']:.1f} %")
+        st.metric("📉 Tare Production Moy", f"{kpis['tare_production_moyenne']:.1f} %")
+
+st.markdown("---")
+
+# ============================================================
+# RÉCAP VALORISATION GLOBAL
+# ============================================================
+
+recap = get_recap_valorisation_global()
+
+if recap:
+    st.markdown("### 📊 Récap Valorisation Stock Complet")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("""
+        <div style='background-color: #e3f2fd; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #2196f3;'>
+            <h4 style='margin-top: 0; color: #1976d2;'>💰 VALEUR ACHAT</h4>
+            <p style='margin: 0.3rem 0;'><strong>Poids brut total:</strong> {:.1f} T</p>
+            <p style='margin: 0.3rem 0;'><strong>Tare achat moyenne:</strong> {:.1f}%</p>
+            <p style='margin: 0.3rem 0;'><strong>Poids net payé:</strong> {:.1f} T</p>
+            <hr style='margin: 0.5rem 0;'>
+            <p style='margin: 0.3rem 0; font-size: 1.1rem;'><strong>Valeur stock:</strong> {:,.0f} €</p>
+        </div>
+        """.format(
+            recap['poids_brut_total'],
+            recap['tare_achat_moy'],
+            recap['poids_net_paye'],
+            recap['valeur_totale']
+        ), unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+        <div style='background-color: #fff3e0; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #ff9800;'>
+            <h4 style='margin-top: 0; color: #f57c00;'>🏭 MATIÈRE PREMIÈRE PRODUCTION</h4>
+            <p style='margin: 0.3rem 0;'><strong>Tare production moyenne:</strong> {:.1f}%</p>
+            <p style='margin: 0.3rem 0;'><strong>Poids net production:</strong> {:.1f} T</p>
+            <hr style='margin: 0.5rem 0;'>
+            <h4 style='margin-top: 0.5rem; margin-bottom: 0.3rem; color: #d32f2f;'>📈 ÉCARTS</h4>
+            <p style='margin: 0.3rem 0;'><strong>Perte production:</strong> {:.1f} T ({:.1f}%)</p>
+            <p style='margin: 0.3rem 0;'><strong>Valeur MP réelle:</strong> {:,.0f} €</p>
+        </div>
+        """.format(
+            recap['tare_prod_moy'],
+            recap['poids_net_production'],
+            recap['perte_production'],
+            recap['pct_perte'],
+            recap['valeur_mp_reelle']
+        ), unsafe_allow_html=True)
+    
+    st.caption("💡 **Tare achat** : Négociée avec producteur (ce qu'on a payé) | **Tare production** : Réelle après lavage ou standard 22% (matière disponible)")
 
 st.markdown("---")
 
