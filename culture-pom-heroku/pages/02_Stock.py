@@ -885,7 +885,7 @@ if not df.empty:
     if 'original_stock_df' not in st.session_state:
         st.session_state.original_stock_df = filtered_df.copy()
     
-    # ⭐ EN-TÊTE avec 5 BOUTONS ALIGNÉS (ajout "Voir Emplacements")
+    # ⭐ EN-TÊTE avec 5 BOUTONS ALIGNÉS (ajout "Détails Stock")
     col_title, col_save, col_refresh, col_add, col_emplacements, col_calc = st.columns([2.5, 1, 1, 1, 1.5, 1.5])
     
     with col_title:
@@ -925,20 +925,20 @@ if not df.empty:
                 """, unsafe_allow_html=True)
             st.rerun()
     
-    # ⭐ NOUVEAU BOUTON : Voir Emplacements
+    # ⭐ NOUVEAU BOUTON : Détails Stock
     with col_emplacements:
         # Compter les lots sélectionnés
         nb_selected = len(st.session_state.get('selected_lots_for_emplacements', []))
         
         if nb_selected > 0:
-            btn_label = f"👁️ Emplacements ({nb_selected})"
+            btn_label = f"📦 Détails Stock ({nb_selected})"
             btn_disabled = False
         else:
-            btn_label = "👁️ Emplacements"
+            btn_label = "📦 Détails Stock"
             btn_disabled = True
         
         if st.button(btn_label, use_container_width=True, type="secondary", key="btn_view_emplacements", disabled=btn_disabled):
-            # Naviguer vers page Emplacements avec les lots sélectionnés
+            # Naviguer vers page Détails Stock avec les lots sélectionnés
             st.switch_page("pages/03_Emplacements.py")
     
     with col_calc:
@@ -1023,7 +1023,7 @@ if not df.empty:
     # Configuration de la colonne Select
     column_config["Select"] = st.column_config.CheckboxColumn(
         "☑",
-        help="Cochez les lots puis cliquez 'Actualiser' pour voir le bouton Emplacements",
+        help="Cochez les lots puis cliquez 'Actualiser' pour voir le bouton Détails Stock",
         default=False,
         width="small"
     )
@@ -1083,10 +1083,10 @@ if not df.empty:
         col_msg, col_btn = st.columns([3, 1])
         
         with col_msg:
-            st.success(f"✅ {len(selected_lot_ids)} lot(s) sélectionné(s) pour voir les emplacements")
+            st.success(f"✅ {len(selected_lot_ids)} lot(s) sélectionné(s) pour voir les détails stock")
         
         with col_btn:
-            if st.button(f"👁️ Voir Emplacements ({len(selected_lot_ids)})", use_container_width=True, type="primary", key="btn_goto_emplacements"):
+            if st.button(f"📦 Détails Stock ({len(selected_lot_ids)})", use_container_width=True, type="primary", key="btn_goto_emplacements"):
                 st.switch_page("pages/03_Emplacements.py")
     
     # ⭐ DÉTECTION CHANGEMENTS (Auto-save) - VERSION CORRIGÉE AVEC FILTRE
@@ -1260,11 +1260,11 @@ else:
     st.warning("⚠️ Aucun lot trouvé")
     
 # ============================================================================
-# VOIR EMPLACEMENTS DÉTAILLÉS
+# VOIR DÉTAILS STOCK
 # ============================================================================
 
 st.markdown("---")
-st.subheader("🔍 Voir Emplacements Détaillés")
+st.subheader("🔍 Voir Détails Stock")
 
 if not df.empty:
     lot_options = [f"{row['id']} - {row['code_lot_interne']} ({row['nom_usage']})" 
@@ -1276,7 +1276,7 @@ if not df.empty:
         key="select_lot_emplacements"
     )
     
-    if st.button("👁️ Voir les Emplacements", use_container_width=True, type="primary"):
+    if st.button("📦 Voir Détails Stock", use_container_width=True, type="primary"):
         lot_id = int(selected_lot.split(" - ")[0])
         st.query_params['lot_id'] = lot_id
         st.switch_page("pages/03_Emplacements.py")
