@@ -668,19 +668,16 @@ with col_left:
                     jour_idx = jours_options.index(jour_choisi) - 1
                     date_cible = week_start + timedelta(days=jour_idx)
                     
-                    # ⭐ SÉLECTION HEURE DE DÉBUT
-                    creneaux = get_creneaux_disponibles(planning_df, date_cible, st.session_state.selected_ligne, jour_idx, horaires_config)
-                    creneau_options = [c[1] for c in creneaux]
-                    
-                    creneau_choisi = st.selectbox(
+                    # ⭐ SÉLECTION HEURE DE DÉBUT avec st.time_input natif
+                    h_debut_jour = horaires_config.get(jour_idx, {}).get('debut', time(5, 0))
+                    heure_debut = st.time_input(
                         "Heure début",
-                        creneau_options,
+                        value=h_debut_jour,
+                        step=900,  # 15 minutes
                         key=f"heure_job_{job['id']}",
                         label_visibility="collapsed"
                     )
                     
-                    creneau_idx = creneau_options.index(creneau_choisi)
-                    heure_debut = creneaux[creneau_idx][0]
                     duree_min = int(job['temps_estime_heures'] * 60)
                     
                     # ⭐ VÉRIFICATION DURÉE SUFFISANTE
@@ -690,7 +687,7 @@ with col_left:
                     fin_jour_minutes = h_fin_jour.hour * 60 + h_fin_jour.minute
                     
                     if fin_minutes > fin_jour_minutes:
-                        st.error(f"⚠️ Durée insuffisante ! Fin prévue {fin_minutes//60}:{fin_minutes%60:02d} > fin journée {h_fin_jour.strftime('%H:%M')}")
+                        st.error(f"⚠️ Fin prévue {fin_minutes//60}h{fin_minutes%60:02d} > fin journée {h_fin_jour.strftime('%H:%M')}")
                     else:
                         if st.button(f"✅ Placer", key=f"confirm_job_{job['id']}", type="primary", use_container_width=True):
                             success, msg = ajouter_element_planning(
@@ -756,19 +753,16 @@ with col_left:
                     jour_idx = jours_options_tc.index(jour_choisi_tc) - 1
                     date_cible = week_start + timedelta(days=jour_idx)
                     
-                    # ⭐ SÉLECTION HEURE DE DÉBUT
-                    creneaux = get_creneaux_disponibles(planning_df, date_cible, st.session_state.selected_ligne, jour_idx, horaires_config)
-                    creneau_options = [c[1] for c in creneaux]
-                    
-                    creneau_choisi = st.selectbox(
+                    # ⭐ SÉLECTION HEURE DE DÉBUT avec st.time_input natif
+                    h_debut_jour = horaires_config.get(jour_idx, {}).get('debut', time(5, 0))
+                    heure_debut = st.time_input(
                         "Heure début",
-                        creneau_options,
+                        value=h_debut_jour,
+                        step=900,  # 15 minutes
                         key=f"heure_tc_{tc['id']}",
                         label_visibility="collapsed"
                     )
                     
-                    creneau_idx = creneau_options.index(creneau_choisi)
-                    heure_debut = creneaux[creneau_idx][0]
                     duree_min = int(tc['duree_minutes'])
                     
                     # ⭐ VÉRIFICATION DURÉE SUFFISANTE
