@@ -568,7 +568,7 @@ if not selected_lot_ids:
     st.error("❌ Aucun lot sélectionné")
     st.info("💡 Veuillez cocher un ou plusieurs lots dans la page Stock, puis cliquer sur 'Voir Emplacements'")
     if st.button("← Retour à la liste des lots", use_container_width=True):
-        st.switch_page("pages/02_Stock.py")
+        st.switch_page("pages/02_Lots.py")
     st.stop()
 
 # Vérifier que ce sont bien des entiers
@@ -577,7 +577,7 @@ try:
 except:
     st.error("❌ IDs de lots invalides")
     if st.button("← Retour à la liste des lots", use_container_width=True):
-        st.switch_page("pages/02_Stock.py")
+        st.switch_page("pages/02_Lots.py")
     st.stop()
 
 # ============================================================================
@@ -595,7 +595,7 @@ with col_title:
 
 with col_back:
     if st.button("← Retour Stock", use_container_width=True):
-        st.switch_page("pages/02_Stock.py")
+        st.switch_page("pages/02_Lots.py")
 
 st.markdown("---")
 
@@ -1127,7 +1127,7 @@ with col2:
 
 with col3:
     if st.button("← Retour à la Liste", use_container_width=True):
-        st.switch_page("pages/02_Stock.py")
+        st.switch_page("pages/02_Lots.py")
 
 # Footer
 show_footer()
