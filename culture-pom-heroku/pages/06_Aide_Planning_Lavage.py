@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 from database import get_connection
 from components import show_footer
 from auth import is_authenticated
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 
 st.set_page_config(page_title="Aide Planning - Culture Pom", page_icon="🗓️", layout="wide")
 
@@ -28,23 +27,6 @@ st.markdown("""
     .charge-green { color: #2ca02c; font-weight: bold; }
     .charge-yellow { color: #ff7f0e; font-weight: bold; }
     .charge-red { color: #d62728; font-weight: bold; }
-    .day-card {
-        background-color: #ffffff;
-        border: 1px solid #e0e0e0;
-        border-radius: 0.5rem;
-        padding: 1rem;
-        margin: 0.5rem 0;
-    }
-    .job-item {
-        background-color: #f8f9fa;
-        border-left: 4px solid #1f77b4;
-        padding: 0.5rem;
-        margin: 0.3rem 0;
-        border-radius: 0.3rem;
-    }
-    .job-item.ligne2 {
-        border-left-color: #2ca02c;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -155,7 +137,7 @@ def get_jobs_prevus_semaine(week_dates):
         st.error(f"❌ Erreur chargement jobs : {str(e)}")
         return pd.DataFrame()
 
-def get_planning_semaine(annee, semaine):
+def get_planning_semaine_from_db(annee, semaine):
     """Récupère le planning sauvegardé pour une semaine"""
     try:
         conn = get_connection()
@@ -221,6 +203,17 @@ def save_planning_semaine(annee, semaine, planning_data):
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
+def init_planning_semaine(week_dates):
+    """Initialise ou réinitialise le planning pour la semaine courante"""
+    planning = {}
+    for date in week_dates:
+        date_str = date.strftime('%Y-%m-%d')
+        planning[date_str] = {
+            'LIGNE_1': [],
+            'LIGNE_2': []
+        }
+    return planning
+
 # ==========================================
 # INITIALISATION SESSION STATE
 # ==========================================
@@ -238,9 +231,6 @@ if 'horaires_semaine' not in st.session_state:
         'samedi': {'debut': '05:00', 'fin': '20:00'}
     }
 
-if 'planning_semaine' not in st.session_state:
-    st.session_state.planning_semaine = {}
-
 # ==========================================
 # NAVIGATION SEMAINE
 # ==========================================
@@ -250,6 +240,11 @@ col1, col2, col3 = st.columns([1, 3, 1])
 with col1:
     if st.button("◀ Semaine précédente", use_container_width=True):
         st.session_state.selected_week_date -= timedelta(days=7)
+        # Réinitialiser planning pour nouvelle semaine
+        if 'planning_semaine' in st.session_state:
+            del st.session_state['planning_semaine']
+        if 'current_week_key' in st.session_state:
+            del st.session_state['current_week_key']
         st.rerun()
 
 with col2:
@@ -261,9 +256,38 @@ with col2:
 with col3:
     if st.button("Semaine suivante ▶", use_container_width=True):
         st.session_state.selected_week_date += timedelta(days=7)
+        # Réinitialiser planning pour nouvelle semaine
+        if 'planning_semaine' in st.session_state:
+            del st.session_state['planning_semaine']
+        if 'current_week_key' in st.session_state:
+            del st.session_state['current_week_key']
         st.rerun()
 
 st.markdown("---")
+
+# ==========================================
+# INITIALISATION PLANNING SEMAINE COURANTE
+# ==========================================
+
+# Clé unique pour cette semaine
+current_week_key = f"{annee}_{semaine}"
+
+# Initialiser planning si pas fait ou si semaine changée
+if 'current_week_key' not in st.session_state or st.session_state.current_week_key != current_week_key:
+    st.session_state.current_week_key = current_week_key
+    st.session_state.planning_semaine = init_planning_semaine(week_dates)
+    
+    # Charger depuis BDD si existe
+    planning_sauvegarde = get_planning_semaine_from_db(annee, semaine)
+    if not planning_sauvegarde.empty:
+        for _, row in planning_sauvegarde.iterrows():
+            date_str = row['date_prevue'].strftime('%Y-%m-%d') if hasattr(row['date_prevue'], 'strftime') else str(row['date_prevue'])
+            ligne = row['ligne_lavage']
+            job_id = int(row['job_id'])
+            
+            if date_str in st.session_state.planning_semaine:
+                if job_id not in st.session_state.planning_semaine[date_str][ligne]:
+                    st.session_state.planning_semaine[date_str][ligne].append(job_id)
 
 # ==========================================
 # CONFIGURATION HORAIRES
@@ -311,31 +335,8 @@ st.markdown("---")
 
 jobs_semaine = get_jobs_prevus_semaine(week_dates)
 
-# Charger planning sauvegardé si existe
-planning_sauvegarde = get_planning_semaine(annee, semaine)
-
-# Initialiser planning de la semaine si vide
-if not st.session_state.planning_semaine:
-    st.session_state.planning_semaine = {
-        date.strftime('%Y-%m-%d'): {
-            'LIGNE_1': [],
-            'LIGNE_2': []
-        } for date in week_dates
-    }
-    
-    # Charger depuis BDD si existe
-    if not planning_sauvegarde.empty:
-        for _, row in planning_sauvegarde.iterrows():
-            date_str = row['date_prevue'].strftime('%Y-%m-%d')
-            ligne = row['ligne_lavage']
-            job_id = int(row['job_id'])
-            
-            if date_str in st.session_state.planning_semaine:
-                if job_id not in st.session_state.planning_semaine[date_str][ligne]:
-                    st.session_state.planning_semaine[date_str][ligne].append(job_id)
-
 # ==========================================
-# JOBS NON PLANIFIÉS
+# JOBS NON PLANIFIÉS - AVEC SÉLECTION NATIVE STREAMLIT
 # ==========================================
 
 st.subheader("📦 Jobs Non Planifiés")
@@ -343,16 +344,16 @@ st.subheader("📦 Jobs Non Planifiés")
 if not jobs_semaine.empty:
     # Filtrer jobs déjà planifiés
     jobs_planifies_ids = []
-    for date_jobs in st.session_state.planning_semaine.values():
+    for date_str, date_jobs in st.session_state.planning_semaine.items():
         for ligne_jobs in date_jobs.values():
             jobs_planifies_ids.extend(ligne_jobs)
     
     jobs_non_planifies = jobs_semaine[~jobs_semaine['id'].isin(jobs_planifies_ids)]
     
     if not jobs_non_planifies.empty:
-        st.info(f"🎯 {len(jobs_non_planifies)} job(s) à planifier - Sélectionnez un ou plusieurs jobs puis assignez-les à un jour/ligne")
+        st.info(f"🎯 {len(jobs_non_planifies)} job(s) à planifier - Sélectionnez un job puis assignez-le à un jour/ligne")
         
-        # Préparer DataFrame pour AgGrid
+        # Préparer DataFrame pour affichage
         df_display = jobs_non_planifies[[
             'id', 'code_lot_interne', 'nom_usage', 'variete',
             'quantite_pallox', 'poids_brut_kg', 'temps_estime_heures', 'ligne_lavage'
@@ -362,6 +363,7 @@ if not jobs_semaine.empty:
         df_display['temps_h'] = df_display['temps_estime_heures'].round(1)
         
         df_display = df_display.rename(columns={
+            'id': 'ID',
             'code_lot_interne': 'Code Lot',
             'nom_usage': 'Nom',
             'variete': 'Variété',
@@ -371,44 +373,34 @@ if not jobs_semaine.empty:
             'ligne_lavage': 'Ligne'
         })
         
-        df_display = df_display[['id', 'Code Lot', 'Nom', 'Variété', 'Pallox', 'Poids (T)', 'Temps (h)', 'Ligne']]
+        df_display = df_display[['ID', 'Code Lot', 'Nom', 'Variété', 'Pallox', 'Poids (T)', 'Temps (h)', 'Ligne']]
+        df_display = df_display.reset_index(drop=True)
         
-        # Configuration AgGrid
-        gb = GridOptionsBuilder.from_dataframe(df_display)
-        gb.configure_selection(selection_mode='multiple', use_checkbox=True)
-        gb.configure_column("id", hide=True)
-        gb.configure_column("Code Lot", width=150)
-        gb.configure_column("Nom", width=200)
-        gb.configure_column("Variété", width=120)
-        gb.configure_column("Pallox", width=80)
-        gb.configure_column("Poids (T)", width=100)
-        gb.configure_column("Temps (h)", width=100)
-        gb.configure_column("Ligne", width=100)
-        
-        grid_options = gb.build()
-        
-        # Afficher grille
-        grid_response = AgGrid(
+        # Tableau avec sélection native Streamlit
+        event = st.dataframe(
             df_display,
-            gridOptions=grid_options,
-            update_mode=GridUpdateMode.SELECTION_CHANGED,
-            height=300,
-            theme='streamlit',
-            enable_enterprise_modules=False
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="jobs_non_planifies_table"
         )
         
-        selected_rows = grid_response['selected_rows']
+        # Récupérer sélection
+        selected_rows = event.selection.rows if hasattr(event, 'selection') else []
         
-        if selected_rows is not None and len(selected_rows) > 0:
-            st.success(f"✅ {len(selected_rows)} job(s) sélectionné(s)")
+        if len(selected_rows) > 0:
+            selected_idx = selected_rows[0]
+            selected_job = df_display.iloc[selected_idx]
+            
+            st.success(f"✅ Job sélectionné : **#{int(selected_job['ID'])}** - {selected_job['Code Lot']} ({selected_job['Variété']})")
             
             # Formulaire d'assignation
             col1, col2, col3 = st.columns([2, 2, 1])
             
             with col1:
-                jour_options = [f"{d.strftime('%A %d/%m')}" for d in week_dates]
-                jour_options_fr = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi']
-                jour_options_display = [f"{fr} {d.strftime('%d/%m')}" for fr, d in zip(jour_options_fr, week_dates)]
+                jours_options_fr = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi']
+                jour_options_display = [f"{fr} {d.strftime('%d/%m')}" for fr, d in zip(jours_options_fr, week_dates)]
                 
                 selected_jour = st.selectbox("Assigner à quel jour ?", jour_options_display, key="assign_jour")
             
@@ -423,16 +415,16 @@ if not jobs_semaine.empty:
                     jour_idx = jour_options_display.index(selected_jour)
                     date_str = week_dates[jour_idx].strftime('%Y-%m-%d')
                     
-                    # Ajouter les jobs au planning
-                    for row in selected_rows:
-                        job_id = int(row['id'])
-                        if job_id not in st.session_state.planning_semaine[date_str][selected_ligne]:
-                            st.session_state.planning_semaine[date_str][selected_ligne].append(job_id)
-                    
-                    st.success(f"✅ {len(selected_rows)} job(s) assigné(s) à {selected_jour} - {selected_ligne}")
-                    st.rerun()
+                    # Ajouter le job au planning
+                    job_id = int(selected_job['ID'])
+                    if job_id not in st.session_state.planning_semaine[date_str][selected_ligne]:
+                        st.session_state.planning_semaine[date_str][selected_ligne].append(job_id)
+                        st.success(f"✅ Job #{job_id} assigné à {selected_jour} - {selected_ligne}")
+                        st.rerun()
+                    else:
+                        st.warning("⚠️ Ce job est déjà assigné à cette ligne ce jour-là")
         else:
-            st.info("👆 Cochez un ou plusieurs jobs dans le tableau ci-dessus")
+            st.info("👆 Cliquez sur une ligne du tableau pour sélectionner un job")
     else:
         st.success("✅ Tous les jobs de la semaine sont planifiés !")
 else:
@@ -466,6 +458,10 @@ for date, jour_fr, jour_key in zip(week_dates, jours_fr, jours_keys):
     
     st.caption(f"⏰ Horaires : {horaire['debut']} - {horaire['fin']} ({capacite_jour:.1f}h disponibles)")
     
+    # Vérifier que la date existe dans le planning
+    if date_str not in st.session_state.planning_semaine:
+        st.session_state.planning_semaine[date_str] = {'LIGNE_1': [], 'LIGNE_2': []}
+    
     # Afficher par ligne
     for ligne in ['LIGNE_1', 'LIGNE_2']:
         ligne_label = "🔵 LIGNE_1 (13 T/h)" if ligne == 'LIGNE_1' else "🟢 LIGNE_2 (6 T/h)"
@@ -474,76 +470,78 @@ for date, jour_fr, jour_key in zip(week_dates, jours_fr, jours_keys):
         
         jobs_jour_ligne = st.session_state.planning_semaine[date_str][ligne]
         
-        if jobs_jour_ligne:
+        if jobs_jour_ligne and not jobs_semaine.empty:
             # Récupérer infos jobs
-            jobs_info = jobs_semaine[jobs_semaine['id'].isin(jobs_jour_ligne)]
+            jobs_info = jobs_semaine[jobs_semaine['id'].isin(jobs_jour_ligne)].copy()
             
-            # Trier selon ordre dans la liste
-            jobs_info['ordre'] = jobs_info['id'].apply(lambda x: jobs_jour_ligne.index(x))
-            jobs_info = jobs_info.sort_values('ordre')
-            
-            # Calculer temps cumulé
-            temps_cumule = 0
-            heure_debut_str = horaire['debut']
-            
-            for idx, (_, job) in enumerate(jobs_info.iterrows()):
-                job_id = int(job['id'])
-                temps_job = float(job['temps_estime_heures'])
-                poids = float(job['poids_brut_kg']) / 1000
+            if not jobs_info.empty:
+                # Trier selon ordre dans la liste
+                jobs_info['ordre'] = jobs_info['id'].apply(lambda x: jobs_jour_ligne.index(x) if x in jobs_jour_ligne else 999)
+                jobs_info = jobs_info.sort_values('ordre')
                 
-                # Calculer heure fin
-                h_debut = datetime.strptime(heure_debut_str, "%H:%M")
-                h_fin = h_debut + timedelta(hours=temps_job)
-                heure_fin_str = h_fin.strftime("%H:%M")
+                # Calculer temps cumulé
+                temps_cumule = 0
+                heure_debut_str = horaire['debut']
                 
-                # Afficher job
-                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-                
-                with col1:
-                    st.markdown(f"**Job #{job_id}** - {job['code_lot_interne']} - {job['variete']}")
-                    st.caption(f"{int(job['quantite_pallox'])} pallox • {poids:.1f} T • {temps_job:.1f}h • {heure_debut_str}-{heure_fin_str}")
-                
-                with col2:
-                    if idx > 0:
-                        if st.button("⬆️", key=f"up_{date_str}_{ligne}_{job_id}"):
-                            # Échanger avec le job précédent
-                            jobs_jour_ligne[idx], jobs_jour_ligne[idx-1] = jobs_jour_ligne[idx-1], jobs_jour_ligne[idx]
+                for idx, (_, job) in enumerate(jobs_info.iterrows()):
+                    job_id = int(job['id'])
+                    temps_job = float(job['temps_estime_heures'])
+                    poids = float(job['poids_brut_kg']) / 1000
+                    
+                    # Calculer heure fin
+                    h_debut = datetime.strptime(heure_debut_str, "%H:%M")
+                    h_fin = h_debut + timedelta(hours=temps_job)
+                    heure_fin_str = h_fin.strftime("%H:%M")
+                    
+                    # Afficher job
+                    col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                    
+                    with col1:
+                        st.markdown(f"**Job #{job_id}** - {job['code_lot_interne']} - {job['variete']}")
+                        st.caption(f"{int(job['quantite_pallox'])} pallox • {poids:.1f} T • {temps_job:.1f}h • {heure_debut_str}-{heure_fin_str}")
+                    
+                    with col2:
+                        if idx > 0:
+                            if st.button("⬆️", key=f"up_{date_str}_{ligne}_{job_id}"):
+                                # Échanger avec le job précédent
+                                jobs_jour_ligne[idx], jobs_jour_ligne[idx-1] = jobs_jour_ligne[idx-1], jobs_jour_ligne[idx]
+                                st.rerun()
+                    
+                    with col3:
+                        if idx < len(jobs_jour_ligne) - 1:
+                            if st.button("⬇️", key=f"down_{date_str}_{ligne}_{job_id}"):
+                                # Échanger avec le job suivant
+                                jobs_jour_ligne[idx], jobs_jour_ligne[idx+1] = jobs_jour_ligne[idx+1], jobs_jour_ligne[idx]
+                                st.rerun()
+                    
+                    with col4:
+                        if st.button("❌", key=f"remove_{date_str}_{ligne}_{job_id}"):
+                            jobs_jour_ligne.remove(job_id)
                             st.rerun()
+                    
+                    # Préparer pour le prochain job (+ 20 min transition)
+                    temps_cumule += temps_job + 0.33  # 20 min = 0.33h
+                    h_prochain = h_fin + timedelta(minutes=20)
+                    heure_debut_str = h_prochain.strftime("%H:%M")
                 
-                with col3:
-                    if idx < len(jobs_jour_ligne) - 1:
-                        if st.button("⬇️", key=f"down_{date_str}_{ligne}_{job_id}"):
-                            # Échanger avec le job suivant
-                            jobs_jour_ligne[idx], jobs_jour_ligne[idx+1] = jobs_jour_ligne[idx+1], jobs_jour_ligne[idx]
-                            st.rerun()
+                # Indicateurs ligne
+                temps_total = temps_cumule - 0.33 if temps_cumule > 0 else 0  # Retirer dernière transition
+                temps_dispo = capacite_jour - temps_total
+                charge_pct = (temps_total / capacite_jour * 100) if capacite_jour > 0 else 0
                 
-                with col4:
-                    if st.button("❌", key=f"remove_{date_str}_{ligne}_{job_id}"):
-                        jobs_jour_ligne.remove(job_id)
-                        st.rerun()
+                emoji, css_class = get_charge_color(charge_pct)
                 
-                # Préparer pour le prochain job (+ 20 min transition)
-                temps_cumule += temps_job + 0.33  # 20 min = 0.33h
-                h_prochain = h_fin + timedelta(minutes=20)
-                heure_debut_str = h_prochain.strftime("%H:%M")
-            
-            # Indicateurs ligne
-            temps_total = temps_cumule - 0.33 if temps_cumule > 0 else 0  # Retirer dernière transition
-            temps_dispo = capacite_jour - temps_total
-            charge_pct = (temps_total / capacite_jour * 100) if capacite_jour > 0 else 0
-            
-            emoji, css_class = get_charge_color(charge_pct)
-            
-            st.markdown(f"<div class='metric-card'>⏱️ Utilisé: <strong>{temps_total:.1f}h</strong> | 💚 Dispo: <strong>{temps_dispo:.1f}h</strong> | {emoji} Charge: <span class='{css_class}'>{charge_pct:.0f}%</span></div>", unsafe_allow_html=True)
-            
-            # Ajouter au récap
-            recap_semaine[ligne]['temps'] += temps_total
-            recap_semaine[ligne]['capacite'] += capacite_jour
-            recap_semaine[ligne]['nb_jobs'] += len(jobs_jour_ligne)
-            
+                st.markdown(f"<div class='metric-card'>⏱️ Utilisé: <strong>{temps_total:.1f}h</strong> | 💚 Dispo: <strong>{temps_dispo:.1f}h</strong> | {emoji} Charge: <span class='{css_class}'>{charge_pct:.0f}%</span></div>", unsafe_allow_html=True)
+                
+                # Ajouter au récap
+                recap_semaine[ligne]['temps'] += temps_total
+                recap_semaine[ligne]['capacite'] += capacite_jour
+                recap_semaine[ligne]['nb_jobs'] += len(jobs_jour_ligne)
+            else:
+                st.info(f"Aucun job planifié")
+                recap_semaine[ligne]['capacite'] += capacite_jour
         else:
-            st.info(f"Aucun job planifié sur {ligne_label}")
-            
+            st.info(f"Aucun job planifié")
             # Ajouter capacité même si vide
             recap_semaine[ligne]['capacite'] += capacite_jour
     
@@ -590,19 +588,20 @@ with col1:
         # Préparer données pour sauvegarde
         planning_data = []
         
-        for date, jour_fr in zip(week_dates, jours_fr):
+        for date in week_dates:
             date_str = date.strftime('%Y-%m-%d')
             
-            for ligne in ['LIGNE_1', 'LIGNE_2']:
-                jobs = st.session_state.planning_semaine[date_str][ligne]
-                
-                for ordre, job_id in enumerate(jobs, start=1):
-                    planning_data.append({
-                        'job_id': job_id,
-                        'date': date,
-                        'ligne': ligne,
-                        'ordre': ordre
-                    })
+            if date_str in st.session_state.planning_semaine:
+                for ligne in ['LIGNE_1', 'LIGNE_2']:
+                    jobs = st.session_state.planning_semaine[date_str][ligne]
+                    
+                    for ordre, job_id in enumerate(jobs, start=1):
+                        planning_data.append({
+                            'job_id': job_id,
+                            'date': date,
+                            'ligne': ligne,
+                            'ordre': ordre
+                        })
         
         if planning_data:
             success, message = save_planning_semaine(annee, semaine, planning_data)
@@ -615,12 +614,7 @@ with col1:
 
 with col2:
     if st.button("🔄 Réinitialiser Planning", use_container_width=True):
-        st.session_state.planning_semaine = {
-            date.strftime('%Y-%m-%d'): {
-                'LIGNE_1': [],
-                'LIGNE_2': []
-            } for date in week_dates
-        }
+        st.session_state.planning_semaine = init_planning_semaine(week_dates)
         st.success("✅ Planning réinitialisé")
         st.rerun()
 
