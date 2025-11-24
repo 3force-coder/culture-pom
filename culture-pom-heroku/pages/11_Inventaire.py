@@ -115,32 +115,71 @@ with main_tab1:
             return pd.DataFrame()
     
     def get_stock_pour_inventaire(site=None):
-        """Récupère le stock pour générer feuille de comptage"""
+        """Récupère TOUTES les références pour inventaire (y compris stock = 0)"""
         try:
             conn = get_connection()
             cursor = conn.cursor()
             
-            query = """
-                SELECT 
-                    sc.id as stock_id,
-                    sc.consommable_id,
-                    rc.code_consommable,
-                    rc.libelle,
-                    rc.unite_inventaire,
-                    rc.prix_unitaire,
-                    sc.site,
-                    sc.atelier,
-                    sc.emplacement,
-                    sc.quantite as stock_theorique
-                FROM stock_consommables sc
-                JOIN ref_consommables rc ON sc.consommable_id = rc.id
-                WHERE sc.is_active = TRUE AND rc.is_active = TRUE
-            """
             if site and site != "Tous":
-                query += f" AND sc.site = '{site}'"
-            query += " ORDER BY sc.site, sc.atelier, rc.libelle"
+                # Site spécifique : toutes les références avec leur stock sur ce site (ou 0)
+                query = """
+                    SELECT 
+                        rc.id as consommable_id,
+                        rc.code_consommable,
+                        rc.libelle,
+                        rc.unite_inventaire,
+                        rc.prix_unitaire,
+                        %s as site,
+                        COALESCE(sc.atelier, 'COMMUN') as atelier,
+                        sc.emplacement,
+                        COALESCE(sc.quantite, 0) as stock_theorique
+                    FROM ref_consommables rc
+                    LEFT JOIN stock_consommables sc ON rc.id = sc.consommable_id 
+                        AND sc.site = %s AND sc.is_active = TRUE
+                    WHERE rc.is_active = TRUE
+                    ORDER BY rc.libelle
+                """
+                cursor.execute(query, (site, site))
+            else:
+                # Tous sites : références avec stock + références sans aucun stock
+                query = """
+                    WITH refs_avec_stock AS (
+                        SELECT 
+                            rc.id as consommable_id,
+                            rc.code_consommable,
+                            rc.libelle,
+                            rc.unite_inventaire,
+                            rc.prix_unitaire,
+                            sc.site,
+                            sc.atelier,
+                            sc.emplacement,
+                            sc.quantite as stock_theorique
+                        FROM ref_consommables rc
+                        JOIN stock_consommables sc ON rc.id = sc.consommable_id AND sc.is_active = TRUE
+                        WHERE rc.is_active = TRUE
+                    ),
+                    refs_sans_stock AS (
+                        SELECT 
+                            rc.id as consommable_id,
+                            rc.code_consommable,
+                            rc.libelle,
+                            rc.unite_inventaire,
+                            rc.prix_unitaire,
+                            'St Flavy' as site,
+                            'COMMUN' as atelier,
+                            NULL::text as emplacement,
+                            0 as stock_theorique
+                        FROM ref_consommables rc
+                        WHERE rc.is_active = TRUE
+                          AND rc.id NOT IN (SELECT DISTINCT consommable_id FROM stock_consommables WHERE is_active = TRUE)
+                    )
+                    SELECT * FROM refs_avec_stock
+                    UNION ALL
+                    SELECT * FROM refs_sans_stock
+                    ORDER BY site, atelier, libelle
+                """
+                cursor.execute(query)
             
-            cursor.execute(query)
             rows = cursor.fetchall()
             cursor.close()
             conn.close()
@@ -419,15 +458,17 @@ with main_tab1:
         
         # Aperçu du stock à inventorier
         st.markdown("---")
-        st.markdown("**Aperçu des emplacements à inventorier :**")
+        st.markdown("**Aperçu des références à inventorier :**")
         
         df_apercu = get_stock_pour_inventaire(site_inv if site_inv != "Tous" else None)
         if not df_apercu.empty:
-            st.info(f"**{len(df_apercu)} emplacement(s)** seront inclus dans cet inventaire")
-            st.dataframe(df_apercu[['site', 'atelier', 'libelle', 'stock_theorique', 'unite_inventaire']].head(10),
+            nb_avec_stock = len(df_apercu[df_apercu['stock_theorique'] > 0])
+            nb_sans_stock = len(df_apercu[df_apercu['stock_theorique'] == 0])
+            st.info(f"**{len(df_apercu)} référence(s)** : {nb_avec_stock} avec stock, {nb_sans_stock} à zéro")
+            st.dataframe(df_apercu[['site', 'atelier', 'libelle', 'stock_theorique', 'unite_inventaire']].head(15),
                         use_container_width=True, hide_index=True)
         else:
-            st.warning("⚠️ Aucun stock à inventorier")
+            st.warning("⚠️ Aucune référence à inventorier")
         
         if st.button("🚀 Créer l'inventaire", type="primary", use_container_width=True, disabled=df_apercu.empty):
             if not compteur_1:
