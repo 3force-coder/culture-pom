@@ -7,8 +7,6 @@ from components import show_footer
 from auth import is_authenticated
 from auth.roles import is_admin
 
-st.set_page_config(page_title="Valorisation Lots - Culture Pom", page_icon="💰", layout="wide")
-
 # ============================================================
 # CSS CUSTOM
 # ============================================================
