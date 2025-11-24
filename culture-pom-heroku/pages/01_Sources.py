@@ -155,6 +155,9 @@ PLANTS_CALIBRES = [
     "60/65", "60/80"
 ]
 
+# Sites production
+SITES_PRODUCTION = ["SAINT_FLAVY", "CORROY"]
+
 def get_active_varietes():
     """Récupère les codes variétés actifs depuis ref_varietes"""
     try:
@@ -185,7 +188,34 @@ def get_unique_values_from_column(df, column_name):
     values = [str(v) for v in values if str(v).strip() != '']
     return sorted(list(set(values)))
 
-# ✅ TABLES_CONFIG CORRIGÉ - TOUTES LES COLONNES EXACTES
+# ⭐ NOUVELLE FONCTION : Récupérer les types d'atelier depuis production_lignes
+def get_types_atelier():
+    """Récupère les types d'atelier distincts depuis production_lignes"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT type_atelier 
+            FROM production_lignes 
+            WHERE is_active = TRUE 
+            ORDER BY type_atelier
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [row['type_atelier'] for row in rows] if rows else []
+    except Exception as e:
+        # Table n'existe peut-être pas encore
+        return []
+
+def get_types_atelier_with_existing(df, column_name):
+    """Récupère types atelier + valeurs déjà présentes"""
+    active = get_types_atelier()
+    existing = df[column_name].dropna().unique().tolist() if column_name in df.columns else []
+    existing = [str(v) for v in existing if str(v).strip() != '']
+    return sorted(list(set(existing + active)))
+
+# ✅ TABLES_CONFIG - AVEC CHAÎNES PRODUCTION
 TABLES_CONFIG = {
     "Variétés": {
         "table": "ref_varietes",
@@ -257,7 +287,7 @@ TABLES_CONFIG = {
         "editable": ["atelier", "poids_unitaire", "unite_poids", "nbr_uvc", "type_produit", "sur_emballage"],
         "has_updated_at": True,
         "dropdown_fields": {
-            "atelier": "dynamic_from_db",
+            "atelier": "dynamic_types_atelier",  # ⭐ MODIFIÉ : depuis production_lignes
             "unite_poids": "dynamic_from_db",
             "type_produit": "dynamic_from_db",
             "sur_emballage": "dynamic_from_db"
@@ -271,15 +301,16 @@ TABLES_CONFIG = {
     
     "Produits Commerciaux": {
         "table": "ref_produits_commerciaux",
-        "columns": ["code_produit", "marque", "libelle", "poids_unitaire", "unite_poids", "poids", "type_produit", "code_variete"],
+        "columns": ["code_produit", "marque", "libelle", "poids_unitaire", "unite_poids", "poids", "type_produit", "atelier", "code_variete"],  # ⭐ AJOUTÉ atelier
         "hidden_columns": ["is_bio", "notes", "is_active"],
         "primary_key": "id",
-        "editable": ["marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "code_variete"],
+        "editable": ["marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "atelier", "code_variete"],  # ⭐ AJOUTÉ atelier
         "has_updated_at": True,
         "dropdown_fields": {
             "marque": "dynamic_from_db",
             "unite_poids": "dynamic_from_db",
             "type_produit": "dynamic_from_db",
+            "atelier": "dynamic_types_atelier",  # ⭐ NOUVEAU : dropdown depuis production_lignes
             "code_variete": "dynamic_varietes"
         },
         "filter_columns": ["poids", "marque", "type_produit"],
@@ -287,6 +318,22 @@ TABLES_CONFIG = {
         "calculated_columns": {
             "poids": ["poids_unitaire", "unite_poids"]
         }
+    },
+    
+    # ⭐ NOUVELLE TABLE : Chaînes Production
+    "Chaînes Production": {
+        "table": "production_lignes",
+        "columns": ["site", "code", "libelle", "type_atelier", "capacite_th", "cout_tonne", "description"],
+        "hidden_columns": ["is_active"],
+        "primary_key": "id",
+        "editable": ["libelle", "type_atelier", "capacite_th", "cout_tonne", "description"],
+        "has_updated_at": True,
+        "dropdown_fields": {
+            "site": SITES_PRODUCTION,
+            "type_atelier": "dynamic_from_db"  # Depuis valeurs existantes
+        },
+        "filter_columns": ["site", "type_atelier"],
+        "required_fields": ["site", "code", "libelle", "type_atelier"]
     }
 }
 
@@ -387,6 +434,10 @@ def save_changes(table_name, original_df, edited_df):
                 if col not in edited_df.columns or col not in original_df.columns:
                     continue
                 
+                # ⭐ Ignorer colonnes calculées
+                if col in config.get("calculated_columns", {}):
+                    continue
+                
                 old_val = original_df.loc[idx, col]
                 new_val = edited_df.loc[idx, col]
                 
@@ -433,6 +484,8 @@ def save_changes(table_name, original_df, edited_df):
                 return False, "❌ Ce code emballage est déjà utilisé par un autre enregistrement."
             elif "code_produit" in error_msg:
                 return False, "❌ Ce code produit est déjà utilisé par un autre enregistrement."
+            elif "code" in error_msg:
+                return False, "❌ Ce code est déjà utilisé par un autre enregistrement."
             else:
                 return False, "❌ Cette valeur est déjà utilisée. Impossible de modifier."
         
@@ -555,6 +608,8 @@ def add_record(table_name, data):
                 return False, "❌ Ce code emballage est déjà utilisé. Merci de choisir un autre code."
             elif "code_produit" in error_msg:
                 return False, "❌ Ce code produit est déjà utilisé. Merci de choisir un autre code."
+            elif "code" in error_msg:
+                return False, "❌ Ce code est déjà utilisé. Merci de choisir un autre code."
             else:
                 return False, "❌ Cette valeur est déjà utilisée. Merci de choisir une autre valeur."
         
@@ -611,6 +666,24 @@ if st.session_state.get('show_add_form', False):
                         options=options,
                         key=f"add_{col}"
                     )
+                # ⭐ NOUVEAU : Dropdown dynamique pour types_atelier
+                elif field_config == "dynamic_types_atelier":
+                    full_df_for_form = st.session_state.get(f'full_df_{selected_table}')
+                    types_atelier = get_types_atelier_with_existing(full_df_for_form, col) if full_df_for_form is not None else get_types_atelier()
+                    options = [""] + types_atelier + ["➕ Saisir nouvelle valeur"]
+                    selected = st.selectbox(
+                        label,
+                        options=options,
+                        key=f"add_{col}_select"
+                    )
+                    
+                    if selected == "➕ Saisir nouvelle valeur":
+                        st.session_state.new_data[col] = st.text_input(
+                            f"Nouvelle valeur pour {label}",
+                            key=f"add_{col}_new"
+                        )
+                    else:
+                        st.session_state.new_data[col] = selected
                 # ⭐ Dropdown depuis DB avec option "Autre"
                 elif field_config == "dynamic_from_db":
                     # Récupérer valeurs existantes
@@ -635,8 +708,8 @@ if st.session_state.get('show_add_form', False):
                         )
                     else:
                         st.session_state.new_data[col] = selected
-                # Dropdown statique
-                else:
+                # Dropdown statique (liste fixe)
+                elif isinstance(field_config, list):
                     options = [""] + field_config
                     st.session_state.new_data[col] = st.selectbox(
                         label,
@@ -644,8 +717,8 @@ if st.session_state.get('show_add_form', False):
                         key=f"add_{col}"
                     )
             elif col in ['is_bio', 'global_gap']:
-                st.session_state.new_data[col] = st.checkbox(label, value=True, key=f"add_{col}")
-            elif 'capacite' in col or 'prix' in col or 'poids' in col:
+                st.session_state.new_data[col] = st.checkbox(label, value=False, key=f"add_{col}")
+            elif 'capacite' in col or 'prix' in col or 'poids' in col or 'cout' in col:
                 st.session_state.new_data[col] = st.number_input(label, min_value=0.0, value=0.0, step=0.1, key=f"add_{col}")
             elif 'nbr' in col:
                 st.session_state.new_data[col] = st.number_input(label, min_value=0, value=0, step=1, key=f"add_{col}")
@@ -819,6 +892,15 @@ if not df_full.empty:
                     options=varietes,
                     required=False
                 )
+            # ⭐ NOUVEAU : Dropdown dynamique depuis types_atelier
+            elif field_config == "dynamic_types_atelier":
+                types_atelier = get_types_atelier_with_existing(full_df_for_dropdown, field)
+                if types_atelier:
+                    column_config[field] = st.column_config.SelectboxColumn(
+                        field.replace('_', ' ').title(),
+                        options=types_atelier,
+                        required=False
+                    )
             # ⭐ Dropdown depuis valeurs existantes de la colonne
             elif field_config == "dynamic_from_db":
                 unique_values = get_unique_values_from_column(full_df_for_dropdown, field)
@@ -828,11 +910,11 @@ if not df_full.empty:
                         options=unique_values,
                         required=False
                     )
-            # Dropdown statique
-            else:
+            # Dropdown statique (liste fixe)
+            elif isinstance(field_config, list):
                 # ⭐ Inclure valeurs existantes aussi pour listes statiques
                 existing = full_df_for_dropdown[field].dropna().unique().tolist() if field in full_df_for_dropdown.columns else []
-                all_options = sorted(list(set(existing + field_config)))
+                all_options = sorted(list(set([str(v) for v in existing] + field_config)))
                 column_config[field] = st.column_config.SelectboxColumn(
                     field.replace('_', ' ').title(),
                     options=all_options,
