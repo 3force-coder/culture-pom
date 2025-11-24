@@ -336,6 +336,44 @@ with main_tab1:
                 conn.rollback()
             return False, f"❌ Erreur : {str(e)}"
     
+    def supprimer_inventaire(inventaire_id):
+        """Supprime un inventaire EN_COURS (et ses lignes)"""
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            
+            # Vérifier que l'inventaire est bien EN_COURS
+            cursor.execute("""
+                SELECT statut FROM inventaires WHERE id = %s
+            """, (inventaire_id,))
+            result = cursor.fetchone()
+            
+            if not result:
+                return False, "❌ Inventaire non trouvé"
+            
+            if result['statut'] != 'EN_COURS':
+                return False, "❌ Seuls les inventaires EN_COURS peuvent être supprimés"
+            
+            # Supprimer les lignes (CASCADE devrait le faire, mais on le fait explicitement)
+            cursor.execute("""
+                DELETE FROM inventaires_consommables_lignes WHERE inventaire_id = %s
+            """, (inventaire_id,))
+            
+            # Supprimer l'inventaire
+            cursor.execute("""
+                DELETE FROM inventaires WHERE id = %s
+            """, (inventaire_id,))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return True, "✅ Inventaire supprimé avec succès"
+        except Exception as e:
+            if 'conn' in locals():
+                conn.rollback()
+            return False, f"❌ Erreur : {str(e)}"
+    
     # ==========================================
     # KPIs
     # ==========================================
@@ -360,7 +398,7 @@ with main_tab1:
     # SOUS-ONGLETS INVENTAIRE CONSOMMABLES
     # ==========================================
     
-    tab1, tab2, tab3, tab4 = st.tabs(["➕ Créer", "📝 Saisir", "✅ Valider", "📜 Historique"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["➕ Créer", "📝 Saisir", "✅ Valider", "📜 Historique", "🗑️ Gérer"])
     
     # ==========================================
     # ONGLET CRÉER
@@ -596,6 +634,58 @@ with main_tab1:
                               use_container_width=True)
         else:
             st.info("📭 Aucun inventaire dans l'historique")
+    
+    # ==========================================
+    # ONGLET GÉRER (SUPPRIMER)
+    # ==========================================
+    
+    with tab5:
+        st.subheader("🗑️ Gérer les inventaires")
+        st.markdown("*Supprimer un inventaire en cours (non validé)*")
+        
+        # Liste des inventaires en cours uniquement
+        df_a_supprimer = get_inventaires_liste('EN_COURS')
+        
+        if not df_a_supprimer.empty:
+            st.warning("⚠️ **Attention** : La suppression est définitive et irréversible.")
+            
+            st.markdown("---")
+            st.markdown("**Inventaires en cours :**")
+            
+            # Afficher les inventaires en cours
+            df_display_sup = df_a_supprimer[['id', 'date_inventaire', 'site', 'compteur_1', 'compteur_2', 'nb_lignes']].copy()
+            df_display_sup.columns = ['ID', 'Date', 'Site', 'Compteur 1', 'Compteur 2', 'Nb Lignes']
+            
+            st.dataframe(df_display_sup, use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
+            
+            # Sélection et suppression
+            options_sup = [f"#{row['id']} - {row['date_inventaire']} - {row['site'] or 'Tous sites'}" 
+                          for _, row in df_a_supprimer.iterrows()]
+            
+            selected_sup = st.selectbox("Sélectionner l'inventaire à supprimer", options_sup, key="sup_inv_select")
+            inv_id_sup = int(selected_sup.split('#')[1].split(' ')[0])
+            
+            # Confirmation
+            confirm = st.checkbox("✅ Je confirme vouloir supprimer cet inventaire", key="confirm_delete")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🗑️ Supprimer l'inventaire", type="primary", use_container_width=True, 
+                            disabled=not confirm):
+                    success, msg = supprimer_inventaire(inv_id_sup)
+                    if success:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            
+            with col2:
+                st.button("↩️ Annuler", use_container_width=True, disabled=True)
+        else:
+            st.info("📭 Aucun inventaire en cours à gérer")
+            st.markdown("*Seuls les inventaires avec le statut EN_COURS peuvent être supprimés.*")
 
 # ==========================================
 # INVENTAIRE LOTS (À VENIR)
