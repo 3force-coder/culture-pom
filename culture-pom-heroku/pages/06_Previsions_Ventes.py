@@ -205,8 +205,8 @@ def save_previsions(df_previsions):
         return False, f"❌ Erreur : {str(e)}"
 
 def calculer_extrapolation(valeurs):
-    """Calcule l'extrapolation (moyenne des 3 semaines saisies)"""
-    valeurs_valides = [v for v in valeurs if pd.notna(v) and v > 0]
+    """Calcule l'extrapolation (moyenne des 3 semaines saisies - les 0 comptent)"""
+    valeurs_valides = [v if pd.notna(v) else 0 for v in valeurs]  # NaN → 0, mais 0 compte
     if len(valeurs_valides) > 0:
         return sum(valeurs_valides) / len(valeurs_valides)
     return 0.0
