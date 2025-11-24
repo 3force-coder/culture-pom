@@ -939,7 +939,7 @@ if not df.empty:
         
         if st.button(btn_label, use_container_width=True, type="secondary", key="btn_view_emplacements", disabled=btn_disabled):
             # Naviguer vers page Détails Stock avec les lots sélectionnés
-            st.switch_page("pages/03_Emplacements.py")
+            st.switch_page("pages/03_Détails stock.py")
     
     with col_calc:
         if is_admin():
@@ -1087,7 +1087,7 @@ if not df.empty:
         
         with col_btn:
             if st.button(f"📦 Détails Stock ({len(selected_lot_ids)})", use_container_width=True, type="primary", key="btn_goto_emplacements"):
-                st.switch_page("pages/03_Emplacements.py")
+                st.switch_page("pages/03_Détails stock.py")
     
     # ⭐ DÉTECTION CHANGEMENTS (Auto-save) - VERSION CORRIGÉE AVEC FILTRE
     changes_detected = False
@@ -1279,6 +1279,6 @@ if not df.empty:
     if st.button("📦 Voir Détails Stock", use_container_width=True, type="primary"):
         lot_id = int(selected_lot.split(" - ")[0])
         st.query_params['lot_id'] = lot_id
-        st.switch_page("pages/03_Emplacements.py")
+        st.switch_page("pages/03_Détails stock.py")
         
 show_footer()
