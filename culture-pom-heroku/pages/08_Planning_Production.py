@@ -9,8 +9,6 @@ from auth.roles import is_admin
 import io
 import math
 
-st.set_page_config(page_title="Planning Production - Culture Pom", page_icon="🏭", layout="wide")
-
 # ============================================================
 # CSS CUSTOM (identique lavage)
 # ============================================================
