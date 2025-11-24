@@ -1021,13 +1021,14 @@ with tab3:
                         
                         cursor.execute("""
                             INSERT INTO production_jobs (
-                                lot_id, code_lot_interne, variete, code_produit_commercial,
+                                lot_id, emplacement_id, code_lot_interne, variete, code_produit_commercial,
                                 quantite_entree_tonnes, date_prevue, ligne_production,
                                 capacite_th, temps_estime_heures, statut, created_by, notes
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'PRÉVU', %s, %s)
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'PRÉVU', %s, %s)
                             RETURNING id
                         """, (
                             int(selected_stock['lot_id']),
+                            int(selected_stock['id']),  # emplacement_id du stock LAVÉ source
                             selected_stock['code_lot_interne'],
                             selected_stock['variete'],
                             selected_prod['code_produit'],
