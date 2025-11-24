@@ -541,29 +541,29 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
         cursor.execute("""
             INSERT INTO stock_mouvements 
             (lot_id, type_mouvement, site_origine, emplacement_origine,
-             quantite, type_conditionnement, poids_kg, user_action, notes)
-            VALUES (%s, 'LAVAGE_SORTIE', %s, %s, %s, 'Pallox', %s, %s, %s)
+             quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
+            VALUES (%s, 'LAVAGE_SORTIE', %s, %s, %s, 'Pallox', %s, %s, %s, %s)
         """, (job['lot_id'], 'SAINT_FLAVY', 'BRUT', quantite_pallox, 
-              poids_brut, terminated_by, f"Job #{job_id} - Sortie lavage"))
+              poids_brut, terminated_by, f"Job #{job_id} - Sortie lavage", terminated_by))
         
         # Mouvement LAVAGE_ENTREE_LAVE
         cursor.execute("""
             INSERT INTO stock_mouvements 
             (lot_id, type_mouvement, site_destination, emplacement_destination,
-             quantite, type_conditionnement, poids_kg, user_action, notes)
-            VALUES (%s, 'LAVAGE_ENTREE_LAVE', %s, %s, %s, 'Pallox', %s, %s, %s)
+             quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
+            VALUES (%s, 'LAVAGE_ENTREE_LAVE', %s, %s, %s, 'Pallox', %s, %s, %s, %s)
         """, (job['lot_id'], site_dest, emplacement_dest, quantite_pallox, 
-              poids_lave, terminated_by, f"Job #{job_id} - Entrée lavé"))
+              poids_lave, terminated_by, f"Job #{job_id} - Entrée lavé", terminated_by))
         
         # Mouvement LAVAGE_ENTREE_GRENAILLES (si > 0)
         if poids_grenailles > 0:
             cursor.execute("""
                 INSERT INTO stock_mouvements 
                 (lot_id, type_mouvement, site_destination, emplacement_destination,
-                 quantite, type_conditionnement, poids_kg, user_action, notes)
-                VALUES (%s, 'LAVAGE_ENTREE_GRENAILLES', %s, %s, %s, 'Pallox', %s, %s, %s)
+                 quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
+                VALUES (%s, 'LAVAGE_ENTREE_GRENAILLES', %s, %s, %s, 'Pallox', %s, %s, %s, %s)
             """, (job['lot_id'], site_dest, emplacement_dest, 1, 
-                  poids_grenailles, terminated_by, f"Job #{job_id} - Entrée grenailles"))
+                  poids_grenailles, terminated_by, f"Job #{job_id} - Entrée grenailles", terminated_by))
         
         conn.commit()
         cursor.close()
@@ -1124,17 +1124,31 @@ with tab1:
                                     if st.session_state.get(f'show_finish_{elem["job_id"]}', False):
                                         with st.expander("📝 Saisie tares", expanded=True):
                                             poids_brut = float(elem['poids_brut_kg']) if pd.notna(elem['poids_brut_kg']) else 0
-                                            p_lave = st.number_input("Lavé (kg)", 0.0, poids_brut, poids_brut*0.75, key=f"p_lave_{elem['id']}")
-                                            p_gren = st.number_input("Grenailles (kg)", 0.0, poids_brut, poids_brut*0.05, key=f"p_gren_{elem['id']}")
-                                            p_dech = st.number_input("Déchets (kg)", 0.0, poids_brut, poids_brut*0.05, key=f"p_dech_{elem['id']}")
+                                            
+                                            p_lave = st.number_input("Lavé (kg)", 0.0, poids_brut, poids_brut*0.75, step=100.0, key=f"p_lave_{elem['id']}")
+                                            p_gren = st.number_input("Grenailles (kg)", 0.0, poids_brut, poids_brut*0.05, step=50.0, key=f"p_gren_{elem['id']}")
+                                            p_dech = st.number_input("Déchets (kg)", 0.0, poids_brut, poids_brut*0.05, step=50.0, key=f"p_dech_{elem['id']}")
+                                            
                                             p_terre = poids_brut - p_lave - p_gren - p_dech
-                                            st.metric("Terre", f"{p_terre:.0f} kg")
+                                            
+                                            # Affichage terre avec couleur selon cohérence
+                                            if p_terre < 0:
+                                                st.error(f"❌ Terre : {p_terre:.0f} kg (NÉGATIF !)")
+                                                st.warning("⚠️ Données incohérentes ! Réduisez Lavé, Grenailles ou Déchets.")
+                                                terre_ok = False
+                                            else:
+                                                st.metric("Terre", f"{p_terre:.0f} kg")
+                                                terre_ok = True
                                             
                                             empls = get_emplacements_saint_flavy()
                                             empl = st.selectbox("Emplacement", [""] + [e[0] for e in empls], key=f"empl_{elem['id']}")
                                             
-                                            if st.button("✅ Valider", key=f"val_finish_{elem['id']}", type="primary"):
-                                                if empl:
+                                            if st.button("✅ Valider", key=f"val_finish_{elem['id']}", type="primary", disabled=not terre_ok):
+                                                if not empl:
+                                                    st.warning("⚠️ Emplacement requis")
+                                                elif not terre_ok:
+                                                    st.error("❌ Corrigez les poids avant validation")
+                                                else:
                                                     success, msg = terminer_job(int(elem['job_id']), p_lave, p_gren, p_dech, "SAINT_FLAVY", empl)
                                                     if success:
                                                         st.success(msg)
@@ -1142,8 +1156,6 @@ with tab1:
                                                         st.rerun()
                                                     else:
                                                         st.error(msg)
-                                                else:
-                                                    st.warning("⚠️ Emplacement requis")
                                             
                                             if st.button("Annuler", key=f"cancel_{elem['id']}"):
                                                 st.session_state.pop(f'show_finish_{elem["job_id"]}', None)
