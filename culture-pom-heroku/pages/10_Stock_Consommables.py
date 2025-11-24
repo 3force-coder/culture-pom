@@ -381,12 +381,26 @@ def importer_stock_excel(df_import):
                 
                 # Créer stock si quantité > 0
                 if quantite > 0:
+                    # Vérifier si stock existe déjà
                     cursor.execute("""
-                        INSERT INTO stock_consommables (consommable_id, site, atelier, quantite)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (consommable_id, site, atelier, emplacement) 
-                        DO UPDATE SET quantite = EXCLUDED.quantite, updated_at = CURRENT_TIMESTAMP
-                    """, (consommable_id, site, atelier, quantite))
+                        SELECT id FROM stock_consommables 
+                        WHERE consommable_id = %s AND site = %s 
+                          AND COALESCE(atelier, '') = COALESCE(%s, '')
+                          AND emplacement IS NULL
+                    """, (consommable_id, site, atelier))
+                    existing = cursor.fetchone()
+                    
+                    if existing:
+                        cursor.execute("""
+                            UPDATE stock_consommables 
+                            SET quantite = %s, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = %s
+                        """, (quantite, existing['id']))
+                    else:
+                        cursor.execute("""
+                            INSERT INTO stock_consommables (consommable_id, site, atelier, emplacement, quantite)
+                            VALUES (%s, %s, %s, NULL, %s)
+                        """, (consommable_id, site, atelier, quantite))
                     nb_stock_created += 1
                     
             except Exception as e:
@@ -673,44 +687,60 @@ with tab5:
     
     if uploaded_file:
         try:
-            # Lire le fichier
-            df_upload = pd.read_excel(uploaded_file, header=4)
+            # Lire le fichier avec header ligne 0 (format standard)
+            df_upload = pd.read_excel(uploaded_file, header=0)
             
-            # Renommer les colonnes selon le format du fichier fourni
-            if len(df_upload.columns) >= 8:
-                df_upload.columns = ['Site', 'Atelier', 'Type_Unite', 'Reference', 'Stock_27_09', 'Quantite', 
-                                    'Livraison', 'SF_31_10'] + list(df_upload.columns[8:])
+            # Vérifier les colonnes requises
+            colonnes_requises = ['Site', 'Atelier', 'Reference', 'Quantite']
+            colonnes_presentes = [col for col in colonnes_requises if col in df_upload.columns]
             
-            # Filtrer lignes valides
-            df_clean = df_upload[df_upload['Site'].notna() & 
-                                 ~df_upload['Site'].astype(str).str.contains('Total|TOTAL|Site', na=False)].copy()
-            
-            # Préparer pour import
-            df_import = df_clean[['Site', 'Atelier', 'Reference', 'Quantite']].copy()
-            df_import['Quantite'] = pd.to_numeric(df_import['Quantite'], errors='coerce').fillna(0).astype(int)
-            
-            st.markdown("### Aperçu des données à importer")
-            st.dataframe(df_import.head(20), use_container_width=True)
-            st.info(f"**{len(df_import)} lignes** détectées")
-            
-            if st.button("🚀 Lancer l'import", type="primary", use_container_width=True):
-                # Ajouter colonnes manquantes
-                df_import['Unite'] = 'Unité'
-                df_import['Prix'] = 0
-                df_import['Fournisseur'] = None
+            if len(colonnes_presentes) < 4:
+                st.error(f"❌ Colonnes manquantes. Trouvées: {list(df_upload.columns)}")
+                st.info("Le fichier doit contenir au minimum : Site, Atelier, Reference, Quantite")
+            else:
+                # Filtrer lignes valides (avec Site non vide)
+                df_clean = df_upload[df_upload['Site'].notna() & 
+                                     ~df_upload['Site'].astype(str).str.contains('Total|TOTAL', na=False)].copy()
                 
-                success, msg, errors = importer_stock_excel(df_import)
-                if success:
-                    st.success(msg)
-                    if errors:
-                        with st.expander("⚠️ Avertissements"):
-                            for err in errors[:20]:
-                                st.warning(err)
-                    st.balloons()
+                # Préparer pour import
+                df_import = df_clean[['Site', 'Atelier', 'Reference', 'Quantite']].copy()
+                df_import['Quantite'] = pd.to_numeric(df_import['Quantite'], errors='coerce').fillna(0).astype(int)
+                
+                # Ajouter colonnes optionnelles si présentes
+                if 'Unite' in df_upload.columns:
+                    df_import['Unite'] = df_clean['Unite'].fillna('Unité')
                 else:
-                    st.error(msg)
+                    df_import['Unite'] = 'Unité'
+                    
+                if 'Prix' in df_upload.columns:
+                    df_import['Prix'] = pd.to_numeric(df_clean['Prix'], errors='coerce').fillna(0)
+                else:
+                    df_import['Prix'] = 0
+                    
+                if 'Fournisseur' in df_upload.columns:
+                    df_import['Fournisseur'] = df_clean['Fournisseur']
+                else:
+                    df_import['Fournisseur'] = None
+                
+                st.markdown("### Aperçu des données à importer")
+                st.dataframe(df_import.head(20), use_container_width=True, hide_index=True)
+                st.info(f"**{len(df_import)} lignes** détectées")
+                
+                if st.button("🚀 Lancer l'import", type="primary", use_container_width=True):
+                    success, msg, errors = importer_stock_excel(df_import)
+                    if success:
+                        st.success(msg)
+                        if errors:
+                            with st.expander("⚠️ Avertissements"):
+                                for err in errors[:20]:
+                                    st.warning(err)
+                        st.balloons()
+                        st.rerun()
+                    else:
+                        st.error(msg)
                     
         except Exception as e:
             st.error(f"❌ Erreur lecture fichier : {str(e)}")
+            st.info("Vérifiez que le fichier contient les colonnes : Site, Atelier, Reference, Quantite")
 
 show_footer()
