@@ -6,8 +6,6 @@ from components import show_footer
 from auth import is_authenticated, is_admin
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Détails Stock - Culture Pom", page_icon="📦", layout="wide")
-
 # CSS espacements réduits
 st.markdown("""
 <style>
