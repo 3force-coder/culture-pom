@@ -595,83 +595,6 @@ def get_lots_for_dropdown():
                 for _, row in df.iterrows()}
     return {}
 
-def get_recap_valorisation_lot(lot_id):
-    """Récap valorisation détaillé pour un lot"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Infos lot
-        cursor.execute("""
-            SELECT 
-                poids_total_brut_kg,
-                prix_achat_euro_tonne,
-                tare_achat_pct,
-                valeur_lot_euro
-            FROM lots_bruts
-            WHERE id = %s
-        """, (lot_id,))
-        lot = cursor.fetchone()
-        
-        if not lot:
-            cursor.close()
-            conn.close()
-            return None
-        
-        # Tare réelle moyenne si jobs lavage terminés
-        cursor.execute("""
-            SELECT AVG(tare_reelle_pct) as tare_reelle_moy
-            FROM lavages_jobs
-            WHERE lot_id = %s AND statut = 'TERMINÉ'
-        """, (lot_id,))
-        result = cursor.fetchone()
-        tare_reelle_moy = float(result['tare_reelle_moy']) if result and result['tare_reelle_moy'] else None
-        
-        cursor.close()
-        conn.close()
-        
-        # Calculs
-        poids_brut = float(lot['poids_total_brut_kg']) if lot['poids_total_brut_kg'] else 0
-        tare_achat = float(lot['tare_achat_pct']) if lot['tare_achat_pct'] else None
-        prix_achat = float(lot['prix_achat_euro_tonne']) if lot['prix_achat_euro_tonne'] else None
-        valeur_lot = float(lot['valeur_lot_euro']) if lot['valeur_lot_euro'] else None
-        
-        # Si pas de tare achat ou prix, on ne peut pas calculer
-        if tare_achat is None or prix_achat is None:
-            return None
-        
-        poids_net_paye = poids_brut * (1 - tare_achat / 100)
-        
-        # Tare production : réelle si lavé, sinon standard 22%
-        tare_production = tare_reelle_moy if tare_reelle_moy else 22.0
-        tare_production_source = "✅ Mesurée" if tare_reelle_moy else "📊 Standard"
-        
-        poids_net_production = poids_brut * (1 - tare_production / 100)
-        
-        # Écarts
-        ecart_tare_vs_standard = tare_production - 22.0
-        poids_gagne = (22.0 - tare_production) / 100 * poids_brut
-        
-        perte_vs_achat = poids_net_paye - poids_net_production
-        
-        return {
-            'poids_brut': poids_brut,
-            'tare_achat': tare_achat,
-            'poids_net_paye': poids_net_paye,
-            'prix_achat': prix_achat,
-            'valeur_lot': valeur_lot if valeur_lot else poids_net_paye / 1000 * prix_achat,
-            'tare_production': tare_production,
-            'tare_production_source': tare_production_source,
-            'poids_net_production': poids_net_production,
-            'ecart_tare_vs_standard': ecart_tare_vs_standard,
-            'poids_gagne': poids_gagne,
-            'perte_vs_achat': perte_vs_achat
-        }
-        
-    except Exception as e:
-        st.error(f"❌ Erreur récap valorisation: {str(e)}")
-        return None
-
 # ============================================================================
 # ⭐ RÉCUPÉRATION LOT_ID DEPUIS QUERY PARAMS OU SESSION_STATE
 # ============================================================================
@@ -727,54 +650,6 @@ if len(lots_to_display) > 0:
                 <strong>Poids total brut:</strong> {format_number_fr(lot_info['poids_total_brut_kg'])} kg ({format_float_fr(lot_info['poids_total_brut_kg']/1000)} T)
             </div>
             """, unsafe_allow_html=True)
-            
-            # ⭐ BLOC RÉCAP VALORISATION
-            st.markdown("---")
-            
-            recap = get_recap_valorisation_lot(lot_id)
-            
-            if recap:
-                st.markdown("### 📊 Récap Valorisation Lot")
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.markdown(f"""
-                    <div style='background-color: #e3f2fd; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #2196f3;'>
-                        <h4 style='margin-top: 0; color: #1976d2;'>💰 VALEUR ACHAT (payé producteur)</h4>
-                        <p style='margin: 0.3rem 0;'><strong>Tare achat négociée:</strong> {recap['tare_achat']:.1f}%</p>
-                        <p style='margin: 0.3rem 0;'><strong>Poids net payé:</strong> {format_number_fr(recap['poids_net_paye'])} kg ({format_float_fr(recap['poids_net_paye']/1000)} T)</p>
-                        <p style='margin: 0.3rem 0;'><strong>Prix achat:</strong> {format_number_fr(recap['prix_achat'])} €/T</p>
-                        <hr style='margin: 0.5rem 0; border-color: #90caf9;'>
-                        <p style='margin: 0.3rem 0; font-size: 1.1rem;'><strong>Valeur lot:</strong> {format_number_fr(recap['valeur_lot'])} €</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                with col2:
-                    # Couleur écart selon performance
-                    if recap['ecart_tare_vs_standard'] < 0:
-                        color_ecart = "#2e7d32"  # Vert : meilleur que standard
-                        symbole_ecart = "✅"
-                    else:
-                        color_ecart = "#d32f2f"  # Rouge : moins bon que standard
-                        symbole_ecart = "⚠️"
-                    
-                    st.markdown(f"""
-                    <div style='background-color: #fff3e0; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #ff9800;'>
-                        <h4 style='margin-top: 0; color: #f57c00;'>🏭 MATIÈRE PREMIÈRE (disponible production)</h4>
-                        <p style='margin: 0.3rem 0;'><strong>Tare production:</strong> {recap['tare_production']:.1f}% <span style='color: #666; font-size: 0.9rem;'>{recap['tare_production_source']}</span></p>
-                        <p style='margin: 0.3rem 0;'><strong>Poids net production:</strong> {format_number_fr(recap['poids_net_production'])} kg ({format_float_fr(recap['poids_net_production']/1000)} T)</p>
-                        <hr style='margin: 0.5rem 0; border-color: #ffb74d;'>
-                        <h4 style='margin-top: 0.5rem; margin-bottom: 0.3rem;'>📈 ÉCARTS</h4>
-                        <p style='margin: 0.3rem 0;'><strong>vs Standard (22%):</strong> <span style='color: {color_ecart};'>{symbole_ecart} {recap['ecart_tare_vs_standard']:+.1f}%</span></p>
-                        <p style='margin: 0.3rem 0;'><strong>Poids gagné/perdu:</strong> <span style='color: {color_ecart};'>{format_number_fr(recap['poids_gagne'])} kg</span></p>
-                        <p style='margin: 0.3rem 0;'><strong>vs Achat payé:</strong> {format_number_fr(recap['perte_vs_achat'])} kg ({format_float_fr(recap['perte_vs_achat']/1000)} T)</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                st.caption("💡 **Tare achat** : Négociée avec producteur (valorisation financière) | **Tare production** : Réelle après lavage ou standard 22% (matière disponible)")
-            
-            st.markdown("---")
             
             # KPIs emplacement
             df_empl = get_lot_emplacements(lot_id)
