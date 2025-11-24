@@ -5,19 +5,43 @@ st.set_page_config(
     page_title="Culture Pom",
     page_icon="🥔",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed" if not is_authenticated() else "expanded"
 )
 
-# Logo TOUT EN HAUT de la sidebar
-st.logo('https://i.imgur.com/kuLXrHZ.png')
-
 # ============================================================
-# AUTHENTIFICATION
+# AUTHENTIFICATION - MASQUER SIDEBAR SI NON CONNECTÉ
 # ============================================================
 
 if not is_authenticated():
+    # CSS pour masquer complètement la sidebar sur la page de login
+    st.markdown("""
+    <style>
+        [data-testid="stSidebar"] {
+            display: none !important;
+        }
+        [data-testid="stSidebarCollapsedControl"] {
+            display: none !important;
+        }
+        .stApp > header {
+            display: none !important;
+        }
+        /* Centrer le contenu */
+        .main .block-container {
+            max-width: 500px;
+            padding-top: 5rem;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+    
     show_login()
     st.stop()
+
+# ============================================================
+# UTILISATEUR CONNECTÉ - AFFICHER LOGO ET SIDEBAR
+# ============================================================
+
+# Logo TOUT EN HAUT de la sidebar
+st.logo('https://i.imgur.com/kuLXrHZ.png')
 
 # ============================================================
 # SIDEBAR - INFOS UTILISATEUR
