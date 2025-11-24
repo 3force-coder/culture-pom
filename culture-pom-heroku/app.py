@@ -51,6 +51,7 @@ pages = {
         st.Page("pages/02_Lots.py", title="Lots", icon="📦"),
         st.Page("pages/03_Détails stock.py", title="Détails Stock", icon="🗃️"),
         st.Page("pages/04_Stock_Global.py", title="Stock Global", icon="📊"),
+        st.Page("pages/10_Stock_Consommables.py", title="Consommables", icon="🏷️"),
     ],
     "🏭 Production": [
         st.Page("pages/05_Planning_Lavage.py", title="Planning Lavage", icon="🧼"),
@@ -62,6 +63,9 @@ pages = {
     ],
     "💰 Finance": [
         st.Page("pages/09_Valorisation_Lots.py", title="Valorisation Lots", icon="💰"),
+    ],
+    "📋 Inventaire": [
+        st.Page("pages/11_Inventaire.py", title="Inventaires", icon="📋"),
     ],
 }
 
