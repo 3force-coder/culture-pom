@@ -1059,7 +1059,7 @@ with tab3:
                 if st.button("👁️ Voir Détails Complets", type="primary", use_container_width=True, key="btn_voir_details"):
                     # Rediriger vers page 03_Details_stock
                     st.query_params["lot_id"] = selected_lot_id
-                    st.switch_page("03_Détails_stock")
+                    st.switch_page("pages/03_Détails_stock")
             else:
                 st.info("👆 Sélectionnez un lot pour voir ses détails complets")
         else:
