@@ -1066,7 +1066,7 @@ if len(lots_to_display) > 0:
                         
                         with col1:
                             st.markdown(f"""
-                            <div style='background-color: #e3f2fd; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #2196f3; min-height: 250px;'>
+                            <div style='background-color: #e3f2fd; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #2196f3; height: 250px;'>
                                 <h4 style='margin-top: 0; color: #1976d2;'>💰 VALEUR ACHAT</h4>
                                 <p style='margin: 0.3rem 0;'><strong>Poids brut:</strong> {recap['poids_brut']:.1f} T</p>
                                 <p style='margin: 0.3rem 0;'><strong>Tare achat négociée:</strong> {recap['tare_achat']:.1f}%</p>
@@ -1087,7 +1087,7 @@ if len(lots_to_display) > 0:
                                 symbole_ecart = "⚠️"
                             
                             st.markdown(f"""
-                            <div style='background-color: #fff3e0; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #ff9800; min-height: 250px;'>
+                            <div style='background-color: #fff3e0; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #ff9800; height: 250px;'>
                                 <h4 style='margin-top: 0; color: #f57c00;'>🏭 MATIÈRE PREMIÈRE PRODUCTION</h4>
                                 <p style='margin: 0.3rem 0;'><strong>Tare production:</strong> {recap['tare_production']:.1f}% <span style='font-size: 0.85rem;'>{recap['tare_prod_source']}</span></p>
                                 <p style='margin: 0.3rem 0;'><strong>Poids net production:</strong> {recap['poids_net_production']:.1f} T</p>
