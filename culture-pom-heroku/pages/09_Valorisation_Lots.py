@@ -1057,8 +1057,8 @@ with tab3:
                 st.success(f"✅ Lot sélectionné : **{selected_code}**")
                 
                 if st.button("👁️ Voir Détails Complets", type="primary", use_container_width=True, key="btn_voir_details"):
-                    # Rediriger vers page 03_Details_stock
-                    st.query_params["lot_id"] = selected_lot_id
+                    # Stocker dans session_state (même méthode que page 02)
+                    st.session_state.selected_lots_for_emplacements = [selected_lot_id]
                     st.switch_page("pages/03_Détails stock.py")
             else:
                 st.info("👆 Sélectionnez un lot pour voir ses détails complets")
