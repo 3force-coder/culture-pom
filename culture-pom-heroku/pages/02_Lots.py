@@ -8,6 +8,7 @@ from components import show_footer
 from auth import is_authenticated, is_admin
 import io
 import streamlit.components.v1 as components
+from difflib import get_close_matches
 
 st.set_page_config(page_title="Lots - Culture Pom", page_icon="📦", layout="wide")
 
@@ -50,6 +51,28 @@ st.markdown("""
     .stSubheader {
         margin-top: 0.3rem !important;
         margin-bottom: 0.3rem !important;
+    }
+    /* Badges statut */
+    .badge-valid {
+        background-color: #d4edda;
+        color: #155724;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.3rem;
+        font-weight: 600;
+    }
+    .badge-warning {
+        background-color: #fff3cd;
+        color: #856404;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.3rem;
+        font-weight: 600;
+    }
+    .badge-error {
+        background-color: #f8d7da;
+        color: #721c24;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.3rem;
+        font-weight: 600;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -98,81 +121,376 @@ def show_confetti_animation():
     components.html(confetti_html, height=320)
 
 # ============================================================================
-# FONCTIONS HELPER - DROPDOWNS
+# FONCTIONS IMPORT EXCEL - MATCHING INTELLIGENT
 # ============================================================================
 
-def get_all_varietes_for_dropdown():
-    """Récupère TOUTES les variétés actives (nom + code) pour dropdown"""
+def fuzzy_match_value(value, valid_values, threshold=0.8):
+    """
+    Match fuzzy avec difflib (intégré Python, pas de dépendance externe)
+    
+    Returns:
+        - (True, value, "exact") si match exact
+        - (True, best_match, "fuzzy") si similarité >= threshold
+        - (False, None, "error") si aucun match
+    """
+    if pd.isna(value) or str(value).strip() == '':
+        return (True, None, "empty")
+    
+    value_clean = str(value).strip().upper()
+    
+    # 1. Match exact (case insensitive)
+    for valid in valid_values:
+        if valid.upper() == value_clean:
+            return (True, valid, "exact")
+    
+    # 2. Match fuzzy avec difflib
+    matches = get_close_matches(value_clean, [v.upper() for v in valid_values], n=1, cutoff=threshold)
+    
+    if matches:
+        # Retrouver la valeur originale (avec casse correcte)
+        matched_upper = matches[0]
+        for valid in valid_values:
+            if valid.upper() == matched_upper:
+                return (True, valid, "fuzzy")
+    
+    return (False, None, "error")
+
+
+def get_valid_references():
+    """Récupère toutes les valeurs valides depuis DB"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT code_variete, nom_variete 
-            FROM ref_varietes 
-            WHERE is_active = TRUE 
-            ORDER BY nom_variete
-        """)
-        rows = cursor.fetchall()
+        
+        # Variétés
+        cursor.execute("SELECT code_variete FROM ref_varietes WHERE is_active = TRUE ORDER BY code_variete")
+        rows_var = cursor.fetchall()
+        varietes = [row['code_variete'] for row in rows_var]
+        
+        # Producteurs
+        cursor.execute("SELECT code_producteur FROM ref_producteurs WHERE is_active = TRUE ORDER BY code_producteur")
+        rows_prod = cursor.fetchall()
+        producteurs = [row['code_producteur'] for row in rows_prod]
+        
+        # Types conditionnement
+        cursor.execute("SELECT DISTINCT type_conditionnement FROM stock_emplacements WHERE type_conditionnement IS NOT NULL")
+        rows_type = cursor.fetchall()
+        types_cond = [row['type_conditionnement'] for row in rows_type]
+        if not types_cond:
+            types_cond = ['Pallox', 'Petit Pallox', 'Big Bag']
+        
         cursor.close()
         conn.close()
-        return {row['nom_variete']: row['code_variete'] for row in rows}
+        
+        return {
+            'varietes': varietes,
+            'producteurs': producteurs,
+            'types_conditionnement': types_cond
+        }
+        
     except Exception as e:
-        st.error(f"❌ Erreur variétés : {str(e)}")
-        return {}
+        st.error(f"❌ Erreur chargement références : {str(e)}")
+        return None
 
-def get_all_producteurs_for_dropdown():
-    """Récupère TOUS les producteurs actifs (nom + code) pour dropdown"""
+
+def create_import_template():
+    """Crée un template Excel avec 3 onglets"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        
+        # ===== ONGLET 1 : Lots (template vide) =====
+        lots_columns = [
+            'code_lot_interne',
+            'nom_usage',
+            'code_producteur',
+            'code_variete',
+            'nombre_unites',
+            'type_conditionnement',
+            'poids_unitaire_kg',
+            'date_entree_stock',
+            'calibre_min',
+            'calibre_max',
+            'notes'
+        ]
+        
+        df_lots_template = pd.DataFrame(columns=lots_columns)
+        
+        # Ajouter 2 lignes d'exemple
+        df_lots_template.loc[0] = [
+            'LOT_2025_AGATA_001',
+            'AGATA BOSSELER',
+            'ACQU001',
+            'AGATA',
+            10,
+            'Pallox',
+            1900,
+            '2025-01-15',
+            35,
+            50,
+            'Exemple lot 1'
+        ]
+        
+        df_lots_template.loc[1] = [
+            'LOT_2025_BINTJE_001',
+            'BINTJE DUPONT',
+            'BINT002',
+            'BINTJE',
+            5,
+            'Pallox',
+            1900,
+            '2025-01-16',
+            40,
+            55,
+            ''
+        ]
+        
+        # ===== ONGLET 2 : Variétés (référence) =====
         cursor.execute("""
-            SELECT code_producteur, nom 
-            FROM ref_producteurs 
-            WHERE is_active = TRUE 
-            ORDER BY nom
+            SELECT code_variete, nom_variete, type, utilisation
+            FROM ref_varietes
+            WHERE is_active = TRUE
+            ORDER BY code_variete
         """)
         rows = cursor.fetchall()
+        df_varietes = pd.DataFrame(rows)
+        
+        # ===== ONGLET 3 : Producteurs (référence) =====
+        cursor.execute("""
+            SELECT code_producteur, nom, departement, ville
+            FROM ref_producteurs
+            WHERE is_active = TRUE
+            ORDER BY code_producteur
+        """)
+        rows = cursor.fetchall()
+        df_producteurs = pd.DataFrame(rows)
+        
         cursor.close()
         conn.close()
-        return {row['nom']: row['code_producteur'] for row in rows}
+        
+        # ===== CRÉER FICHIER EXCEL =====
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df_lots_template.to_excel(writer, sheet_name='Lots', index=False)
+            df_varietes.to_excel(writer, sheet_name='Variétés', index=False)
+            df_producteurs.to_excel(writer, sheet_name='Producteurs', index=False)
+        
+        return buffer.getvalue()
+        
     except Exception as e:
-        st.error(f"❌ Erreur producteurs : {str(e)}")
-        return {}
+        st.error(f"❌ Erreur création template : {str(e)}")
+        return None
+
+
+def validate_import_data(df, valid_refs):
+    """
+    Valide les données importées
+    
+    Returns:
+        df_validated : DataFrame avec colonnes validation
+        report : Dict avec statistiques
+    """
+    df_validated = df.copy()
+    
+    # Colonnes de validation
+    df_validated['_status'] = 'valid'
+    df_validated['_errors'] = ''
+    df_validated['_warnings'] = ''
+    df_validated['_variete_corrected'] = df_validated['code_variete']
+    df_validated['_producteur_corrected'] = df_validated['code_producteur']
+    df_validated['_type_cond_corrected'] = df_validated['type_conditionnement']
+    
+    errors_count = 0
+    warnings_count = 0
+    
+    for idx, row in df_validated.iterrows():
+        errors = []
+        warnings = []
+        
+        # ===== 1. CHAMPS OBLIGATOIRES =====
+        if pd.isna(row['code_lot_interne']) or str(row['code_lot_interne']).strip() == '':
+            errors.append("Code lot manquant")
+        
+        if pd.isna(row['nom_usage']) or str(row['nom_usage']).strip() == '':
+            errors.append("Nom usage manquant")
+        
+        if pd.isna(row['nombre_unites']) or row['nombre_unites'] <= 0:
+            errors.append("Nombre unités invalide")
+        
+        if pd.isna(row['type_conditionnement']) or str(row['type_conditionnement']).strip() == '':
+            errors.append("Type conditionnement manquant")
+        
+        # ===== 2. VALIDATION VARIÉTÉ =====
+        if not pd.isna(row['code_variete']) and str(row['code_variete']).strip() != '':
+            is_valid, matched, match_type = fuzzy_match_value(
+                row['code_variete'], 
+                valid_refs['varietes']
+            )
+            
+            if is_valid:
+                if match_type == "fuzzy":
+                    warnings.append(f"Variété '{row['code_variete']}' → '{matched}'")
+                    df_validated.at[idx, '_variete_corrected'] = matched
+                elif match_type == "exact":
+                    df_validated.at[idx, '_variete_corrected'] = matched
+            else:
+                errors.append(f"Variété '{row['code_variete']}' introuvable")
+                df_validated.at[idx, '_variete_corrected'] = None
+        
+        # ===== 3. VALIDATION PRODUCTEUR =====
+        if not pd.isna(row['code_producteur']) and str(row['code_producteur']).strip() != '':
+            is_valid, matched, match_type = fuzzy_match_value(
+                row['code_producteur'], 
+                valid_refs['producteurs']
+            )
+            
+            if is_valid:
+                if match_type == "fuzzy":
+                    warnings.append(f"Producteur '{row['code_producteur']}' → '{matched}'")
+                    df_validated.at[idx, '_producteur_corrected'] = matched
+                elif match_type == "exact":
+                    df_validated.at[idx, '_producteur_corrected'] = matched
+            else:
+                errors.append(f"Producteur '{row['code_producteur']}' introuvable")
+                df_validated.at[idx, '_producteur_corrected'] = None
+        
+        # ===== 4. VALIDATION TYPE CONDITIONNEMENT =====
+        is_valid, matched, match_type = fuzzy_match_value(
+            row['type_conditionnement'], 
+            valid_refs['types_conditionnement']
+        )
+        
+        if is_valid:
+            if match_type == "fuzzy":
+                warnings.append(f"Type '{row['type_conditionnement']}' → '{matched}'")
+                df_validated.at[idx, '_type_cond_corrected'] = matched
+            elif match_type == "exact":
+                df_validated.at[idx, '_type_cond_corrected'] = matched
+        else:
+            errors.append(f"Type '{row['type_conditionnement']}' invalide")
+            df_validated.at[idx, '_type_cond_corrected'] = None
+        
+        # ===== 5. DÉFINIR STATUT =====
+        if errors:
+            df_validated.at[idx, '_status'] = 'error'
+            df_validated.at[idx, '_errors'] = ' | '.join(errors)
+            errors_count += 1
+        elif warnings:
+            df_validated.at[idx, '_status'] = 'warning'
+            df_validated.at[idx, '_warnings'] = ' | '.join(warnings)
+            warnings_count += 1
+    
+    # Rapport
+    report = {
+        'total': len(df_validated),
+        'valid': len(df_validated[df_validated['_status'] == 'valid']),
+        'warnings': warnings_count,
+        'errors': errors_count
+    }
+    
+    return df_validated, report
+
+
+def import_validated_lots(df_validated):
+    """Importe uniquement les lots valides en base"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Filtrer lots valides ou warnings (erreurs exclues)
+        df_to_import = df_validated[df_validated['_status'].isin(['valid', 'warning'])].copy()
+        
+        imported_count = 0
+        failed_lots = []
+        
+        for idx, row in df_to_import.iterrows():
+            try:
+                # Utiliser valeurs corrigées
+                code_variete = row['_variete_corrected'] if pd.notna(row['_variete_corrected']) else None
+                code_producteur = row['_producteur_corrected'] if pd.notna(row['_producteur_corrected']) else None
+                type_cond = row['_type_cond_corrected']
+                
+                # Calculer poids total
+                poids_unitaire = float(row['poids_unitaire_kg']) if pd.notna(row['poids_unitaire_kg']) else None
+                nombre_unites = int(row['nombre_unites'])
+                poids_total = poids_unitaire * nombre_unites if poids_unitaire else None
+                
+                # INSERT lot
+                query_lot = """
+                INSERT INTO lots_bruts (
+                    code_lot_interne, nom_usage, code_producteur, code_variete,
+                    nombre_unites, type_conditionnement, poids_unitaire_kg, poids_total_brut_kg,
+                    date_entree_stock, calibre_min, calibre_max, notes,
+                    statut, is_active, created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'EN_STOCK', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """
+                
+                cursor.execute(query_lot, (
+                    row['code_lot_interne'],
+                    row['nom_usage'],
+                    code_producteur,
+                    code_variete,
+                    nombre_unites,
+                    type_cond,
+                    poids_unitaire,
+                    poids_total,
+                    row['date_entree_stock'] if pd.notna(row['date_entree_stock']) else None,
+                    int(row['calibre_min']) if pd.notna(row['calibre_min']) else None,
+                    int(row['calibre_max']) if pd.notna(row['calibre_max']) else None,
+                    row['notes'] if pd.notna(row['notes']) else None
+                ))
+                
+                imported_count += 1
+                
+            except Exception as e:
+                failed_lots.append(f"{row['code_lot_interne']}: {str(e)}")
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        if failed_lots:
+            return True, f"✅ {imported_count} lots importés | ⚠️ {len(failed_lots)} échecs : {', '.join(failed_lots[:3])}"
+        else:
+            return True, f"✅ {imported_count} lots importés avec succès"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur import : {str(e)}"
+
 
 # ============================================================================
-# FONCTIONS CHARGEMENT / SAUVEGARDE
+# FONCTIONS UTILITAIRES LOTS (code existant)
 # ============================================================================
 
-def load_stock_data():
-    """Charge les données du stock AVEC jointures"""
+def get_lots():
+    """Récupère tous les lots"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
         query = """
-            SELECT 
-                l.id,
-                l.code_lot_interne,
-                l.nom_usage,
-                l.code_variete,
-                COALESCE(v.nom_variete, l.code_variete) as nom_variete,
-                l.code_producteur,
-                COALESCE(p.nom, l.code_producteur) as nom_producteur,
-                l.date_entree_stock,
-                l.calibre_min,
-                l.calibre_max,
-                l.poids_total_brut_kg,
-                l.prix_achat_euro_tonne,
-                l.tare_achat_pct,
-                l.valeur_lot_euro,
-                l.statut,
-                COALESCE((CURRENT_DATE - l.date_entree_stock::DATE), 0) as age_jours,
-                l.is_active
-            FROM lots_bruts l
-            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
-            LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
-            WHERE l.is_active = TRUE
-            ORDER BY l.date_entree_stock DESC
+        SELECT 
+            l.id,
+            l.code_lot_interne,
+            l.nom_usage,
+            l.code_producteur,
+            COALESCE(p.nom, l.code_producteur) as nom_producteur,
+            l.code_variete,
+            COALESCE(v.nom_variete, l.code_variete) as nom_variete,
+            l.date_entree_stock,
+            l.nombre_unites,
+            l.type_conditionnement,
+            l.poids_total_brut_kg,
+            l.statut,
+            l.notes,
+            l.is_active
+        FROM lots_bruts l
+        LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
+        LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+        WHERE l.is_active = TRUE
+        ORDER BY l.date_entree_stock DESC, l.code_lot_interne
         """
         
         cursor.execute(query)
@@ -183,7 +501,7 @@ def load_stock_data():
         if rows:
             df = pd.DataFrame(rows)
             # Convertir colonnes numériques
-            numeric_cols = ['poids_total_brut_kg', 'prix_achat_euro_tonne', 'tare_achat_pct', 'valeur_lot_euro', 'age_jours', 'calibre_min', 'calibre_max']
+            numeric_cols = ['nombre_unites', 'poids_total_brut_kg']
             for col in numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -191,665 +509,456 @@ def load_stock_data():
         return pd.DataFrame()
         
     except Exception as e:
-        st.error(f"❌ Erreur chargement : {str(e)}")
+        st.error(f"❌ Erreur chargement lots : {str(e)}")
         return pd.DataFrame()
 
-def calculate_metrics(df):
-    """Calcule les métriques KPI"""
-    if df.empty:
-        return {'total_lots': 0, 'tonnage_total': 0.0, 'nb_varietes': 0, 'nb_producteurs': 0}
-    
-    return {
-        'total_lots': len(df),
-        'tonnage_total': df['poids_total_brut_kg'].sum() / 1000 if 'poids_total_brut_kg' in df.columns else 0.0,
-        'nb_varietes': df['code_variete'].nunique(),
-        'nb_producteurs': df['code_producteur'].nunique()
-    }
 
-def convert_to_native_types(value):
-    """Convertit numpy types vers types Python natifs"""
-    if pd.isna(value) or value is None:
-        return None
-    if isinstance(value, (np.bool_, bool)):
-        return bool(value)
-    if isinstance(value, (np.integer, np.int64, np.int32, np.int16, np.int8)):
-        return int(value)
-    if isinstance(value, (np.floating, np.float64, np.float32)):
-        return float(value)
-    if isinstance(value, date):
-        return value
-    return value
-
-def save_stock_changes(original_df, edited_df, varietes_dict, producteurs_dict):
-    """Sauvegarde les modifications avec conversion NOM → CODE pour variétés/producteurs"""
+def get_active_varietes():
+    """Récupère les variétés actives"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        updates = 0
-        
-        varietes_reverse = {v: k for k, v in varietes_dict.items()}
-        producteurs_reverse = {v: k for k, v in producteurs_dict.items()}
-        
-        for idx in edited_df.index:
-            if idx not in original_df.index:
-                continue
-            
-            if 'id' not in edited_df.columns:
-                continue
-            
-            row_id = edited_df.loc[idx, 'id']
-            
-            if pd.isna(row_id) or row_id == 0:
-                continue
-            
-            row_id = convert_to_native_types(row_id)
-            
-            changes = {}
-            
-            editable_columns = ['nom_usage', 'nom_variete', 'nom_producteur', 'calibre_min', 'calibre_max', 
-                               'prix_achat_euro_tonne', 'tare_achat_pct', 'statut']
-            
-            for col in editable_columns:
-                if col not in edited_df.columns or col not in original_df.columns:
-                    continue
-                
-                old_val = original_df.loc[idx, col]
-                new_val = edited_df.loc[idx, col]
-                
-                if pd.isna(old_val) and pd.isna(new_val):
-                    continue
-                elif pd.isna(old_val) or pd.isna(new_val) or old_val != new_val:
-                    if col == 'nom_variete' and new_val in varietes_dict:
-                        changes['code_variete'] = varietes_dict[new_val]
-                    elif col == 'nom_producteur' and new_val in producteurs_dict:
-                        changes['code_producteur'] = producteurs_dict[new_val]
-                    elif col not in ['nom_variete', 'nom_producteur']:
-                        changes[col] = convert_to_native_types(new_val)
-            
-            # ⭐ Recalcul valeur_lot si tare ou prix change
-            if 'tare_achat_pct' in changes or 'prix_achat_euro_tonne' in changes:
-                poids_brut = float(edited_df.loc[idx, 'poids_total_brut_kg']) if pd.notna(edited_df.loc[idx, 'poids_total_brut_kg']) else 0.0
-                tare = float(changes.get('tare_achat_pct', edited_df.loc[idx, 'tare_achat_pct'])) if 'tare_achat_pct' in changes or pd.notna(edited_df.loc[idx, 'tare_achat_pct']) else 0.0
-                prix = float(changes.get('prix_achat_euro_tonne', edited_df.loc[idx, 'prix_achat_euro_tonne'])) if 'prix_achat_euro_tonne' in changes or pd.notna(edited_df.loc[idx, 'prix_achat_euro_tonne']) else 0.0
-                
-                poids_tonnes = poids_brut / 1000.0
-                valeur_lot = poids_tonnes * (1.0 - tare / 100.0) * prix
-                changes['valeur_lot_euro'] = valeur_lot
-            
-            if changes:
-                set_clause = ", ".join([f"{col} = %s" for col in changes.keys()])
-                values = list(changes.values()) + [row_id]
-                
-                update_query = f"UPDATE lots_bruts SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = %s"
-                cursor.execute(update_query, values)
-                updates += 1
-        
-        conn.commit()
+        cursor.execute("SELECT code_variete FROM ref_varietes WHERE is_active = TRUE ORDER BY code_variete")
+        rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        
-        if updates == 0:
-            return True, "ℹ️ Aucune modification détectée"
-        return True, f"✅ {updates} lot(s) mis à jour"
-        
+        return [row['code_variete'] for row in rows] if rows else []
     except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
-        return False, f"❌ Erreur : {str(e)}"
+        st.error(f"❌ Erreur : {str(e)}")
+        return []
 
-def add_lot(data, varietes_dict, producteurs_dict):
-    """Ajoute un nouveau lot dans lots_bruts"""
+
+def get_active_producteurs():
+    """Récupère les producteurs actifs"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT code_producteur, nom FROM ref_producteurs WHERE is_active = TRUE ORDER BY nom")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [(row['code_producteur'], row['nom']) for row in rows] if rows else []
+    except Exception as e:
+        st.error(f"❌ Erreur : {str(e)}")
+        return []
+
+
+def create_lot(data):
+    """Crée un nouveau lot"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Convertir NOM → CODE pour variété
-        if 'nom_variete' in data and data['nom_variete']:
-            if data['nom_variete'] in varietes_dict:
-                data['code_variete'] = varietes_dict[data['nom_variete']]
-            del data['nom_variete']
+        # Calculer poids total
+        if data.get('poids_unitaire_kg') and data.get('nombre_unites'):
+            data['poids_total_brut_kg'] = data['poids_unitaire_kg'] * data['nombre_unites']
         
-        # Convertir NOM → CODE pour producteur
-        if 'nom_producteur' in data and data['nom_producteur']:
-            if data['nom_producteur'] in producteurs_dict:
-                data['code_producteur'] = producteurs_dict[data['nom_producteur']]
-            del data['nom_producteur']
+        # Colonnes
+        columns = [
+            'code_lot_interne', 'nom_usage', 'code_producteur', 'code_variete',
+            'nombre_unites', 'type_conditionnement', 'poids_unitaire_kg', 'poids_total_brut_kg',
+            'date_entree_stock', 'calibre_min', 'calibre_max', 'notes'
+        ]
         
-        # Calcul valeur_lot
-        poids_brut = float(data.get('poids_total_brut_kg', 0))
-        tare = float(data.get('tare_achat_pct', 0))
-        prix = float(data.get('prix_achat_euro_tonne', 0))
-        
-        poids_tonnes = poids_brut / 1000.0
-        valeur_lot = poids_tonnes * (1.0 - tare / 100.0) * prix
-        data['valeur_lot_euro'] = valeur_lot
-        
-        # Ajouter is_active
-        data['is_active'] = True
-        
-        # Préparer l'insertion
-        columns = list(data.keys())
-        values = [convert_to_native_types(v) for v in data.values()]
-        placeholders = ", ".join(["%s"] * len(columns))
-        columns_str = ", ".join(columns)
+        values = [data.get(col) for col in columns]
+        placeholders = ', '.join(['%s'] * len(columns))
+        columns_str = ', '.join(columns)
         
         query = f"""
-            INSERT INTO lots_bruts ({columns_str}, created_at, updated_at) 
-            VALUES ({placeholders}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO lots_bruts ({columns_str}, statut, is_active, created_at, updated_at)
+        VALUES ({placeholders}, 'EN_STOCK', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        RETURNING id
         """
         
         cursor.execute(query, values)
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        return True, "✅ Lot ajouté avec succès"
-        
-    except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
-        
-        error_msg = str(e).lower()
-        
-        if "duplicate key" in error_msg or "unique constraint" in error_msg:
-            if "code_lot_interne" in error_msg:
-                return False, "❌ Ce code lot est déjà utilisé. Merci de choisir un autre code."
-            else:
-                return False, "❌ Cette valeur est déjà utilisée."
-        elif "not null" in error_msg or "null value" in error_msg:
-            return False, "❌ Un champ obligatoire est manquant."
-        elif "foreign key" in error_msg:
-            return False, "❌ Valeur invalide (variété ou producteur inexistant)."
-        else:
-            return False, f"❌ Erreur : {str(e)}"
-
-def delete_lot(lot_id):
-    """Désactive un lot (soft delete)"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        query = "UPDATE lots_bruts SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s"
-        cursor.execute(query, (lot_id,))
+        lot_id = cursor.fetchone()['id']
         
         conn.commit()
         cursor.close()
         conn.close()
         
-        return True, "✅ Lot désactivé avec succès"
+        return True, f"✅ Lot #{lot_id} créé avec succès"
         
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
-# ============================================================================
-# CHARGEMENT DES DONNÉES
-# ============================================================================
-
-df = load_stock_data()
 
 # ============================================================================
-# FORMULAIRE D'AJOUT (AU CLIC SUR BOUTON)
+# INTERFACE PRINCIPALE - ONGLETS
 # ============================================================================
 
-if st.session_state.get('show_add_form', False):
-    st.subheader("➕ Ajouter un nouveau lot")
+# Créer 3 onglets
+tab1, tab2, tab3 = st.tabs(["📋 Liste Lots", "➕ Créer Lot", "📥 Import Excel"])
+
+# ============================================================================
+# ONGLET 1 : LISTE LOTS
+# ============================================================================
+
+with tab1:
+    st.subheader("📋 Liste des Lots")
     
-    varietes_dict = get_all_varietes_for_dropdown()
-    producteurs_dict = get_all_producteurs_for_dropdown()
+    df_lots = get_lots()
     
-    st.info("📌 Champs obligatoires : **Code Lot, Nom Usage, Variété, Producteur, Type Conditionnement, Nombre Unités**")
+    if not df_lots.empty:
+        # Métriques
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("📦 Total Lots", len(df_lots))
+        
+        with col2:
+            total_unites = df_lots['nombre_unites'].sum()
+            st.metric("📊 Total Unités", f"{int(total_unites):,}")
+        
+        with col3:
+            total_tonnes = df_lots['poids_total_brut_kg'].sum() / 1000
+            st.metric("⚖️ Total Tonnage", f"{total_tonnes:,.1f} T")
+        
+        st.markdown("---")
+        
+        # Filtres
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            varietes_list = ["Toutes"] + sorted(df_lots['nom_variete'].dropna().unique().tolist())
+            filtre_variete = st.selectbox("Filtrer par variété", varietes_list, key="filtre_var_liste")
+        
+        with col2:
+            producteurs_list = ["Tous"] + sorted(df_lots['nom_producteur'].dropna().unique().tolist())
+            filtre_producteur = st.selectbox("Filtrer par producteur", producteurs_list, key="filtre_prod_liste")
+        
+        with col3:
+            statuts_list = ["Tous"] + sorted(df_lots['statut'].dropna().unique().tolist())
+            filtre_statut = st.selectbox("Filtrer par statut", statuts_list, key="filtre_statut")
+        
+        # Appliquer filtres
+        df_filtered = df_lots.copy()
+        if filtre_variete != "Toutes":
+            df_filtered = df_filtered[df_filtered['nom_variete'] == filtre_variete]
+        if filtre_producteur != "Tous":
+            df_filtered = df_filtered[df_filtered['nom_producteur'] == filtre_producteur]
+        if filtre_statut != "Tous":
+            df_filtered = df_filtered[df_filtered['statut'] == filtre_statut]
+        
+        st.info(f"📊 {len(df_filtered)} lot(s) affiché(s)")
+        
+        # Tableau
+        df_display = df_filtered[[
+            'code_lot_interne', 'nom_usage', 'nom_variete', 'nom_producteur',
+            'date_entree_stock', 'nombre_unites', 'type_conditionnement',
+            'poids_total_brut_kg', 'statut'
+        ]].copy()
+        
+        column_config = {
+            'code_lot_interne': st.column_config.TextColumn("Code Lot", width="medium"),
+            'nom_usage': st.column_config.TextColumn("Nom Usage", width="medium"),
+            'nom_variete': st.column_config.TextColumn("Variété", width="small"),
+            'nom_producteur': st.column_config.TextColumn("Producteur", width="medium"),
+            'date_entree_stock': st.column_config.DateColumn("Date Entrée", format="DD/MM/YYYY"),
+            'nombre_unites': st.column_config.NumberColumn("Unités", format="%d"),
+            'type_conditionnement': st.column_config.TextColumn("Type", width="small"),
+            'poids_total_brut_kg': st.column_config.NumberColumn("Poids (kg)", format="%.0f"),
+            'statut': st.column_config.TextColumn("Statut", width="small")
+        }
+        
+        st.dataframe(
+            df_display,
+            column_config=column_config,
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Bouton Détails
+        st.markdown("---")
+        if st.button("👁️ Voir Détails Stock", type="primary", use_container_width=True):
+            st.switch_page("pages/03_Détails stock.py")
     
-    if 'new_lot_data' not in st.session_state:
-        st.session_state.new_lot_data = {}
+    else:
+        st.warning("⚠️ Aucun lot enregistré. Créez-en un ou importez depuis Excel !")
+
+# ============================================================================
+# ONGLET 2 : CRÉER LOT
+# ============================================================================
+
+with tab2:
+    st.subheader("➕ Créer un Nouveau Lot")
     
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.session_state.new_lot_data['code_lot_interne'] = st.text_input(
-            "Code Lot Interne *",
-            key="add_code_lot_interne",
-            help="Code unique du lot (ex: LOT_2025_AGATA_001)"
-        )
+    # Formulaire
+    with st.form("form_create_lot", clear_on_submit=True):
+        col1, col2 = st.columns(2)
         
-        st.session_state.new_lot_data['nom_usage'] = st.text_input(
-            "Nom Usage *",
-            key="add_nom_usage",
-            help="Nom d'usage du lot"
-        )
-        
-        variete_options = [""] + list(varietes_dict.keys())
-        st.session_state.new_lot_data['nom_variete'] = st.selectbox(
-            "Variété *",
-            options=variete_options,
-            key="add_variete"
-        )
-        
-        producteur_options = [""] + list(producteurs_dict.keys())
-        st.session_state.new_lot_data['nom_producteur'] = st.selectbox(
-            "Producteur *",
-            options=producteur_options,
-            key="add_producteur"
-        )
-        
-        # Date entrée - AUTO
-        st.session_state.new_lot_data['date_entree_stock'] = datetime.now().date()
-        st.text_input(
-            "Date Entrée Stock (auto)",
-            value=datetime.now().strftime("%d/%m/%Y"),
-            disabled=True,
-            key="add_date_entree_display"
-        )
-    
-    with col2:
-        # ⭐ Type conditionnement OBLIGATOIRE
-        TYPES_COND = ["Pallox", "Petit Pallox", "Big Bag"]
-        st.session_state.new_lot_data['type_conditionnement'] = st.selectbox(
-            "Type Conditionnement *",
-            options=[""] + TYPES_COND,
-            key="add_type_cond"
-        )
-        
-        # ⭐ Nombre unités OBLIGATOIRE
-        nombre_unites = st.number_input(
-            "Nombre Unités *",
-            min_value=1,
-            value=10,
-            step=1,
-            key="add_nombre_unites"
-        )
-        st.session_state.new_lot_data['nombre_unites'] = nombre_unites
-        
-        # ⭐ Calcul AUTOMATIQUE poids selon type
-        type_cond = st.session_state.new_lot_data.get('type_conditionnement', '')
-        
-        if type_cond == 'Pallox':
-            poids_unitaire = 1900.0
-        elif type_cond == 'Petit Pallox':
-            poids_unitaire = 1200.0
-        elif type_cond == 'Big Bag':
-            poids_unitaire = 1600.0
-        else:
-            poids_unitaire = 0.0
-        
-        poids_total = nombre_unites * poids_unitaire
-        st.session_state.new_lot_data['poids_total_brut_kg'] = poids_total
-        
-        st.metric("Poids Total Brut", f"{poids_total:,.0f} kg ({poids_total/1000:.1f} T)")
-        
-        # Calibres
-        st.session_state.new_lot_data['calibre_min'] = st.number_input(
-            "Calibre Min",
-            min_value=0,
-            value=0,
-            step=5,
-            key="add_calibre_min"
-        )
-        
-        st.session_state.new_lot_data['calibre_max'] = st.number_input(
-            "Calibre Max",
-            min_value=0,
-            value=0,
-            step=5,
-            key="add_calibre_max"
-        )
-        
-        # Prix + Tare
-        st.session_state.new_lot_data['prix_achat_euro_tonne'] = st.number_input(
-            "Prix Achat (€/tonne)",
-            min_value=0.0,
-            value=0.0,
-            step=10.0,
-            key="add_prix_achat"
-        )
-        
-        st.session_state.new_lot_data['tare_achat_pct'] = st.number_input(
-            "Tare Achat (%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=5.0,
-            step=0.5,
-            key="add_tare_achat"
-        )
-        
-        # Statut
-        STATUTS = ["EN_STOCK", "RESERVE", "VENDU", "DECHET"]
-        st.session_state.new_lot_data['statut'] = st.selectbox(
-            "Statut",
-            options=STATUTS,
-            index=0,
-            key="add_statut"
-        )
-    
-    st.markdown("---")
-    
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        if st.button("💾 Enregistrer", use_container_width=True, type="primary", key="btn_save_lot"):
-            missing_fields = []
+        with col1:
+            code_lot = st.text_input("Code Lot *", placeholder="LOT_2025_AGATA_001")
+            nom_usage = st.text_input("Nom Usage *", placeholder="AGATA BOSSELER")
             
-            if not st.session_state.new_lot_data.get('code_lot_interne'):
-                missing_fields.append("Code Lot Interne")
-            if not st.session_state.new_lot_data.get('nom_usage'):
-                missing_fields.append("Nom Usage")
-            if not st.session_state.new_lot_data.get('nom_variete'):
-                missing_fields.append("Variété")
-            if not st.session_state.new_lot_data.get('nom_producteur'):
-                missing_fields.append("Producteur")
-            if not st.session_state.new_lot_data.get('type_conditionnement'):
-                missing_fields.append("Type Conditionnement")
-            if not st.session_state.new_lot_data.get('nombre_unites') or st.session_state.new_lot_data.get('nombre_unites') == 0:
-                missing_fields.append("Nombre Unités")
+            # Producteurs
+            producteurs = get_active_producteurs()
+            prod_options = [""] + [f"{p[0]} - {p[1]}" for p in producteurs]
+            selected_prod = st.selectbox("Producteur", prod_options)
+            code_producteur = selected_prod.split(" - ")[0] if selected_prod else None
             
-            if missing_fields:
-                st.error(f"❌ Champs obligatoires manquants : {', '.join(missing_fields)}")
+            # Variétés
+            varietes = get_active_varietes()
+            code_variete = st.selectbox("Variété", [""] + varietes)
+            
+            nombre_unites = st.number_input("Nombre Unités *", min_value=1, value=1, step=1)
+        
+        with col2:
+            type_conditionnement = st.selectbox("Type Conditionnement *", 
+                                                ["Pallox", "Petit Pallox", "Big Bag", "Vrac"])
+            
+            poids_unitaire = st.number_input("Poids Unitaire (kg)", min_value=0.0, value=1900.0, step=100.0)
+            
+            date_entree = st.date_input("Date Entrée", value=datetime.now().date())
+            
+            calibre_min = st.number_input("Calibre Min", min_value=0, value=35, step=5)
+            calibre_max = st.number_input("Calibre Max", min_value=0, value=50, step=5)
+        
+        notes = st.text_area("Notes (optionnel)")
+        
+        submitted = st.form_submit_button("✅ Créer le Lot", type="primary", use_container_width=True)
+        
+        if submitted:
+            # Validation
+            if not code_lot or not nom_usage or not nombre_unites or not type_conditionnement:
+                st.error("❌ Champs obligatoires manquants : Code Lot, Nom Usage, Nombre Unités, Type")
             else:
-                filtered_data = {}
-                for k, v in st.session_state.new_lot_data.items():
-                    if isinstance(v, bool) or (isinstance(v, (int, float)) and v == 0):
-                        filtered_data[k] = v
-                    elif isinstance(v, date):
-                        filtered_data[k] = v
-                    elif v != '' and v is not None:
-                        filtered_data[k] = v
+                data = {
+                    'code_lot_interne': code_lot,
+                    'nom_usage': nom_usage,
+                    'code_producteur': code_producteur if code_producteur else None,
+                    'code_variete': code_variete if code_variete else None,
+                    'nombre_unites': nombre_unites,
+                    'type_conditionnement': type_conditionnement,
+                    'poids_unitaire_kg': poids_unitaire,
+                    'date_entree_stock': date_entree,
+                    'calibre_min': calibre_min,
+                    'calibre_max': calibre_max,
+                    'notes': notes if notes else None
+                }
                 
-                success, message = add_lot(filtered_data, varietes_dict, producteurs_dict)
+                success, message = create_lot(data)
                 
                 if success:
                     st.success(message)
                     show_confetti_animation()
-                    st.info("💡 **Prochaine étape** : Allez dans **Détails Stock** pour ajouter les emplacements de ce lot")
-                    time.sleep(3)
-                    st.session_state.show_add_form = False
-                    st.session_state.pop('new_lot_data', None)
+                    time.sleep(2)
                     st.rerun()
                 else:
                     st.error(message)
-    
-    with col2:
-        if st.button("❌ Annuler", use_container_width=True, key="btn_cancel_lot"):
-            st.session_state.show_add_form = False
-            st.session_state.pop('new_lot_data', None)
-            st.rerun()
-    
-    st.markdown("---")
 
 # ============================================================================
-# AFFICHAGE TABLEAU ET FILTRES
+# ONGLET 3 : IMPORT EXCEL
 # ============================================================================
 
-if not df.empty:
-    varietes_dict = get_all_varietes_for_dropdown()
-    producteurs_dict = get_all_producteurs_for_dropdown()
-    
-    metrics = calculate_metrics(df)
-    
-    # KPIs
-    st.subheader("📊 Indicateurs Clés")
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("📦 Lots actifs", f"{metrics['total_lots']:,}".replace(',', ' '))
-    with col2:
-        st.metric("⚖️ Tonnage total", f"{metrics['tonnage_total']:.1f} t")
-    with col3:
-        st.metric("🌱 Variétés", metrics['nb_varietes'])
-    with col4:
-        st.metric("👨‍🌾 Producteurs", metrics['nb_producteurs'])
+with tab3:
+    st.subheader("📥 Import en Masse via Excel")
+    st.markdown("*Import intelligent avec détection automatique des fautes de frappe*")
     
     st.markdown("---")
     
-    # Filtres
-    st.subheader("🔍 Filtres")
-    col1, col2, col3 = st.columns(3)
+    # ===== ÉTAPE 1 : Télécharger template =====
+    st.markdown("#### 1️⃣ Télécharger le Template Excel")
+    
+    col1, col2 = st.columns([3, 1])
     
     with col1:
-        search_nom = st.text_input("Nom usage", key="filter_nom_usage", placeholder="Rechercher...")
+        st.info("""
+        📋 **Template avec 3 onglets** :
+        - **Lots** : Vos données à importer (2 exemples fournis)
+        - **Variétés** : Liste complète des variétés valides
+        - **Producteurs** : Liste complète des producteurs valides
+        """)
     
     with col2:
-        varietes = ['Toutes'] + sorted(df['nom_variete'].dropna().unique().tolist())
-        selected_variete = st.selectbox("Variété", varietes, key="filter_variete")
-    
-    with col3:
-        producteurs = ['Tous'] + sorted(df['nom_producteur'].dropna().unique().tolist())
-        selected_producteur = st.selectbox("Producteur", producteurs, key="filter_producteur")
-    
-    # Appliquer filtres
-    filtered_df = df.copy()
-    
-    if search_nom:
-        filtered_df = filtered_df[filtered_df['nom_usage'].str.contains(search_nom, case=False, na=False)]
-    
-    if selected_variete != 'Toutes':
-        filtered_df = filtered_df[filtered_df['nom_variete'] == selected_variete]
-    
-    if selected_producteur != 'Tous':
-        filtered_df = filtered_df[filtered_df['nom_producteur'] == selected_producteur]
+        if st.button("📥 Télécharger", use_container_width=True, type="primary", key="btn_download_template"):
+            template_data = create_import_template()
+            if template_data:
+                st.download_button(
+                    label="💾 Template Excel",
+                    data=template_data,
+                    file_name=f"template_import_lots_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
     
     st.markdown("---")
-    st.info(f"📊 {len(filtered_df)} lot(s) affiché(s) sur {len(df)} total")
     
-    if 'original_stock_df' not in st.session_state:
-        st.session_state.original_stock_df = filtered_df.copy()
+    # ===== ÉTAPE 2 : Upload fichier =====
+    st.markdown("#### 2️⃣ Uploader votre Fichier Excel")
     
-    # ⭐ EN-TÊTE avec BOUTONS
-    col_title, col_save, col_refresh, col_add, col_details = st.columns([2, 1, 1, 1, 1.5])
-    
-    with col_title:
-        st.subheader("📋 Liste des Lots")
-    
-    with col_save:
-        if st.button("💾 Enregistrer", use_container_width=True, type="primary", key="btn_save_top"):
-            if 'edited_stock_df' in st.session_state:
-                success, message = save_stock_changes(st.session_state.original_stock_df, st.session_state.edited_stock_df, varietes_dict, producteurs_dict)
-                if success:
-                    st.success(message)
-                    st.session_state.pop('original_stock_df', None)
-                    st.session_state.pop('edited_stock_df', None)
-                    st.rerun()
-                else:
-                    if "Aucune modification" in message:
-                        st.info(message)
-                    else:
-                        st.error(message)
-            else:
-                st.warning("⚠️ Aucune modification à enregistrer")
-    
-    with col_refresh:
-        if st.button("🔄 Actualiser", use_container_width=True, key="btn_refresh_top"):
-            st.session_state.pop('original_stock_df', None)
-            st.rerun()
-    
-    with col_add:
-        if st.button("➕ Ajouter", use_container_width=True, type="primary", key="btn_add_top"):
-            st.session_state.show_add_form = not st.session_state.get('show_add_form', False)
-            st.rerun()
-    
-    # ⭐ BOUTON DÉTAILS STOCK (avec compteur sélectionnés)
-    with col_details:
-        nb_selected = len(st.session_state.get('selected_lots_for_details', []))
-        
-        if nb_selected > 0:
-            btn_label = f"📦 Détails ({nb_selected})"
-            btn_disabled = False
-        else:
-            btn_label = "📦 Détails Stock"
-            btn_disabled = True
-        
-        if st.button(btn_label, use_container_width=True, type="secondary", key="btn_view_details", disabled=btn_disabled):
-            st.switch_page("pages/03_Détails stock.py")
-    
-    # Colonnes à afficher
-    display_columns = [
-        'id',
-        'code_lot_interne', 
-        'nom_usage', 
-        'nom_variete',
-        'nom_producteur',
-        'poids_total_brut_kg',
-        'calibre_min',
-        'calibre_max',
-        'prix_achat_euro_tonne',
-        'tare_achat_pct',
-        'valeur_lot_euro',
-        'age_jours',
-        'statut'
-    ]
-    
-    available_columns = [col for col in display_columns if col in filtered_df.columns]
-    display_df = filtered_df[available_columns].copy()
-    
-    # Configuration dropdowns
-    column_config = {
-        "id": None,
-        "nom_variete": st.column_config.SelectboxColumn(
-            "Variété",
-            options=sorted(varietes_dict.keys()),
-            required=False
-        ),
-        "nom_producteur": st.column_config.SelectboxColumn(
-            "Producteur",
-            options=sorted(producteurs_dict.keys()),
-            required=False
-        )
-    }
-    
-    # ⭐ AJOUTER COLONNE CHECKBOX POUR SÉLECTION
-    df_with_select = display_df.copy()
-    df_with_select.insert(0, "Select", False)
-    
-    column_config["Select"] = st.column_config.CheckboxColumn(
-        "☑",
-        help="Cochez les lots puis cliquez 'Actualiser' pour voir le bouton Détails Stock",
-        default=False,
-        width="small"
+    uploaded_file = st.file_uploader(
+        "Choisir un fichier Excel (.xlsx)",
+        type=['xlsx'],
+        key="import_excel_file",
+        help="Le fichier doit contenir un onglet 'Lots' avec les colonnes du template"
     )
     
-    # DATA EDITOR avec colonne checkbox
-    edited_df = st.data_editor(
-        df_with_select,
-        use_container_width=True,
-        num_rows="fixed",
-        disabled=['id', 'code_lot_interne', 'poids_total_brut_kg', 'valeur_lot_euro', 'age_jours'],
-        column_config=column_config,
-        key="stock_editor"
-    )
-    
-    # Stocker edited_df
-    edited_df_for_save = edited_df.drop('Select', axis=1) if 'Select' in edited_df.columns else edited_df
-    st.session_state.edited_stock_df = edited_df_for_save
-    
-    # ⭐ RÉCUPÉRER LES LOTS SÉLECTIONNÉS
-    selected_lot_ids = []
-    
-    if 'Select' in edited_df.columns:
-        selected_rows = edited_df[edited_df['Select'] == True]
-        
-        if len(selected_rows) > 0:
-            selected_lot_ids = selected_rows['id'].tolist()
+    if uploaded_file:
+        try:
+            # Lire onglet Lots
+            df_import = pd.read_excel(uploaded_file, sheet_name='Lots')
             
-            if len(selected_lot_ids) > 10:
-                st.warning("⚠️ Vous avez sélectionné plus de 10 lots. Seuls les 10 premiers seront affichés.")
-                selected_lot_ids = selected_lot_ids[:10]
-    
-    # Stocker dans session_state
-    st.session_state.selected_lots_for_details = selected_lot_ids
-    
-    # ⭐ DÉTECTION INTELLIGENTE : Rerun si sélection change
-    if 'Select' in edited_df.columns:
-        current_select_state = tuple(sorted(selected_lot_ids))
-        previous_select_state = st.session_state.get('previous_select_state', tuple())
-        
-        if current_select_state != previous_select_state and not st.session_state.get('is_rerunning_for_select', False):
-            st.session_state.previous_select_state = current_select_state
-            st.session_state.is_rerunning_for_select = True
-            st.rerun()
-        else:
-            st.session_state.is_rerunning_for_select = False
-    
-    # Afficher info sélection
-    if len(selected_lot_ids) > 0:
-        col_msg, col_btn = st.columns([3, 1])
-        
-        with col_msg:
-            st.success(f"✅ {len(selected_lot_ids)} lot(s) sélectionné(s) pour voir les détails stock")
-        
-        with col_btn:
-            if st.button(f"📦 Aller aux Détails ({len(selected_lot_ids)})", use_container_width=True, type="primary", key="btn_goto_details_bottom"):
-                st.switch_page("pages/03_Détails stock.py")
-    
-    # Exports
-    st.markdown("---")
-    st.subheader("📤 Exports")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        csv = filtered_df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 CSV", csv, f"lots_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv", use_container_width=True)
-    
-    with col2:
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            filtered_df.to_excel(writer, index=False, sheet_name='Lots')
-        st.download_button("📥 Excel", buffer.getvalue(), f"lots_{datetime.now().strftime('%Y%m%d')}.xlsx", 
-                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-    
-    # ⭐ SUPPRESSION LOTS (ADMIN UNIQUEMENT)
-    if is_admin():
-        st.markdown("---")
-        st.subheader("🗑️ Suppression de Lots (Admin)")
-        
-        lot_options = [f"{row['id']} - {row['code_lot_interne']} - {row['nom_usage']}" for _, row in df.iterrows()]
-        
-        if lot_options:
-            selected_lot = st.selectbox(
-                "Sélectionner un lot à supprimer",
-                options=lot_options,
-                key="delete_lot_selector"
-            )
+            st.success(f"✅ Fichier chargé : **{len(df_import)}** ligne(s)")
             
-            selected_lot_id = int(selected_lot.split(" - ")[0])
+            # Aperçu
+            with st.expander("👁️ Aperçu Données Brutes", expanded=False):
+                st.dataframe(df_import.head(10), use_container_width=True)
             
-            col1, col2 = st.columns([1, 5])
-            with col1:
-                if st.button("🗑️ Supprimer", use_container_width=True, type="secondary", key="btn_delete_lot"):
-                    st.session_state.confirm_delete_lot_id = selected_lot_id
-                    st.session_state.confirm_delete_lot_name = selected_lot
+            st.markdown("---")
             
-            if st.session_state.get('confirm_delete_lot_id'):
-                st.warning(f"⚠️ **ATTENTION** : Vous êtes sur le point de supprimer le lot :\n\n**{st.session_state.confirm_delete_lot_name}**")
-                
-                col_confirm1, col_confirm2, col_confirm3 = st.columns([1, 1, 4])
-                
-                with col_confirm1:
-                    if st.button("✅ CONFIRMER", use_container_width=True, type="primary", key="btn_confirm_delete"):
-                        lot_id = st.session_state.confirm_delete_lot_id
+            # ===== ÉTAPE 3 : Validation =====
+            st.markdown("#### 3️⃣ Validation des Données")
+            
+            if st.button("🔍 Valider les Données", type="primary", use_container_width=True, key="btn_validate"):
+                with st.spinner("⏳ Validation en cours..."):
+                    # Récupérer références
+                    valid_refs = get_valid_references()
+                    
+                    if valid_refs:
+                        # Valider
+                        df_validated, report = validate_import_data(df_import, valid_refs)
                         
-                        success, message = delete_lot(lot_id)
+                        # Stocker en session
+                        st.session_state['df_validated'] = df_validated
+                        st.session_state['import_report'] = report
                         
-                        if success:
-                            st.success(message)
-                            st.session_state.pop('confirm_delete_lot_id', None)
-                            st.session_state.pop('confirm_delete_lot_name', None)
-                            st.session_state.pop('original_stock_df', None)
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.error(message)
-                            st.session_state.pop('confirm_delete_lot_id', None)
-                            st.session_state.pop('confirm_delete_lot_name', None)
-                
-                with col_confirm2:
-                    if st.button("❌ ANNULER", use_container_width=True, key="btn_cancel_delete"):
-                        st.session_state.pop('confirm_delete_lot_id', None)
-                        st.session_state.pop('confirm_delete_lot_name', None)
                         st.rerun()
-        else:
-            st.info("ℹ️ Aucun lot à supprimer")
+            
+            # ===== AFFICHER RÉSULTATS VALIDATION =====
+            if 'df_validated' in st.session_state:
+                df_val = st.session_state['df_validated']
+                report = st.session_state['import_report']
+                
+                st.markdown("---")
+                st.markdown("#### 📊 Résultats Validation")
+                
+                # Statistiques
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("📊 Total", report['total'])
+                
+                with col2:
+                    pct_valid = f"{report['valid']/report['total']*100:.0f}%" if report['total'] > 0 else "0%"
+                    st.metric("✅ Valides", report['valid'], delta=pct_valid)
+                
+                with col3:
+                    st.metric("⚠️ Warnings", report['warnings'], 
+                             help="Corrections automatiques appliquées")
+                
+                with col4:
+                    st.metric("❌ Erreurs", report['errors'],
+                             help="Lots rejetés (à corriger)")
+                
+                st.markdown("---")
+                
+                # Tableau prévisualisation
+                st.markdown("#### 📋 Prévisualisation (Code Couleur)")
+                
+                # Créer DataFrame affichage
+                df_display = df_val[[
+                    'code_lot_interne', 'nom_usage',
+                    'code_variete', '_variete_corrected',
+                    'code_producteur', '_producteur_corrected',
+                    'nombre_unites', 'type_conditionnement',
+                    '_status', '_errors', '_warnings'
+                ]].copy()
+                
+                # Renommer colonnes
+                df_display = df_display.rename(columns={
+                    'code_lot_interne': 'Code Lot',
+                    'nom_usage': 'Nom Usage',
+                    'code_variete': 'Variété (Excel)',
+                    '_variete_corrected': '✓ Corrigé',
+                    'code_producteur': 'Producteur (Excel)',
+                    '_producteur_corrected': '✓ Corrigé',
+                    'nombre_unites': 'Unités',
+                    'type_conditionnement': 'Type',
+                    '_status': 'Statut',
+                    '_errors': 'Erreurs',
+                    '_warnings': 'Corrections Auto'
+                })
+                
+                # Configuration colonnes avec couleurs
+                column_config = {
+                    'Code Lot': st.column_config.TextColumn("Code Lot", width="medium"),
+                    'Nom Usage': st.column_config.TextColumn("Nom Usage", width="medium"),
+                    'Variété (Excel)': st.column_config.TextColumn("Variété (Excel)", width="small"),
+                    '✓ Corrigé': st.column_config.TextColumn("✓ Corrigé", width="small"),
+                    'Producteur (Excel)': st.column_config.TextColumn("Producteur (Excel)", width="small"),
+                    '✓ Corrigé.1': st.column_config.TextColumn("✓ Corrigé", width="small"),
+                    'Unités': st.column_config.NumberColumn("Unités", format="%d"),
+                    'Type': st.column_config.TextColumn("Type", width="small"),
+                    'Statut': st.column_config.TextColumn("Statut", width="small"),
+                    'Erreurs': st.column_config.TextColumn("Erreurs", width="large"),
+                    'Corrections Auto': st.column_config.TextColumn("Corrections Auto", width="large")
+                }
+                
+                st.dataframe(
+                    df_display,
+                    column_config=column_config,
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Légende couleurs
+                st.caption("""
+                **Légende** :
+                - 🟢 **valid** : Lot OK, aucune modification
+                - 🟠 **warning** : Corrections automatiques appliquées (lot importable)
+                - 🔴 **error** : Erreurs bloquantes (lot rejeté)
+                """)
+                
+                st.markdown("---")
+                
+                # ===== ÉTAPE 4 : Import =====
+                if report['errors'] == 0:
+                    st.success(f"✅ **Tous les lots sont valides !** ({report['valid'] + report['warnings']} lots importables)")
+                    
+                    if report['warnings'] > 0:
+                        st.warning(f"⚠️ {report['warnings']} lot(s) avec corrections automatiques. Vérifiez avant import.")
+                    
+                    if st.button("✅ CONFIRMER IMPORT", type="primary", use_container_width=True, key="btn_import"):
+                        with st.spinner("⏳ Import en cours..."):
+                            success, message = import_validated_lots(df_val)
+                            
+                            if success:
+                                st.success(message)
+                                st.balloons()
+                                time.sleep(2)
+                                
+                                # Nettoyer session
+                                st.session_state.pop('df_validated', None)
+                                st.session_state.pop('import_report', None)
+                                
+                                st.rerun()
+                            else:
+                                st.error(message)
+                else:
+                    st.error(f"❌ **{report['errors']} lot(s) avec erreurs bloquantes**")
+                    st.info("💡 **Action requise** : Corrigez les erreurs dans votre fichier Excel, puis réuploadez.")
+                    
+                    # Afficher détails erreurs
+                    with st.expander("📝 Détails des Erreurs", expanded=True):
+                        df_errors = df_val[df_val['_status'] == 'error'][['code_lot_interne', '_errors']]
+                        df_errors = df_errors.rename(columns={
+                            'code_lot_interne': 'Code Lot',
+                            '_errors': 'Erreurs'
+                        })
+                        st.dataframe(df_errors, use_container_width=True, hide_index=True)
+        
+        except Exception as e:
+            st.error(f"❌ Erreur lecture fichier : {str(e)}")
+            st.info("💡 Vérifiez que votre fichier contient bien un onglet 'Lots' avec les colonnes du template")
+    
+    else:
+        st.info("👆 Uploadez votre fichier Excel pour commencer la validation")
 
-else:
-    st.warning("⚠️ Aucun lot trouvé")
+# ============================================================================
+# FOOTER
+# ============================================================================
 
 show_footer()
