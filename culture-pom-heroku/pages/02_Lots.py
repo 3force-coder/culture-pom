@@ -642,7 +642,7 @@ with tab1:
         varietes_dict = get_all_varietes_for_dropdown()
         producteurs_dict = get_all_producteurs_for_dropdown()
         
-        st.info("📌 Champs obligatoires : **Code Lot, Nom Usage, Variété, Producteur, Type Conditionnement, Nombre Unités**")
+        st.info("📌 Champs obligatoires : **Code Lot, Nom Usage, Variété, Producteur**")
         
         if 'new_lot_data' not in st.session_state:
             st.session_state.new_lot_data = {}
@@ -686,40 +686,15 @@ with tab1:
             )
         
         with col2:
-            # ⭐ Type conditionnement OBLIGATOIRE
-            TYPES_COND = ["Pallox", "Petit Pallox", "Big Bag"]
-            st.session_state.new_lot_data['type_conditionnement'] = st.selectbox(
-                "Type Conditionnement *",
-                options=[""] + TYPES_COND,
-                key="add_type_cond"
+            # Poids Total Brut (manuel)
+            st.session_state.new_lot_data['poids_total_brut_kg'] = st.number_input(
+                "Poids Total Brut (kg)",
+                min_value=0.0,
+                value=0.0,
+                step=100.0,
+                key="add_poids_total",
+                help="Poids total brut en kg (sera détaillé dans Détails Stock)"
             )
-            
-            # ⭐ Nombre unités OBLIGATOIRE
-            nombre_unites = st.number_input(
-                "Nombre Unités *",
-                min_value=1,
-                value=10,
-                step=1,
-                key="add_nombre_unites"
-            )
-            st.session_state.new_lot_data['nombre_unites'] = nombre_unites
-            
-            # ⭐ Calcul AUTOMATIQUE poids selon type
-            type_cond = st.session_state.new_lot_data.get('type_conditionnement', '')
-            
-            if type_cond == 'Pallox':
-                poids_unitaire = 1900.0
-            elif type_cond == 'Petit Pallox':
-                poids_unitaire = 1200.0
-            elif type_cond == 'Big Bag':
-                poids_unitaire = 1600.0
-            else:
-                poids_unitaire = 0.0
-            
-            poids_total = nombre_unites * poids_unitaire
-            st.session_state.new_lot_data['poids_total_brut_kg'] = poids_total
-            
-            st.metric("Poids Total Brut", f"{poids_total:,.0f} kg ({poids_total/1000:.1f} T)")
             
             # Calibres
             st.session_state.new_lot_data['calibre_min'] = st.number_input(
@@ -781,10 +756,6 @@ with tab1:
                     missing_fields.append("Variété")
                 if not st.session_state.new_lot_data.get('nom_producteur'):
                     missing_fields.append("Producteur")
-                if not st.session_state.new_lot_data.get('type_conditionnement'):
-                    missing_fields.append("Type Conditionnement")
-                if not st.session_state.new_lot_data.get('nombre_unites') or st.session_state.new_lot_data.get('nombre_unites') == 0:
-                    missing_fields.append("Nombre Unités")
                 
                 if missing_fields:
                     st.error(f"❌ Champs obligatoires manquants : {', '.join(missing_fields)}")
@@ -931,7 +902,6 @@ with tab1:
             'nom_usage', 
             'nom_variete',
             'nom_producteur',
-            'poids_total_brut_kg',
             'calibre_min',
             'calibre_max',
             'prix_achat_euro_tonne',
@@ -947,6 +917,7 @@ with tab1:
         # Configuration dropdowns
         column_config = {
             "id": None,
+            "poids_total_brut_kg": None,
             "nom_variete": st.column_config.SelectboxColumn(
                 "Variété",
                 options=sorted(varietes_dict.keys()),
