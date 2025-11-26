@@ -213,12 +213,16 @@ with main_tab1:
             nb_lignes = 0
             
             for _, row in df_stock.iterrows():
+                # ⭐ Convertir types pandas en types Python natifs
+                consommable_id = int(row['consommable_id'])
+                stock_theorique = int(row['stock_theorique']) if pd.notna(row['stock_theorique']) else 0
+                
                 cursor.execute("""
                     INSERT INTO inventaires_consommables_lignes 
                     (inventaire_id, consommable_id, site, atelier, emplacement, stock_theorique)
                     VALUES (%s, %s, %s, %s, %s, %s)
-                """, (inventaire_id, row['consommable_id'], row['site'], row['atelier'], 
-                      row['emplacement'], row['stock_theorique']))
+                """, (inventaire_id, consommable_id, row['site'], row['atelier'], 
+                      row['emplacement'], stock_theorique))
                 nb_lignes += 1
             
             # Mettre à jour nb_lignes
@@ -277,6 +281,10 @@ with main_tab1:
             
             for ligne_id, stock_compte in lignes_comptees.items():
                 if stock_compte is not None:
+                    # ⭐ Convertir types Python natifs
+                    ligne_id = int(ligne_id)
+                    stock_compte = int(stock_compte)
+                    
                     # Récupérer stock théorique et prix
                     cursor.execute("""
                         SELECT icl.stock_theorique, rc.prix_unitaire
@@ -287,8 +295,11 @@ with main_tab1:
                     row = cursor.fetchone()
                     
                     if row:
-                        ecart = stock_compte - row['stock_theorique']
-                        ecart_valeur = ecart * float(row['prix_unitaire'])
+                        stock_theo = int(row['stock_theorique']) if pd.notna(row['stock_theorique']) else 0
+                        prix_unitaire = float(row['prix_unitaire']) if pd.notna(row['prix_unitaire']) else 0.0
+                        
+                        ecart = stock_compte - stock_theo
+                        ecart_valeur = ecart * prix_unitaire
                         
                         cursor.execute("""
                             UPDATE inventaires_consommables_lignes
@@ -507,14 +518,14 @@ with main_tab1:
                 st.markdown("**Saisissez les quantités comptées :**")
                 
                 # Créer un formulaire de saisie avec data_editor
+                # ⭐ RETIRER stock_theorique pour ne pas influencer le comptage
                 df_saisie = df_lignes[['id', 'libelle', 'site', 'atelier', 'emplacement', 
-                                       'stock_theorique', 'stock_compte', 'unite_inventaire']].copy()
+                                       'stock_compte', 'unite_inventaire']].copy()
                 df_saisie = df_saisie.rename(columns={
                     'libelle': 'Consommable',
                     'site': 'Site',
                     'atelier': 'Atelier',
                     'emplacement': 'Emplacement',
-                    'stock_theorique': 'Stock Théo.',
                     'stock_compte': 'Stock Compté',
                     'unite_inventaire': 'Unité'
                 })
@@ -524,7 +535,6 @@ with main_tab1:
                     column_config={
                         'id': None,  # Masquer
                         'Stock Compté': st.column_config.NumberColumn("Stock Compté", min_value=0, required=True),
-                        'Stock Théo.': st.column_config.NumberColumn("Stock Théo.", disabled=True),
                     },
                     use_container_width=True,
                     hide_index=True,
