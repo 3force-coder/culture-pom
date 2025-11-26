@@ -5,8 +5,10 @@ from datetime import datetime, timedelta
 from database import get_connection
 from components import show_footer
 from auth import is_authenticated
-import plotly.graph_objects as go
 import plotly.express as px
+import plotly.graph_objects as go
+
+st.set_page_config(page_title="Prévisions Ventes - Culture Pom", page_icon="📈", layout="wide")
 
 # CSS compact
 st.markdown("""
@@ -23,6 +25,14 @@ st.markdown("""
     .extrapolated {
         background-color: #fff3e0 !important;
         font-style: italic;
+    }
+    /* Box bouton nouveau produit */
+    .new-product-box {
+        background-color: #e3f2fd;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #2196f3;
+        margin: 1rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -131,40 +141,15 @@ def get_previsions(semaines):
         st.error(f"❌ Erreur : {str(e)}")
         return pd.DataFrame()
 
-def get_previsions_historique():
-    """Récupère les prévisions passées"""
-    try:
-        semaine_actuelle, annee_actuelle = get_semaine_actuelle()
-        
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT pv.code_produit_commercial, pv.annee, pv.semaine, pv.quantite_prevue_tonnes,
-                   pc.marque, pc.libelle
-            FROM previsions_ventes pv
-            LEFT JOIN ref_produits_commerciaux pc ON pv.code_produit_commercial = pc.code_produit
-            WHERE (pv.annee < %s) OR (pv.annee = %s AND pv.semaine <= %s)
-            ORDER BY pv.annee DESC, pv.semaine DESC, pc.marque, pc.libelle
-        """, (annee_actuelle, annee_actuelle, semaine_actuelle))
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        
-        if rows:
-            return pd.DataFrame(rows)
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"❌ Erreur : {str(e)}")
-        return pd.DataFrame()
-
-def get_previsions_statistiques():
-    """Récupère TOUTES les prévisions pour statistiques (passées + futures)"""
+def get_previsions_historique_complet():
+    """Récupère TOUT l'historique des prévisions (passées + futures)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
             SELECT pv.code_produit_commercial, pv.annee, pv.semaine, pv.quantite_prevue_tonnes,
-                   pc.marque, pc.libelle, pv.created_at
+                   pc.marque, pc.libelle,
+                   pv.created_at, pv.updated_at
             FROM previsions_ventes pv
             LEFT JOIN ref_produits_commerciaux pc ON pv.code_produit_commercial = pc.code_produit
             ORDER BY pv.annee, pv.semaine, pc.marque, pc.libelle
@@ -175,8 +160,11 @@ def get_previsions_statistiques():
         
         if rows:
             df = pd.DataFrame(rows)
-            # Créer colonne semaine_key pour tri chronologique
-            df['semaine_key'] = df['annee'].astype(str) + '_' + df['semaine'].astype(str).str.zfill(2)
+            # Convertir colonnes numériques
+            numeric_cols = ['annee', 'semaine', 'quantite_prevue_tonnes']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -236,6 +224,49 @@ def calculer_extrapolation(valeurs):
     if len(valeurs_valides) > 0:
         return sum(valeurs_valides) / len(valeurs_valides)
     return 0.0
+
+# ⭐ NOUVELLES FONCTIONS STATISTIQUES
+
+def calculer_tendance_produit(df_hist, code_produit):
+    """Calcule la tendance d'évolution pour un produit (moyenne des variations)"""
+    df_prod = df_hist[df_hist['code_produit_commercial'] == code_produit].copy()
+    
+    if len(df_prod) < 2:
+        return None, "Données insuffisantes"
+    
+    # Trier par année/semaine
+    df_prod = df_prod.sort_values(['annee', 'semaine'])
+    
+    # Calculer variations entre semaines consécutives
+    df_prod['variation'] = df_prod['quantite_prevue_tonnes'].diff()
+    
+    # Taux de variation moyen (hors première ligne qui est NaN)
+    variations = df_prod['variation'].dropna()
+    
+    if len(variations) == 0:
+        return None, "Pas de variation"
+    
+    variation_moyenne = variations.mean()
+    variation_pct = (variation_moyenne / df_prod['quantite_prevue_tonnes'].mean() * 100) if df_prod['quantite_prevue_tonnes'].mean() > 0 else 0
+    
+    return variation_moyenne, variation_pct
+
+def get_evolution_marque(df_hist, marque):
+    """Agrège l'évolution par marque"""
+    df_marque = df_hist[df_hist['marque'] == marque].copy()
+    
+    if df_marque.empty:
+        return pd.DataFrame()
+    
+    # Grouper par année/semaine
+    df_agg = df_marque.groupby(['annee', 'semaine']).agg({
+        'quantite_prevue_tonnes': 'sum'
+    }).reset_index()
+    
+    # Créer label semaine
+    df_agg['semaine_label'] = df_agg.apply(lambda r: f"S{int(r['semaine']):02d}/{int(r['annee'])}", axis=1)
+    
+    return df_agg
 
 # ==========================================
 # CALCULS
@@ -304,7 +335,7 @@ st.markdown("---")
 # ONGLETS
 # ==========================================
 
-tab1, tab2, tab3, tab4 = st.tabs(["📝 Saisie (3 semaines)", "📊 Vue 5 semaines", "📜 Historique", "📈 Statistiques"])
+tab1, tab2, tab3, tab4 = st.tabs(["📝 Saisie (3 semaines)", "📊 Vue 5 semaines", "📈 Statistiques", "📜 Historique"])
 
 # ==========================================
 # ONGLET 1 : SAISIE
@@ -320,14 +351,19 @@ with tab1:
     if produits.empty:
         st.warning("⚠️ Aucun produit commercial trouvé")
     else:
-        # ⭐ NOUVEAU : Bouton ajouter produit
-        col_btn_add, col_spacer = st.columns([2, 3])
-        with col_btn_add:
-            if st.button("➕ Ajouter un nouveau produit", type="secondary", use_container_width=True, key="btn_add_product"):
-                # Préparer session_state pour page Sources
-                st.session_state['sources_table_select'] = "Produits Commerciaux"
-                st.session_state['show_add_form_sources'] = True
-                # Redirection vers page Sources
+        # ⭐ BOX NOUVEAU PRODUIT
+        st.markdown("""
+        <div class="new-product-box">
+            <strong>🆕 Besoin d'ajouter un nouveau produit ?</strong><br>
+            Les produits commerciaux se gèrent dans la page <strong>Sources</strong> → Table <strong>Produits Commerciaux</strong>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
+        with col_btn1:
+            if st.button("➕ Aller à Sources", type="secondary", use_container_width=True):
+                # Stocker l'info pour pré-sélectionner la table (optionnel si Sources modifié plus tard)
+                st.session_state['source_table_target'] = 'Produits Commerciaux'
                 st.switch_page("pages/01_Sources.py")
         
         st.markdown("---")
@@ -352,22 +388,23 @@ with tab1:
                     if len(vals) > 0:
                         df_saisie.loc[idx, col_name] = float(vals.iloc[0])
         
-        # ⭐ NOUVEAU : Filtres marque + libellé
-        col_filtre1, col_filtre2, col_info = st.columns([2, 2, 2])
+        # ⭐ FILTRES (marque + libellé)
+        col_f1, col_f2, col_info = st.columns([2, 2, 2])
         
-        with col_filtre1:
+        with col_f1:
             marques = ["Toutes"] + sorted(df_saisie['marque'].dropna().unique().tolist())
             filtre_marque = st.selectbox("Filtrer par marque", marques, key="filtre_marque_saisie")
         
-        with col_filtre2:
-            filtre_libelle = st.text_input("🔍 Rechercher dans libellé", key="filtre_libelle_saisie", placeholder="Tapez pour filtrer...")
+        with col_f2:
+            libelles = ["Tous"] + sorted(df_saisie['libelle'].dropna().unique().tolist())
+            filtre_libelle = st.selectbox("Filtrer par libellé", libelles, key="filtre_libelle_saisie")
         
         # Appliquer filtres
         df_filtre = df_saisie.copy()
         if filtre_marque != "Toutes":
             df_filtre = df_filtre[df_filtre['marque'] == filtre_marque]
-        if filtre_libelle:
-            df_filtre = df_filtre[df_filtre['libelle'].str.contains(filtre_libelle, case=False, na=False)]
+        if filtre_libelle != "Tous":
+            df_filtre = df_filtre[df_filtre['libelle'] == filtre_libelle]
         
         with col_info:
             st.caption(f"💡 {len(df_filtre)} produits affichés")
@@ -502,22 +539,23 @@ with tab2:
         cols_semaines = [f"S{s:02d}" for _, s in semaines_saisie] + [f"S{s:02d}*" for _, s in semaines_extrapol]
         df_5sem['Total 5 sem'] = df_5sem[cols_semaines].sum(axis=1)
         
-        # ⭐ NOUVEAU : Filtres marque + libellé
-        col_filtre1, col_filtre2 = st.columns(2)
+        # ⭐ FILTRES (marque + libellé)
+        col_f1, col_f2 = st.columns(2)
         
-        with col_filtre1:
+        with col_f1:
             marques = ["Toutes"] + sorted(df_5sem['marque'].dropna().unique().tolist())
             filtre_marque_5 = st.selectbox("Filtrer par marque", marques, key="filtre_marque_5sem")
         
-        with col_filtre2:
-            filtre_libelle_5 = st.text_input("🔍 Rechercher dans libellé", key="filtre_libelle_5sem", placeholder="Tapez pour filtrer...")
+        with col_f2:
+            libelles = ["Tous"] + sorted(df_5sem['libelle'].dropna().unique().tolist())
+            filtre_libelle_5 = st.selectbox("Filtrer par libellé", libelles, key="filtre_libelle_5sem")
         
         # Appliquer filtres
         df_filtre_5 = df_5sem.copy()
         if filtre_marque_5 != "Toutes":
             df_filtre_5 = df_filtre_5[df_filtre_5['marque'] == filtre_marque_5]
-        if filtre_libelle_5:
-            df_filtre_5 = df_filtre_5[df_filtre_5['libelle'].str.contains(filtre_libelle_5, case=False, na=False)]
+        if filtre_libelle_5 != "Tous":
+            df_filtre_5 = df_filtre_5[df_filtre_5['libelle'] == filtre_libelle_5]
         
         # Configuration colonnes
         column_config_5 = {
@@ -576,40 +614,258 @@ with tab2:
         st.caption("⚡ *Les colonnes avec astérisque (*) sont des valeurs extrapolées basées sur la moyenne des 3 semaines saisies*")
 
 # ==========================================
-# ONGLET 3 : HISTORIQUE
+# ⭐ ONGLET 3 : STATISTIQUES ENRICHIES
 # ==========================================
 
 with tab3:
+    st.subheader("📈 Statistiques Détaillées")
+    
+    # Charger historique complet
+    hist_complet = get_previsions_historique_complet()
+    
+    if hist_complet.empty:
+        st.info("📭 Aucune donnée historique trouvée")
+    else:
+        # Créer label semaine pour affichage
+        hist_complet['semaine_label'] = hist_complet.apply(
+            lambda r: f"S{int(r['semaine']):02d}/{int(r['annee'])}", 
+            axis=1
+        )
+        
+        # KPIs généraux
+        st.markdown("### 📊 Vue d'ensemble")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            nb_semaines_total = hist_complet[['annee', 'semaine']].drop_duplicates().shape[0]
+            st.metric("📅 Semaines", nb_semaines_total)
+        
+        with col2:
+            volume_total = hist_complet['quantite_prevue_tonnes'].sum()
+            st.metric("📦 Volume Total", f"{volume_total:.0f} T")
+        
+        with col3:
+            moy_semaine = volume_total / nb_semaines_total if nb_semaines_total > 0 else 0
+            st.metric("📊 Moy/Semaine", f"{moy_semaine:.0f} T")
+        
+        with col4:
+            nb_produits = hist_complet['code_produit_commercial'].nunique()
+            st.metric("🏷️ Produits", nb_produits)
+        
+        st.markdown("---")
+        
+        # Sélecteurs
+        st.markdown("### 🔍 Analyse détaillée")
+        
+        col_sel1, col_sel2 = st.columns(2)
+        
+        with col_sel1:
+            type_analyse = st.radio(
+                "Type d'analyse",
+                ["Par Produit", "Par Marque"],
+                horizontal=True,
+                key="type_analyse"
+            )
+        
+        # Analyse par PRODUIT
+        if type_analyse == "Par Produit":
+            with col_sel2:
+                produits_dispo = sorted(hist_complet[['code_produit_commercial', 'libelle']].drop_duplicates().apply(
+                    lambda r: f"{r['code_produit_commercial']} - {r['libelle']}", axis=1
+                ).tolist())
+                
+                if produits_dispo:
+                    produit_selectionne = st.selectbox(
+                        "Sélectionner un produit",
+                        produits_dispo,
+                        key="produit_stats"
+                    )
+                    
+                    code_produit = produit_selectionne.split(" - ")[0]
+                    
+                    # Filtrer données du produit
+                    df_produit = hist_complet[hist_complet['code_produit_commercial'] == code_produit].copy()
+                    df_produit = df_produit.sort_values(['annee', 'semaine'])
+                    
+                    # Graphique évolution
+                    st.markdown("#### 📈 Évolution dans le temps")
+                    
+                    fig = px.line(
+                        df_produit,
+                        x='semaine_label',
+                        y='quantite_prevue_tonnes',
+                        title=f"Évolution des prévisions - {produit_selectionne}",
+                        labels={
+                            'semaine_label': 'Semaine',
+                            'quantite_prevue_tonnes': 'Quantité (T)'
+                        },
+                        markers=True
+                    )
+                    
+                    fig.update_layout(
+                        xaxis_tickangle=-45,
+                        height=400
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Métriques produit
+                    st.markdown("#### 📊 Métriques")
+                    
+                    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                    
+                    with col_m1:
+                        total_produit = df_produit['quantite_prevue_tonnes'].sum()
+                        st.metric("Volume Total", f"{total_produit:.1f} T")
+                    
+                    with col_m2:
+                        moy_produit = df_produit['quantite_prevue_tonnes'].mean()
+                        st.metric("Moyenne", f"{moy_produit:.1f} T")
+                    
+                    with col_m3:
+                        max_produit = df_produit['quantite_prevue_tonnes'].max()
+                        st.metric("Maximum", f"{max_produit:.1f} T")
+                    
+                    with col_m4:
+                        min_produit = df_produit['quantite_prevue_tonnes'].min()
+                        st.metric("Minimum", f"{min_produit:.1f} T")
+                    
+                    # Tendance
+                    variation_moy, variation_pct = calculer_tendance_produit(hist_complet, code_produit)
+                    
+                    if variation_moy is not None:
+                        st.markdown("#### 📉 Tendance")
+                        
+                        col_t1, col_t2 = st.columns(2)
+                        
+                        with col_t1:
+                            tendance_color = "normal" if abs(variation_pct) < 5 else ("inverse" if variation_pct < 0 else "normal")
+                            st.metric(
+                                "Variation moyenne", 
+                                f"{variation_moy:+.2f} T/semaine",
+                                delta=f"{variation_pct:+.1f}%",
+                                delta_color=tendance_color
+                            )
+                        
+                        with col_t2:
+                            if variation_pct > 5:
+                                st.success("📈 Tendance à la hausse")
+                            elif variation_pct < -5:
+                                st.warning("📉 Tendance à la baisse")
+                            else:
+                                st.info("➡️ Tendance stable")
+                    else:
+                        st.info("📊 Données insuffisantes pour calculer la tendance")
+        
+        # Analyse par MARQUE
+        else:
+            with col_sel2:
+                marques_dispo = sorted(hist_complet['marque'].dropna().unique().tolist())
+                
+                if marques_dispo:
+                    marque_selectionnee = st.selectbox(
+                        "Sélectionner une marque",
+                        marques_dispo,
+                        key="marque_stats"
+                    )
+                    
+                    # Agrégation par marque
+                    df_marque_agg = get_evolution_marque(hist_complet, marque_selectionnee)
+                    
+                    if not df_marque_agg.empty:
+                        # Graphique évolution marque
+                        st.markdown("#### 📈 Évolution dans le temps")
+                        
+                        fig = px.line(
+                            df_marque_agg,
+                            x='semaine_label',
+                            y='quantite_prevue_tonnes',
+                            title=f"Évolution des prévisions - Marque {marque_selectionnee}",
+                            labels={
+                                'semaine_label': 'Semaine',
+                                'quantite_prevue_tonnes': 'Quantité Totale (T)'
+                            },
+                            markers=True
+                        )
+                        
+                        fig.update_layout(
+                            xaxis_tickangle=-45,
+                            height=400
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Métriques marque
+                        st.markdown("#### 📊 Métriques")
+                        
+                        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                        
+                        with col_m1:
+                            total_marque = df_marque_agg['quantite_prevue_tonnes'].sum()
+                            st.metric("Volume Total", f"{total_marque:.1f} T")
+                        
+                        with col_m2:
+                            moy_marque = df_marque_agg['quantite_prevue_tonnes'].mean()
+                            st.metric("Moyenne", f"{moy_marque:.1f} T")
+                        
+                        with col_m3:
+                            max_marque = df_marque_agg['quantite_prevue_tonnes'].max()
+                            st.metric("Maximum", f"{max_marque:.1f} T")
+                        
+                        with col_m4:
+                            nb_produits_marque = hist_complet[hist_complet['marque'] == marque_selectionnee]['code_produit_commercial'].nunique()
+                            st.metric("Nb Produits", nb_produits_marque)
+                        
+                        # Répartition par produit
+                        st.markdown("#### 🥧 Répartition par produit")
+                        
+                        df_marque_prod = hist_complet[hist_complet['marque'] == marque_selectionnee].copy()
+                        repartition = df_marque_prod.groupby('libelle')['quantite_prevue_tonnes'].sum().reset_index()
+                        repartition = repartition.sort_values('quantite_prevue_tonnes', ascending=False)
+                        
+                        fig_pie = px.pie(
+                            repartition,
+                            values='quantite_prevue_tonnes',
+                            names='libelle',
+                            title=f"Répartition des volumes - {marque_selectionnee}"
+                        )
+                        
+                        st.plotly_chart(fig_pie, use_container_width=True)
+                    else:
+                        st.warning("⚠️ Aucune donnée pour cette marque")
+
+# ==========================================
+# ONGLET 4 : HISTORIQUE
+# ==========================================
+
+with tab4:
     st.subheader("📜 Historique des Prévisions")
     
-    historique = get_previsions_historique()
-    
-    if historique.empty:
-        st.info("📭 Aucune prévision passée trouvée")
+    if hist_complet.empty:
+        st.info("📭 Aucune prévision trouvée")
     else:
         # Filtres
         col1, col2 = st.columns(2)
         
         with col1:
-            annees = ["Toutes"] + sorted(historique['annee'].unique().tolist(), reverse=True)
+            annees = ["Toutes"] + sorted(hist_complet['annee'].unique().tolist(), reverse=True)
             filtre_annee = st.selectbox("Année", annees, key="filtre_annee_hist")
         
         with col2:
-            semaines = ["Toutes"] + sorted(historique['semaine'].unique().tolist(), reverse=True)
+            semaines = ["Toutes"] + sorted(hist_complet['semaine'].unique().tolist(), reverse=True)
             filtre_semaine = st.selectbox("Semaine", semaines, key="filtre_semaine_hist")
         
-        df_hist = historique.copy()
+        df_hist = hist_complet.copy()
         if filtre_annee != "Toutes":
             df_hist = df_hist[df_hist['annee'] == filtre_annee]
         if filtre_semaine != "Toutes":
             df_hist = df_hist[df_hist['semaine'] == filtre_semaine]
         
-        # Formater semaine
-        df_hist['Semaine'] = df_hist.apply(lambda r: f"S{r['semaine']:02d}/{r['annee']}", axis=1)
-        
         # Renommer colonnes
-        df_display_hist = df_hist[['Semaine', 'marque', 'libelle', 'quantite_prevue_tonnes']].copy()
+        df_display_hist = df_hist[['semaine_label', 'marque', 'libelle', 'quantite_prevue_tonnes']].copy()
         df_display_hist = df_display_hist.rename(columns={
+            'semaine_label': 'Semaine',
             'marque': 'Marque',
             'libelle': 'Libellé',
             'quantite_prevue_tonnes': 'Quantité (T)'
@@ -624,277 +880,16 @@ with tab3:
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            nb_semaines = historique[['annee', 'semaine']].drop_duplicates().shape[0]
+            nb_semaines = df_hist[['annee', 'semaine']].drop_duplicates().shape[0]
             st.metric("Semaines", nb_semaines)
         
         with col2:
-            total_hist = historique['quantite_prevue_tonnes'].sum()
+            total_hist = df_hist['quantite_prevue_tonnes'].sum()
             st.metric("Volume Total", f"{total_hist:.0f} T")
         
         with col3:
             moy_semaine = total_hist / nb_semaines if nb_semaines > 0 else 0
             st.metric("Moyenne/Semaine", f"{moy_semaine:.0f} T")
-
-# ==========================================
-# ⭐ ONGLET 4 : STATISTIQUES (NOUVEAU)
-# ==========================================
-
-with tab4:
-    st.subheader("📈 Statistiques et Tendances")
-    st.markdown("*Analyse complète de l'historique des prévisions*")
-    
-    # Charger toutes les prévisions (passées + futures)
-    df_stats = get_previsions_statistiques()
-    
-    if df_stats.empty:
-        st.info("📭 Aucune donnée disponible pour les statistiques")
-    else:
-        # Sous-onglets
-        subtab1, subtab2, subtab3 = st.tabs(["📊 Par Produit", "🏢 Par Marque", "📈 Tendances"])
-        
-        # ==========================================
-        # SOUS-ONGLET 1 : PAR PRODUIT
-        # ==========================================
-        
-        with subtab1:
-            st.markdown("#### 📦 Évolution par Produit")
-            
-            # Sélecteur produit
-            produits_avec_data = df_stats[['code_produit_commercial', 'marque', 'libelle']].drop_duplicates()
-            produits_avec_data['display'] = produits_avec_data['marque'] + ' - ' + produits_avec_data['libelle']
-            produits_list = produits_avec_data.sort_values('display')['display'].tolist()
-            
-            if produits_list:
-                selected_produit_display = st.selectbox(
-                    "Sélectionner un produit",
-                    produits_list,
-                    key="select_produit_stats"
-                )
-                
-                # Retrouver le code produit
-                selected_code = produits_avec_data[
-                    produits_avec_data['display'] == selected_produit_display
-                ]['code_produit_commercial'].iloc[0]
-                
-                # Filtrer données produit
-                df_produit = df_stats[df_stats['code_produit_commercial'] == selected_code].copy()
-                df_produit = df_produit.sort_values(['annee', 'semaine'])
-                
-                # Créer libellé semaine pour axe X
-                df_produit['semaine_label'] = df_produit.apply(
-                    lambda r: f"S{r['semaine']:02d}/{r['annee']}", axis=1
-                )
-                
-                # Graphique ligne
-                fig = go.Figure()
-                
-                fig.add_trace(go.Scatter(
-                    x=df_produit['semaine_label'],
-                    y=df_produit['quantite_prevue_tonnes'],
-                    mode='lines+markers',
-                    name=selected_produit_display,
-                    line=dict(color='#1f77b4', width=3),
-                    marker=dict(size=8)
-                ))
-                
-                fig.update_layout(
-                    title=f"Évolution Prévisions - {selected_produit_display}",
-                    xaxis_title="Semaine",
-                    yaxis_title="Quantité (Tonnes)",
-                    hovermode='x unified',
-                    height=400,
-                    showlegend=False
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Stats produit
-                st.markdown("---")
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
-                    total_prod = df_produit['quantite_prevue_tonnes'].sum()
-                    st.metric("Total", f"{total_prod:.1f} T")
-                
-                with col2:
-                    moyenne_prod = df_produit['quantite_prevue_tonnes'].mean()
-                    st.metric("Moyenne", f"{moyenne_prod:.1f} T")
-                
-                with col3:
-                    max_prod = df_produit['quantite_prevue_tonnes'].max()
-                    st.metric("Maximum", f"{max_prod:.1f} T")
-                
-                with col4:
-                    # Taux évolution (dernière vs première)
-                    if len(df_produit) >= 2:
-                        premiere = df_produit.iloc[0]['quantite_prevue_tonnes']
-                        derniere = df_produit.iloc[-1]['quantite_prevue_tonnes']
-                        if premiere > 0:
-                            evol = ((derniere - premiere) / premiere) * 100
-                            st.metric("Évolution", f"{evol:+.1f}%")
-                        else:
-                            st.metric("Évolution", "N/A")
-                    else:
-                        st.metric("Évolution", "N/A")
-            else:
-                st.warning("Aucun produit avec données")
-        
-        # ==========================================
-        # SOUS-ONGLET 2 : PAR MARQUE
-        # ==========================================
-        
-        with subtab2:
-            st.markdown("#### 🏢 Évolution par Marque")
-            
-            # Agréger par marque et semaine
-            df_marques = df_stats.groupby(['marque', 'annee', 'semaine'])['quantite_prevue_tonnes'].sum().reset_index()
-            df_marques = df_marques.sort_values(['annee', 'semaine'])
-            df_marques['semaine_label'] = df_marques.apply(
-                lambda r: f"S{r['semaine']:02d}/{r['annee']}", axis=1
-            )
-            
-            # Graphique multi-lignes
-            fig_marques = go.Figure()
-            
-            marques_uniques = df_marques['marque'].unique()
-            colors = px.colors.qualitative.Set2
-            
-            for i, marque in enumerate(marques_uniques):
-                df_m = df_marques[df_marques['marque'] == marque]
-                fig_marques.add_trace(go.Scatter(
-                    x=df_m['semaine_label'],
-                    y=df_m['quantite_prevue_tonnes'],
-                    mode='lines+markers',
-                    name=marque,
-                    line=dict(width=2),
-                    marker=dict(size=6)
-                ))
-            
-            fig_marques.update_layout(
-                title="Évolution Prévisions par Marque",
-                xaxis_title="Semaine",
-                yaxis_title="Quantité (Tonnes)",
-                hovermode='x unified',
-                height=450,
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1
-                )
-            )
-            
-            st.plotly_chart(fig_marques, use_container_width=True)
-            
-            # Stats par marque
-            st.markdown("---")
-            st.markdown("#### 📊 Statistiques par Marque")
-            
-            stats_marques = df_stats.groupby('marque').agg({
-                'quantite_prevue_tonnes': ['sum', 'mean', 'count']
-            }).reset_index()
-            stats_marques.columns = ['Marque', 'Total (T)', 'Moyenne (T)', 'Nb Semaines']
-            stats_marques = stats_marques.sort_values('Total (T)', ascending=False)
-            
-            # Formater
-            stats_marques['Total (T)'] = stats_marques['Total (T)'].apply(lambda x: f"{x:.1f}")
-            stats_marques['Moyenne (T)'] = stats_marques['Moyenne (T)'].apply(lambda x: f"{x:.1f}")
-            
-            st.dataframe(stats_marques, use_container_width=True, hide_index=True)
-        
-        # ==========================================
-        # SOUS-ONGLET 3 : TENDANCES
-        # ==========================================
-        
-        with subtab3:
-            st.markdown("#### 📈 Tendances Globales")
-            
-            # Agréger par semaine (toutes marques)
-            df_tendance = df_stats.groupby(['annee', 'semaine'])['quantite_prevue_tonnes'].sum().reset_index()
-            df_tendance = df_tendance.sort_values(['annee', 'semaine'])
-            df_tendance['semaine_label'] = df_tendance.apply(
-                lambda r: f"S{r['semaine']:02d}/{r['annee']}", axis=1
-            )
-            
-            # Graphique tendance avec moyenne mobile
-            fig_tendance = go.Figure()
-            
-            # Ligne réelle
-            fig_tendance.add_trace(go.Scatter(
-                x=df_tendance['semaine_label'],
-                y=df_tendance['quantite_prevue_tonnes'],
-                mode='lines+markers',
-                name='Prévisions',
-                line=dict(color='#1f77b4', width=2),
-                marker=dict(size=6)
-            ))
-            
-            # Moyenne mobile 4 semaines (si assez de données)
-            if len(df_tendance) >= 4:
-                df_tendance['ma_4'] = df_tendance['quantite_prevue_tonnes'].rolling(window=4, min_periods=1).mean()
-                fig_tendance.add_trace(go.Scatter(
-                    x=df_tendance['semaine_label'],
-                    y=df_tendance['ma_4'],
-                    mode='lines',
-                    name='Moyenne mobile (4 sem)',
-                    line=dict(color='#ff7f0e', width=2, dash='dash')
-                ))
-            
-            fig_tendance.update_layout(
-                title="Tendance Globale des Prévisions",
-                xaxis_title="Semaine",
-                yaxis_title="Quantité Totale (Tonnes)",
-                hovermode='x unified',
-                height=400
-            )
-            
-            st.plotly_chart(fig_tendance, use_container_width=True)
-            
-            # Stats tendance
-            st.markdown("---")
-            st.markdown("#### 📊 Statistiques Globales")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                total_global = df_tendance['quantite_prevue_tonnes'].sum()
-                st.metric("Total Global", f"{total_global:.0f} T")
-            
-            with col2:
-                moyenne_globale = df_tendance['quantite_prevue_tonnes'].mean()
-                st.metric("Moyenne/Semaine", f"{moyenne_globale:.1f} T")
-            
-            with col3:
-                nb_semaines_data = len(df_tendance)
-                st.metric("Semaines avec Data", nb_semaines_data)
-            
-            with col4:
-                # Taux évolution moyen
-                if len(df_tendance) >= 2:
-                    premiere_val = df_tendance.iloc[0]['quantite_prevue_tonnes']
-                    derniere_val = df_tendance.iloc[-1]['quantite_prevue_tonnes']
-                    if premiere_val > 0:
-                        evol_globale = ((derniere_val - premiere_val) / premiere_val) * 100
-                        st.metric("Évolution Globale", f"{evol_globale:+.1f}%")
-                    else:
-                        st.metric("Évolution Globale", "N/A")
-                else:
-                    st.metric("Évolution Globale", "N/A")
-            
-            # Top 5 produits
-            st.markdown("---")
-            st.markdown("#### 🏆 Top 5 Produits (Volume Total)")
-            
-            top_produits = df_stats.groupby(['marque', 'libelle'])['quantite_prevue_tonnes'].sum().reset_index()
-            top_produits = top_produits.sort_values('quantite_prevue_tonnes', ascending=False).head(5)
-            top_produits['Produit'] = top_produits['marque'] + ' - ' + top_produits['libelle']
-            top_produits = top_produits[['Produit', 'quantite_prevue_tonnes']].rename(columns={
-                'quantite_prevue_tonnes': 'Total (T)'
-            })
-            top_produits['Total (T)'] = top_produits['Total (T)'].apply(lambda x: f"{x:.1f}")
-            
-            st.dataframe(top_produits, use_container_width=True, hide_index=True)
 
 # ==========================================
 # FOOTER
