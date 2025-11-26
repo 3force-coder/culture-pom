@@ -604,7 +604,6 @@ def get_recap_valorisation_lot(lot_id):
         # Infos lot de base
         cursor.execute("""
             SELECT 
-                poids_total_brut_kg,
                 prix_achat_euro_tonne,
                 tare_achat_pct,
                 valeur_lot_euro
@@ -619,19 +618,21 @@ def get_recap_valorisation_lot(lot_id):
             conn.close()
             return None
         
-        # Vérifier si lot qualifié (prix + tare achat + poids)
-        if not lot['prix_achat_euro_tonne'] or not lot['tare_achat_pct']:
+        # ⭐ NOUVEAU : Calculer poids total depuis emplacements
+        cursor.execute("""
+            SELECT COALESCE(SUM(poids_total_kg), 0) as poids_total
+            FROM stock_emplacements
+            WHERE lot_id = %s AND is_active = TRUE
+        """, (lot_id,))
+        
+        poids_result = cursor.fetchone()
+        poids_brut = float(poids_result['poids_total']) if poids_result else 0.0
+        
+        # Vérifier si lot qualifié (prix + tare achat + poids emplacements)
+        if not lot['prix_achat_euro_tonne'] or not lot['tare_achat_pct'] or poids_brut <= 0:
             cursor.close()
             conn.close()
             return None
-        
-        # ⚠️ NOUVEAU : Vérifier poids défini
-        if not lot['poids_total_brut_kg']:
-            cursor.close()
-            conn.close()
-            return None
-        
-        poids_brut = float(lot['poids_total_brut_kg'])
         prix_achat = float(lot['prix_achat_euro_tonne'])
         tare_achat = float(lot['tare_achat_pct'])
         valeur_lot = float(lot['valeur_lot_euro'])
@@ -1122,7 +1123,7 @@ if len(lots_to_display) > 0:
                             st.markdown(f"""
                             <div style='background-color: #e3f2fd; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #2196f3; height: 250px;'>
                                 <h4 style='margin-top: 0; color: #1976d2;'>💰 VALEUR ACHAT</h4>
-                                <p style='margin: 0.3rem 0;'><strong>Poids brut:</strong> {recap['poids_brut']:.1f} T</p>
+                                <p style='margin: 0.3rem 0;'><strong>Poids total emplacements:</strong> {recap['poids_brut']:.1f} T</p>
                                 <p style='margin: 0.3rem 0;'><strong>Tare achat négociée:</strong> {recap['tare_achat']:.1f}%</p>
                                 <p style='margin: 0.3rem 0;'><strong>Poids net payé:</strong> {recap['poids_net_paye']:.1f} T</p>
                                 <hr style='margin: 0.5rem 0;'>
@@ -1157,8 +1158,8 @@ if len(lots_to_display) > 0:
                         
                         st.caption("💡 **Tare achat** : Négociée avec producteur (valorisation financière) | **Tare production** : Réelle après lavage ou standard 22% (matière disponible)")
                     else:
-                        st.info("📊 Lot non qualifié (prix ou tare d'achat manquant)")
-                        st.caption("💡 Qualifiez ce lot dans la page **Valorisation** pour voir le récap détaillé")
+                        st.info("📊 Lot non qualifié (prix/tare d'achat manquant ou aucun emplacement actif)")
+                        st.caption("💡 Qualifiez ce lot dans la page **Valorisation** et ajoutez des emplacements pour voir le récap détaillé")
                 
                 # ============================================================================
                 # ONGLET 3 : HISTORIQUE
