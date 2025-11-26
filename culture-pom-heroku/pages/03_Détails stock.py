@@ -264,37 +264,44 @@ def get_lot_mouvements(lot_id, limit=10):
         st.error(f"❌ Erreur : {str(e)}")
         return pd.DataFrame()
 
-def add_emplacement(lot_id, site, emplacement, nombre_unites, type_cond, statut_lavage='BRUT'):
-    """Ajoute un emplacement"""
+def add_emplacement(lot_id, site, emplacement, nombre_unites, type_cond, statut_lavage='BRUT', poids_total_saisi=None):
+    """Ajoute un emplacement avec poids personnalisable"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Calcul poids selon type conditionnement
+        # Calcul poids théorique selon type conditionnement
         if type_cond == 'Pallox':
-            poids_unitaire = 1900.0
+            poids_unitaire_theorique = 1900.0
         elif type_cond == 'Petit Pallox':
-            poids_unitaire = 1200.0
+            poids_unitaire_theorique = 1200.0
         elif type_cond == 'Big Bag':
-            poids_unitaire = 1600.0
+            poids_unitaire_theorique = 1600.0
         else:
-            poids_unitaire = 1900.0
+            poids_unitaire_theorique = 1900.0
         
-        poids_total = nombre_unites * poids_unitaire
+        # Utiliser poids saisi OU calculer théorique
+        if poids_total_saisi is not None:
+            poids_total = float(poids_total_saisi)
+        else:
+            poids_total = nombre_unites * poids_unitaire_theorique
+        
+        # Calculer poids unitaire réel
+        poids_unitaire_reel = poids_total / nombre_unites
         
         # Insérer emplacement
         query = """
             INSERT INTO stock_emplacements (
                 lot_id, site_stockage, emplacement_stockage, 
                 nombre_unites, type_conditionnement, poids_total_kg, 
-                statut_lavage, is_active
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE)
+                poids_unitaire_reel, statut_lavage, is_active
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE)
         """
         
         cursor.execute(query, (
             int(lot_id), site, emplacement, 
             int(nombre_unites), type_cond, float(poids_total),
-            statut_lavage
+            float(poids_unitaire_reel), statut_lavage
         ))
         
         # Enregistrer mouvement
@@ -887,23 +894,58 @@ if len(lots_to_display) > 0:
                         TYPES = ["Pallox", "Petit Pallox", "Big Bag"]
                         type_cond = st.selectbox("Type *", options=TYPES, index=0, key=f"add_type_{lot_id}")
                         
-                        # Calcul auto poids
+                        # Calcul poids théorique
                         if type_cond == 'Pallox':
-                            poids_unit = 1900
+                            poids_unit_theorique = 1900
                         elif type_cond == 'Petit Pallox':
-                            poids_unit = 1200
+                            poids_unit_theorique = 1200
                         else:
-                            poids_unit = 1600
+                            poids_unit_theorique = 1600
                         
-                        poids_calc = nombre * poids_unit
-                        st.metric("Poids calculé", f"{format_number_fr(poids_calc)} kg")
+                        poids_theorique = nombre * poids_unit_theorique
+                    
+                    # ⭐ POIDS MODIFIABLE (ligne complète)
+                    st.markdown("---")
+                    st.markdown("**⚖️ Poids Total**")
+                    
+                    col_info, col_poids = st.columns([1, 1])
+                    
+                    with col_info:
+                        st.info(f"💡 **Poids théorique** : {format_number_fr(poids_theorique)} kg\n\n({nombre} × {format_number_fr(poids_unit_theorique)} kg/unité)")
+                    
+                    with col_poids:
+                        poids_total_saisi = st.number_input(
+                            "Poids Total Réel (kg) *",
+                            min_value=0.0,
+                            value=float(poids_theorique),
+                            step=10.0,
+                            help="💡 Modifiez si pesée camion différente du théorique",
+                            key=f"add_poids_{lot_id}"
+                        )
+                        
+                        # Afficher différence si modifié
+                        if abs(poids_total_saisi - poids_theorique) > 1:
+                            poids_unit_reel = poids_total_saisi / nombre
+                            diff_pct = ((poids_total_saisi - poids_theorique) / poids_theorique) * 100
+                            
+                            if diff_pct > 0:
+                                st.warning(f"⚠️ **Poids supérieur** : +{format_number_fr(abs(diff_pct))}%\n\nPoids moyen : **{format_number_fr(poids_unit_reel)} kg/unité**")
+                            else:
+                                st.warning(f"⚠️ **Poids inférieur** : -{format_number_fr(abs(diff_pct))}%\n\nPoids moyen : **{format_number_fr(poids_unit_reel)} kg/unité**")
+                    
+                    st.markdown("---")
                     
                     col_save, col_cancel = st.columns(2)
                     
                     with col_save:
                         if st.button("💾 Enregistrer", key=f"save_add_{lot_id}", type="primary", use_container_width=True):
                             if site and emplacement and nombre and type_cond:
-                                success, message = add_emplacement(lot_id, site, emplacement, nombre, type_cond)
+                                # ⭐ Passer le poids saisi à la fonction
+                                success, message = add_emplacement(
+                                    lot_id, site, emplacement, nombre, type_cond,
+                                    statut_lavage='BRUT',
+                                    poids_total_saisi=poids_total_saisi
+                                )
                                 if success:
                                     st.success(message)
                                     st.session_state.pop(f'show_add_form_{lot_id}')
@@ -1180,22 +1222,58 @@ if len(lots_to_display) > 0:
                         TYPES = ["Pallox", "Petit Pallox", "Big Bag"]
                         type_cond = st.selectbox("Type *", options=TYPES, index=0, key=f"add_type_first_{lot_id}")
                         
+                        # Calcul poids théorique
                         if type_cond == 'Pallox':
-                            poids_unit = 1900
+                            poids_unit_theorique = 1900
                         elif type_cond == 'Petit Pallox':
-                            poids_unit = 1200
+                            poids_unit_theorique = 1200
                         else:
-                            poids_unit = 1600
+                            poids_unit_theorique = 1600
                         
-                        poids_calc = nombre * poids_unit
-                        st.metric("Poids calculé", f"{format_number_fr(poids_calc)} kg")
+                        poids_theorique = nombre * poids_unit_theorique
+                    
+                    # ⭐ POIDS MODIFIABLE (ligne complète)
+                    st.markdown("---")
+                    st.markdown("**⚖️ Poids Total**")
+                    
+                    col_info, col_poids = st.columns([1, 1])
+                    
+                    with col_info:
+                        st.info(f"💡 **Poids théorique** : {format_number_fr(poids_theorique)} kg\n\n({nombre} × {format_number_fr(poids_unit_theorique)} kg/unité)")
+                    
+                    with col_poids:
+                        poids_total_saisi = st.number_input(
+                            "Poids Total Réel (kg) *",
+                            min_value=0.0,
+                            value=float(poids_theorique),
+                            step=10.0,
+                            help="💡 Modifiez si pesée camion différente du théorique",
+                            key=f"add_poids_first_{lot_id}"
+                        )
+                        
+                        # Afficher différence si modifié
+                        if abs(poids_total_saisi - poids_theorique) > 1:
+                            poids_unit_reel = poids_total_saisi / nombre
+                            diff_pct = ((poids_total_saisi - poids_theorique) / poids_theorique) * 100
+                            
+                            if diff_pct > 0:
+                                st.warning(f"⚠️ **Poids supérieur** : +{format_number_fr(abs(diff_pct))}%\n\nPoids moyen : **{format_number_fr(poids_unit_reel)} kg/unité**")
+                            else:
+                                st.warning(f"⚠️ **Poids inférieur** : -{format_number_fr(abs(diff_pct))}%\n\nPoids moyen : **{format_number_fr(poids_unit_reel)} kg/unité**")
+                    
+                    st.markdown("---")
                     
                     col_save, col_cancel = st.columns(2)
                     
                     with col_save:
                         if st.button("💾 Enregistrer", key=f"save_add_first_{lot_id}", type="primary", use_container_width=True):
                             if site and emplacement and nombre and type_cond:
-                                success, message = add_emplacement(lot_id, site, emplacement, nombre, type_cond)
+                                # ⭐ Passer le poids saisi à la fonction
+                                success, message = add_emplacement(
+                                    lot_id, site, emplacement, nombre, type_cond,
+                                    statut_lavage='BRUT',
+                                    poids_total_saisi=poids_total_saisi
+                                )
                                 if success:
                                     st.success(message)
                                     st.session_state.pop(f'show_add_form_{lot_id}')
