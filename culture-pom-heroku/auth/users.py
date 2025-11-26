@@ -18,7 +18,7 @@ USERS = {
     'compteur_inventaire': {
         'name': 'Compteur Inventaire',
         'email': 'compteur@culturepom.com',
-        'password_hash': '$2b$12$KQX7jMnP9vR2wH5nYzEuXeF4L7GkM3pN8qQ5rS6tT9uU2vW0xX1yY2',
+        'password_hash': '$2b$12$nA6gPa2kt07vk.ytfXtaiejVDiu9s8F5RwBMuuKx5MP3Mvh50oGEy',
         'role': 'COMPTEUR'
     }
 }
