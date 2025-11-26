@@ -601,12 +601,11 @@ def get_recap_valorisation_lot(lot_id):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Infos lot de base
+        # Infos lot de base (sans valeur_lot_euro)
         cursor.execute("""
             SELECT 
                 prix_achat_euro_tonne,
-                tare_achat_pct,
-                valeur_lot_euro
+                tare_achat_pct
             FROM lots_bruts
             WHERE id = %s AND is_active = TRUE
         """, (lot_id,))
@@ -633,9 +632,9 @@ def get_recap_valorisation_lot(lot_id):
             cursor.close()
             conn.close()
             return None
+        
         prix_achat = float(lot['prix_achat_euro_tonne'])
         tare_achat = float(lot['tare_achat_pct'])
-        valeur_lot = float(lot['valeur_lot_euro'])
         
         # Tare production réelle (si jobs lavage terminés pour ce lot)
         cursor.execute("""
@@ -648,12 +647,17 @@ def get_recap_valorisation_lot(lot_id):
         
         tare_result = cursor.fetchone()
         
+        # Flag lavage terminé (pour affichage écart)
+        is_lavage_done = False
+        
         if tare_result and tare_result['tare_prod']:
             tare_production = float(tare_result['tare_prod'])
             tare_prod_source = "✅ Mesurée"
+            is_lavage_done = True
         else:
             tare_production = 22.0  # Standard
             tare_prod_source = "📊 Standard"
+            is_lavage_done = False
         
         cursor.close()
         conn.close()
@@ -661,6 +665,9 @@ def get_recap_valorisation_lot(lot_id):
         # Calculs
         poids_net_paye = poids_brut * (1 - tare_achat / 100)
         poids_net_production = poids_brut * (1 - tare_production / 100)
+        
+        # ⭐ RECALCULER valeur lot avec nouveau poids
+        valeur_lot = (poids_net_paye / 1000) * prix_achat
         
         # Écarts
         ecart_tare_vs_standard = tare_production - 22.0
@@ -678,7 +685,8 @@ def get_recap_valorisation_lot(lot_id):
             'poids_net_production': poids_net_production / 1000,
             'ecart_tare_vs_standard': ecart_tare_vs_standard,
             'poids_gagne': poids_gagne / 1000,
-            'perte_vs_achat': perte_vs_achat / 1000
+            'perte_vs_achat': perte_vs_achat / 1000,
+            'is_lavage_done': is_lavage_done  # ⭐ NOUVEAU flag
         }
         
     except Exception as e:
@@ -1121,7 +1129,7 @@ if len(lots_to_display) > 0:
                         
                         with col1:
                             st.markdown(f"""
-                            <div style='background-color: #e3f2fd; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #2196f3; height: 250px;'>
+                            <div style='background-color: #e3f2fd; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #2196f3; height: 300px;'>
                                 <h4 style='margin-top: 0; color: #1976d2;'>💰 VALEUR ACHAT</h4>
                                 <p style='margin: 0.3rem 0;'><strong>Poids total emplacements:</strong> {recap['poids_brut']:.1f} T</p>
                                 <p style='margin: 0.3rem 0;'><strong>Tare achat négociée:</strong> {recap['tare_achat']:.1f}%</p>
@@ -1133,23 +1141,42 @@ if len(lots_to_display) > 0:
                             """, unsafe_allow_html=True)
                         
                         with col2:
-                            # Couleur écart selon performance
-                            if recap['ecart_tare_vs_standard'] < 0:
+                            # ⭐ Logique affichage écart selon si lot lavé ou non
+                            if not recap.get('is_lavage_done'):
+                                # Lot pas encore lavé : affichage neutre gris
+                                color_ecart = "#757575"
+                                symbole_ecart = "⏳"
+                                titre_ecart = "⏳ LOT PAS ENCORE LAVÉ"
+                                contenu_ecart = """
+                                <p style='margin: 0.3rem 0; color: #757575; font-style: italic;'>Les écarts vs standard 22% seront calculés après lavage</p>
+                                """
+                            elif recap['ecart_tare_vs_standard'] < 0:
+                                # Lot lavé avec bonne performance : vert
                                 color_ecart = "#2e7d32"
                                 symbole_ecart = "✅"
+                                titre_ecart = "✅ ÉCARTS vs Standard 22%"
+                                contenu_ecart = f"""
+                                <p style='margin: 0.3rem 0; color: {color_ecart};'><strong>Écart tare:</strong> {recap['ecart_tare_vs_standard']:+.1f} points</p>
+                                <p style='margin: 0.3rem 0; color: {color_ecart};'><strong>Poids gagné/perdu:</strong> {recap['poids_gagne']:+.2f} T</p>
+                                """
                             else:
+                                # Lot lavé avec mauvaise performance : rouge
                                 color_ecart = "#d32f2f"
                                 symbole_ecart = "⚠️"
+                                titre_ecart = "⚠️ ÉCARTS vs Standard 22%"
+                                contenu_ecart = f"""
+                                <p style='margin: 0.3rem 0; color: {color_ecart};'><strong>Écart tare:</strong> {recap['ecart_tare_vs_standard']:+.1f} points</p>
+                                <p style='margin: 0.3rem 0; color: {color_ecart};'><strong>Poids gagné/perdu:</strong> {recap['poids_gagne']:+.2f} T</p>
+                                """
                             
                             st.markdown(f"""
-                            <div style='background-color: #fff3e0; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #ff9800; height: 250px;'>
+                            <div style='background-color: #fff3e0; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #ff9800; height: 300px;'>
                                 <h4 style='margin-top: 0; color: #f57c00;'>🏭 MATIÈRE PREMIÈRE PRODUCTION</h4>
                                 <p style='margin: 0.3rem 0;'><strong>Tare production:</strong> {recap['tare_production']:.1f}% <span style='font-size: 0.85rem;'>{recap['tare_prod_source']}</span></p>
                                 <p style='margin: 0.3rem 0;'><strong>Poids net production:</strong> {recap['poids_net_production']:.1f} T</p>
                                 <hr style='margin: 0.5rem 0;'>
-                                <h4 style='margin-top: 0.5rem; margin-bottom: 0.3rem; color: {color_ecart};'>{symbole_ecart} ÉCARTS vs Standard 22%</h4>
-                                <p style='margin: 0.3rem 0; color: {color_ecart};'><strong>Écart tare:</strong> {recap['ecart_tare_vs_standard']:+.1f} points</p>
-                                <p style='margin: 0.3rem 0; color: {color_ecart};'><strong>Poids gagné/perdu:</strong> {recap['poids_gagne']:+.2f} T</p>
+                                <h4 style='margin-top: 0.5rem; margin-bottom: 0.3rem; color: {color_ecart};'>{titre_ecart}</h4>
+                                {contenu_ecart}
                                 <hr style='margin: 0.5rem 0;'>
                                 <h4 style='margin-top: 0.5rem; margin-bottom: 0.3rem;'>vs Achat payé</h4>
                                 <p style='margin: 0.3rem 0;'><strong>Perte production:</strong> {recap['perte_vs_achat']:.2f} T</p>
