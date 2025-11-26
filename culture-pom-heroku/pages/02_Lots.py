@@ -328,6 +328,10 @@ def add_lot(data, varietes_dict, producteurs_dict):
         # Ajouter is_active
         data['is_active'] = True
         
+        # ⚠️ FILTRER champs qui n'existent pas dans lots_bruts
+        data.pop('type_conditionnement', None)
+        data.pop('nombre_unites', None)
+        
         # Préparer l'insertion
         columns = list(data.keys())
         values = [convert_to_native_types(v) for v in data.values()]
@@ -432,16 +436,12 @@ def get_valid_references_import():
         rows_prod = cursor.fetchall()
         producteurs = [row['code_producteur'] for row in rows_prod]
         
-        # Types conditionnement
-        types_cond = ['Pallox', 'Petit Pallox', 'Big Bag']
-        
         cursor.close()
         conn.close()
         
         return {
             'varietes': varietes,
-            'producteurs': producteurs,
-            'types_conditionnement': types_cond
+            'producteurs': producteurs
         }
         
     except Exception as e:
@@ -457,13 +457,13 @@ def create_import_template_excel():
         # Onglet Lots (vide)
         lots_columns = [
             'code_lot_interne', 'nom_usage', 'code_producteur', 'code_variete',
-            'nombre_unites', 'type_conditionnement', 'poids_unitaire_kg',
-            'date_entree_stock', 'calibre_min', 'calibre_max', 'notes'
+            'poids_total_brut_kg', 'date_entree_stock', 'calibre_min', 'calibre_max', 
+            'prix_achat_euro_tonne', 'tare_achat_pct', 'notes'
         ]
         df_lots_template = pd.DataFrame(columns=lots_columns)
         df_lots_template.loc[0] = [
             'LOT_2025_AGATA_001', 'AGATA BOSSELER', 'ACQU001', 'AGATA',
-            10, 'Pallox', 1900, '2025-01-15', 35, 50, 'Exemple'
+            19000, '2025-01-15', 35, 50, 150.0, 5.0, 'Exemple'
         ]
         
         # Onglet Variétés
@@ -499,7 +499,6 @@ def validate_import_data_excel(df, valid_refs):
     df_validated['_warnings'] = ''
     df_validated['_variete_corrected'] = df_validated['code_variete']
     df_validated['_producteur_corrected'] = df_validated['code_producteur']
-    df_validated['_type_cond_corrected'] = df_validated['type_conditionnement']
     
     errors_count = 0
     warnings_count = 0
@@ -513,10 +512,8 @@ def validate_import_data_excel(df, valid_refs):
             errors.append("Code lot manquant")
         if pd.isna(row['nom_usage']) or str(row['nom_usage']).strip() == '':
             errors.append("Nom usage manquant")
-        if pd.isna(row['nombre_unites']) or row['nombre_unites'] <= 0:
-            errors.append("Nombre unités invalide")
-        if pd.isna(row['type_conditionnement']) or str(row['type_conditionnement']).strip() == '':
-            errors.append("Type conditionnement manquant")
+        if pd.isna(row['poids_total_brut_kg']) or row['poids_total_brut_kg'] <= 0:
+            errors.append("Poids total invalide")
         
         # Validation variété
         if not pd.isna(row['code_variete']) and str(row['code_variete']).strip() != '':
@@ -541,17 +538,6 @@ def validate_import_data_excel(df, valid_refs):
             elif not is_valid:
                 errors.append(f"Producteur '{row['code_producteur']}' introuvable")
                 df_validated.at[idx, '_producteur_corrected'] = None
-        
-        # Validation type conditionnement
-        is_valid, matched, match_type = fuzzy_match_value(row['type_conditionnement'], valid_refs['types_conditionnement'])
-        if is_valid and match_type == "fuzzy":
-            warnings.append(f"Type '{row['type_conditionnement']}' → '{matched}'")
-            df_validated.at[idx, '_type_cond_corrected'] = matched
-        elif is_valid and match_type == "exact":
-            df_validated.at[idx, '_type_cond_corrected'] = matched
-        elif not is_valid:
-            errors.append(f"Type '{row['type_conditionnement']}' invalide")
-            df_validated.at[idx, '_type_cond_corrected'] = None
         
         # Statut
         if errors:
@@ -587,28 +573,32 @@ def import_validated_lots_excel(df_validated):
             try:
                 code_variete = row['_variete_corrected'] if pd.notna(row['_variete_corrected']) else None
                 code_producteur = row['_producteur_corrected'] if pd.notna(row['_producteur_corrected']) else None
-                type_cond = row['_type_cond_corrected']
                 
-                # Calcul poids
-                poids_unitaire = float(row['poids_unitaire_kg']) if pd.notna(row['poids_unitaire_kg']) else 1900.0
-                nombre_unites = int(row['nombre_unites'])
-                poids_total = poids_unitaire * nombre_unites
+                # Poids direct depuis Excel
+                poids_total = float(row['poids_total_brut_kg']) if pd.notna(row['poids_total_brut_kg']) else 0.0
+                
+                # Calcul valeur_lot
+                tare = float(row['tare_achat_pct']) if pd.notna(row['tare_achat_pct']) else 0.0
+                prix = float(row['prix_achat_euro_tonne']) if pd.notna(row['prix_achat_euro_tonne']) else 0.0
+                poids_tonnes = poids_total / 1000.0
+                valeur_lot = poids_tonnes * (1.0 - tare / 100.0) * prix
                 
                 query = """
                 INSERT INTO lots_bruts (
                     code_lot_interne, nom_usage, code_producteur, code_variete,
-                    nombre_unites, type_conditionnement, poids_total_brut_kg,
-                    date_entree_stock, calibre_min, calibre_max, notes,
+                    poids_total_brut_kg, date_entree_stock, calibre_min, calibre_max,
+                    prix_achat_euro_tonne, tare_achat_pct, valeur_lot_euro, notes,
                     statut, is_active, created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'EN_STOCK', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'EN_STOCK', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """
                 
                 cursor.execute(query, (
                     row['code_lot_interne'], row['nom_usage'], code_producteur, code_variete,
-                    nombre_unites, type_cond, poids_total,
+                    poids_total,
                     row['date_entree_stock'] if pd.notna(row['date_entree_stock']) else None,
                     int(row['calibre_min']) if pd.notna(row['calibre_min']) else None,
                     int(row['calibre_max']) if pd.notna(row['calibre_max']) else None,
+                    prix, tare, valeur_lot,
                     row['notes'] if pd.notna(row['notes']) else None
                 ))
                 
@@ -686,10 +676,10 @@ with tab1:
                 key="add_producteur"
             )
             
-            # Date entrée - AUTO
+            # Date création - AUTO
             st.session_state.new_lot_data['date_entree_stock'] = datetime.now().date()
             st.text_input(
-                "Date Entrée Stock (auto)",
+                "Date Création (auto)",
                 value=datetime.now().strftime("%d/%m/%Y"),
                 disabled=True,
                 key="add_date_entree_display"
@@ -743,7 +733,7 @@ with tab1:
             st.session_state.new_lot_data['calibre_max'] = st.number_input(
                 "Calibre Max",
                 min_value=0,
-                value=0,
+                value=75,
                 step=5,
                 key="add_calibre_max"
             )
