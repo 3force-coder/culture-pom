@@ -612,8 +612,14 @@ def get_recap_valorisation_lot(lot_id):
             conn.close()
             return None
         
-        # Vérifier si lot qualifié (prix + tare achat)
+        # Vérifier si lot qualifié (prix + tare achat + poids)
         if not lot['prix_achat_euro_tonne'] or not lot['tare_achat_pct']:
+            cursor.close()
+            conn.close()
+            return None
+        
+        # ⚠️ NOUVEAU : Vérifier poids défini
+        if not lot['poids_total_brut_kg']:
             cursor.close()
             conn.close()
             return None
@@ -722,6 +728,12 @@ if len(lots_to_display) > 0:
         lot_info = get_lot_info(lot_id)
         
         if lot_info:
+            # ⚠️ Préparer affichage poids (peut être NULL)
+            if lot_info['poids_total_brut_kg']:
+                poids_display = f"{format_number_fr(lot_info['poids_total_brut_kg'])} kg ({format_float_fr(lot_info['poids_total_brut_kg']/1000)} T)"
+            else:
+                poids_display = "<em style='color: orange;'>Non défini - À saisir dans Détails Stock</em>"
+            
             # ⭐ CARTE INFO LOT
             st.markdown(f"""
             <div class="lot-card">
@@ -731,7 +743,7 @@ if len(lots_to_display) > 0:
                 <strong>Producteur:</strong> {lot_info['nom_producteur']}<br>
                 <strong>Date entrée:</strong> {lot_info['date_entree_stock']}<br>
                 <strong>Âge:</strong> {lot_info['age_jours']} jours<br>
-                <strong>Poids total brut:</strong> {format_number_fr(lot_info['poids_total_brut_kg'])} kg ({format_float_fr(lot_info['poids_total_brut_kg']/1000)} T)
+                <strong>Poids total brut:</strong> {poids_display}
             </div>
             """, unsafe_allow_html=True)
             
@@ -847,7 +859,7 @@ if len(lots_to_display) > 0:
                     st.markdown(f"##### ➕ Ajouter Emplacement - Lot {lot_info['code_lot_interne']}")
                     
                     # ⭐ Calculer nombre unités suggéré depuis lot
-                    poids_brut_lot = float(lot_info.get('poids_total_brut_kg', 0))
+                    poids_brut_lot = float(lot_info.get('poids_total_brut_kg') or 0)
                     
                     # Estimer nombre pallox selon poids (Pallox standard 1900kg)
                     nombre_suggere = max(1, int(round(poids_brut_lot / 1900)))
@@ -1144,7 +1156,7 @@ if len(lots_to_display) > 0:
                     st.markdown(f"##### ➕ Ajouter Emplacement - Lot {lot_info['code_lot_interne']}")
                     
                     # ⭐ Calculer nombre unités suggéré depuis lot
-                    poids_brut_lot = float(lot_info.get('poids_total_brut_kg', 0))
+                    poids_brut_lot = float(lot_info.get('poids_total_brut_kg') or 0)
                     nombre_suggere = max(1, int(round(poids_brut_lot / 1900)))
                     
                     st.info(f"💡 **Poids total lot** : {format_number_fr(poids_brut_lot)} kg → Suggéré : **{nombre_suggere} Pallox**")
