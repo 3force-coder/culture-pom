@@ -68,6 +68,25 @@ with main_tab1:
     # FONCTIONS
     # ==========================================
     
+    def get_sites_disponibles():
+        """Récupère les sites depuis stock_consommables"""
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT site 
+                FROM stock_consommables 
+                WHERE is_active = TRUE AND site IS NOT NULL
+                ORDER BY site
+            """)
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            sites = [row['site'] for row in rows] if rows else []
+            return ["Tous"] + sites
+        except:
+            return ["Tous", "St Flavy"]  # Fallback
+    
     def get_kpis_inventaire_conso():
         """KPIs inventaires consommables"""
         try:
@@ -238,11 +257,11 @@ with main_tab1:
             # Insérer lignes
             for _, row in df_stock.iterrows():
                 cursor.execute("""
-                    INSERT INTO inventaires_lignes (inventaire_id, consommable_id, site, atelier, 
-                                                   emplacement, stock_theorique, prix_unitaire)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO inventaires_consommables_lignes (inventaire_id, consommable_id, site, atelier, 
+                                                   emplacement, stock_theorique)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                 """, (inv_id, row['consommable_id'], row['site'], row['atelier'], 
-                     row['emplacement'], row['stock_theorique'], row['prix_unitaire']))
+                     row['emplacement'], row['stock_theorique']))
             
             # Mettre à jour nb_lignes
             cursor.execute("UPDATE inventaires SET nb_lignes = %s WHERE id = %s", (len(df_stock), inv_id))
@@ -275,9 +294,9 @@ with main_tab1:
                     il.stock_theorique,
                     il.stock_compte,
                     il.ecart,
-                    il.prix_unitaire,
+                    rc.prix_unitaire,
                     il.ecart_valeur
-                FROM inventaires_lignes il
+                FROM inventaires_consommables_lignes il
                 JOIN ref_consommables rc ON il.consommable_id = rc.id
                 WHERE il.inventaire_id = %s
                 ORDER BY rc.libelle
@@ -317,7 +336,7 @@ with main_tab1:
                     ecart_valeur = ecart * prix_unit
                     
                     cursor.execute("""
-                        UPDATE inventaires_lignes
+                        UPDATE inventaires_consommables_lignes
                         SET stock_compte = %s, ecart = %s, ecart_valeur = %s
                         WHERE id = %s
                     """, (stock_compte, ecart, ecart_valeur, ligne_id))
@@ -327,12 +346,12 @@ with main_tab1:
             cursor.execute("""
                 UPDATE inventaires
                 SET nb_ecarts = (
-                    SELECT COUNT(*) FROM inventaires_lignes 
+                    SELECT COUNT(*) FROM inventaires_consommables_lignes 
                     WHERE inventaire_id = %s AND ecart != 0 AND ecart IS NOT NULL
                 ),
                 valeur_ecart_total = (
                     SELECT COALESCE(SUM(ABS(ecart_valeur)), 0) 
-                    FROM inventaires_lignes 
+                    FROM inventaires_consommables_lignes 
                     WHERE inventaire_id = %s AND ecart_valeur IS NOT NULL
                 )
                 WHERE id = %s
@@ -357,7 +376,7 @@ with main_tab1:
             # Récupérer les lignes avec écarts
             cursor.execute("""
                 SELECT consommable_id, site, atelier, emplacement, stock_compte, ecart
-                FROM inventaires_lignes
+                FROM inventaires_consommables_lignes
                 WHERE inventaire_id = %s AND ecart IS NOT NULL
             """, (inventaire_id,))
             
@@ -427,7 +446,7 @@ with main_tab1:
                 return False, "❌ Seuls les inventaires EN_COURS peuvent être supprimés"
             
             # Supprimer lignes puis inventaire
-            cursor.execute("DELETE FROM inventaires_lignes WHERE inventaire_id = %s", (inventaire_id,))
+            cursor.execute("DELETE FROM inventaires_consommables_lignes WHERE inventaire_id = %s", (inventaire_id,))
             cursor.execute("DELETE FROM inventaires WHERE id = %s", (inventaire_id,))
             
             conn.commit()
@@ -475,7 +494,7 @@ with main_tab1:
         with col1:
             date_inv = st.date_input("Date de l'inventaire *", value=date.today(), key="date_inv")
             
-            sites = ["Tous", "St Flavy", "Morette", "Ste Livrade"]
+            sites = get_sites_disponibles()
             site_sel = st.selectbox("Site *", sites, key="site_inv")
         
         with col2:
