@@ -316,14 +316,11 @@ def add_lot(data, varietes_dict, producteurs_dict):
                 data['code_producteur'] = producteurs_dict[data['nom_producteur']]
             del data['nom_producteur']
         
-        # Calcul valeur_lot
-        poids_brut = float(data.get('poids_total_brut_kg', 0))
-        tare = float(data.get('tare_achat_pct', 0))
-        prix = float(data.get('prix_achat_euro_tonne', 0))
+        # ⚠️ poids_total_brut_kg = NULL (sera défini dans page 03 Détails Stock)
+        data['poids_total_brut_kg'] = None
         
-        poids_tonnes = poids_brut / 1000.0
-        valeur_lot = poids_tonnes * (1.0 - tare / 100.0) * prix
-        data['valeur_lot_euro'] = valeur_lot
+        # Calcul valeur_lot (si poids défini plus tard)
+        data['valeur_lot_euro'] = 0.0
         
         # Ajouter is_active
         data['is_active'] = True
@@ -686,16 +683,6 @@ with tab1:
             )
         
         with col2:
-            # Poids Total Brut (manuel)
-            st.session_state.new_lot_data['poids_total_brut_kg'] = st.number_input(
-                "Poids Total Brut (kg)",
-                min_value=0.0,
-                value=0.0,
-                step=100.0,
-                key="add_poids_total",
-                help="Poids total brut en kg (sera détaillé dans Détails Stock)"
-            )
-            
             # Calibres
             st.session_state.new_lot_data['calibre_min'] = st.number_input(
                 "Calibre Min",
@@ -738,6 +725,14 @@ with tab1:
                 options=STATUTS,
                 index=0,
                 key="add_statut"
+            )
+            
+            # Tarification Définitive
+            st.session_state.new_lot_data['tarif_definitif'] = st.checkbox(
+                "Tarification Définitive",
+                value=False,
+                key="add_tarif_definitif",
+                help="Cocher si le prix d'achat est définitif"
             )
         
         st.markdown("---")
