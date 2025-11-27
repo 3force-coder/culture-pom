@@ -32,6 +32,44 @@ from .permissions import (
 )
 
 # ============================================================
+# FONCTIONS UTILITAIRES SESSION
+# ============================================================
+
+def get_current_user_id():
+    """
+    Retourne l'ID de l'utilisateur connecté
+    """
+    import streamlit as st
+    return st.session_state.get('user_id', None)
+
+
+def get_current_username():
+    """
+    Retourne le username de l'utilisateur connecté
+    """
+    import streamlit as st
+    return st.session_state.get('username', None)
+
+
+def get_current_user_info():
+    """
+    Retourne les infos complètes de l'utilisateur connecté
+    """
+    import streamlit as st
+    return {
+        'user_id': st.session_state.get('user_id'),
+        'username': st.session_state.get('username'),
+        'name': st.session_state.get('name'),
+        'email': st.session_state.get('email'),
+        'role_code': st.session_state.get('role_code'),
+        'role_libelle': st.session_state.get('role_libelle'),
+        'role_niveau': st.session_state.get('role_niveau'),
+        'is_super_admin': st.session_state.get('is_super_admin', False),
+        'is_admin': st.session_state.get('is_admin', False)
+    }
+
+
+# ============================================================
 # FONCTIONS DE COMPATIBILITÉ (ancien système)
 # ============================================================
 
@@ -109,6 +147,10 @@ def has_permission(permission):
     group_code = mapping.get(permission, permission.upper())
     return has_access(group_code)
 
+
+# ============================================================
+# FONCTIONS GESTION UTILISATEURS
+# ============================================================
 
 def can_manage_user_of_level(target_level):
     """
@@ -270,6 +312,11 @@ __all__ = [
     'can_manage_users',
     'get_manageable_roles',
     'get_accessible_page_groups',
+    
+    # Session utilisateur
+    'get_current_user_id',
+    'get_current_username',
+    'get_current_user_info',
     
     # Compatibilité
     'is_compteur',
