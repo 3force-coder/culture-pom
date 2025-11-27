@@ -90,6 +90,7 @@ pages = {
     ],
     "📋 Inventaire": [
         st.Page("pages/11_Inventaire.py", title="Inventaires", icon="📋"),
+        st.Page("pages/12_Saisie_Inventaire.py", title="Saisie Inventaire", icon="📱")
     ],
 }
 
