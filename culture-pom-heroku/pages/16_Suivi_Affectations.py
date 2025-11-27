@@ -37,11 +37,7 @@ if not is_authenticated():
     st.warning("⚠️ Veuillez vous connecter")
     st.stop()
 
-# Vérification permissions
-permissions = get_user_permissions('PLANS_RECOLTE')
-if not permissions.get('can_view', False):
-    st.error("🚫 Accès non autorisé à cette page")
-    st.stop()
+require_access("PLANS_RECOLTE")
 
 st.title("📋 Suivi Affectations")
 st.markdown("*Vue par producteur et récapitulatifs des affectations*")
