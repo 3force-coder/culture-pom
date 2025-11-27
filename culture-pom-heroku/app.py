@@ -94,6 +94,9 @@ pages = {
     ],
     "🌾 Plans Récolte": [
         st.Page("pages/13_Plan_Recolte.py", title="Plan Récolte", icon="🌾"),
+        st.Page("pages/14_Recaps_Plan.py", title="Récaps Plan", icon="📊"),
+        st.Page("pages/15_Affectation_Producteurs.py", title="Affectation Producteurs", icon="👨‍🌾"),
+        st.Page("pages/16_Suivi_Affectations.py", title="Suivi Affectations", icon="📋"),
     ],
     "🔧 Admin": [
         st.Page("pages/99_Admin_Users.py", title="Admin Users", icon="👥"),
