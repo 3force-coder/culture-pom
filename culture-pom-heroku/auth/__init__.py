@@ -1,49 +1,22 @@
 """
-Module Auth - Culture Pom
-Authentification et gestion des permissions RBAC
-
-Usage simple dans les pages:
-    from auth import require_access, is_authenticated, show_login
-    
-    # En début de page
-    if not is_authenticated():
-        show_login()
-        st.stop()
-    
-    require_access("STOCK")  # Vérifie les droits, stoppe si non autorisé
-    
-    # Pour vérifier les droits d'édition
-    from auth import can_edit
-    if can_edit("STOCK"):
-        st.button("Modifier")
+Module d'authentification Culture Pom
+Système RBAC avec permissions par groupe de pages
 """
 
-import streamlit as st
-
-# Authentification
-from auth.authenticator import (
+from .authenticator import (
     show_login,
     is_authenticated,
-    logout,
     authenticate_user,
-    get_current_user_id,
-    get_current_username,
-    hash_password,
-    verify_password,
-)
-
-# Gestion utilisateurs (admin)
-from auth.authenticator import (
     create_user,
     update_user,
     reset_password,
-    change_own_password,
     get_all_users,
-    get_user_by_id,
+    get_user_by_id
 )
 
-# Permissions RBAC
-from auth.permissions import (
+from .permissions import (
+    get_user_permissions,
+    load_user_session_permissions,
     require_access,
     has_access,
     can_view,
@@ -54,87 +27,104 @@ from auth.permissions import (
     is_admin,
     get_role_niveau,
     can_manage_users,
-    can_manage_user_of_level,
     get_manageable_roles,
-    get_accessible_page_groups,
-    get_page_group_icon,
-    load_user_session_permissions,
+    get_accessible_page_groups
 )
 
-
-# =====================================================
+# ============================================================
 # FONCTIONS DE COMPATIBILITÉ (ancien système)
-# À retirer progressivement quand les pages seront migrées
-# =====================================================
+# ============================================================
+
+def is_compteur():
+    """
+    Compatibilité : Vérifie si l'utilisateur a accès à la saisie inventaire
+    Retourne True pour COMPTEUR et tous les admins
+    """
+    import streamlit as st
+    if not st.session_state.get('authenticated', False):
+        return False
+    
+    # Super admin et admins ont accès partout
+    if st.session_state.get('is_super_admin', False):
+        return True
+    if st.session_state.get('is_admin', False):
+        return True
+    
+    # Rôle COMPTEUR
+    role_code = st.session_state.get('role_code', '')
+    return role_code == 'COMPTEUR'
+
+
+def is_compteur_only():
+    """
+    Vérifie si l'utilisateur est UNIQUEMENT compteur (pas admin)
+    Utilisé pour rediriger les compteurs purs vers page 12
+    """
+    import streamlit as st
+    if not st.session_state.get('authenticated', False):
+        return False
+    
+    # Si admin, retourne False (pas "compteur only")
+    if st.session_state.get('is_super_admin', False):
+        return False
+    if st.session_state.get('is_admin', False):
+        return False
+    
+    # Vrai seulement si rôle = COMPTEUR
+    role_code = st.session_state.get('role_code', '')
+    return role_code == 'COMPTEUR'
+
+
+def get_role():
+    """
+    Compatibilité : Retourne le rôle pour l'ancien code
+    Retourne "ADMIN" ou "USER" (ancien système)
+    """
+    import streamlit as st
+    if st.session_state.get('is_super_admin', False):
+        return "ADMIN"
+    if st.session_state.get('is_admin', False):
+        return "ADMIN"
+    return "USER"
+
 
 def has_permission(permission):
     """
     DEPRECATED - Utiliser has_access() à la place
     Maintenu pour compatibilité avec ancien code
     """
-    # Mapping ancien système vers nouveau
-    old_to_new = {
+    # Mapper les anciennes permissions vers les nouveaux groupes
+    mapping = {
         'dashboard': 'ACCUEIL',
         'lots_read': 'STOCK',
         'lots_write': 'STOCK',
         'import': 'STOCK',
-        'admin': 'ADMIN'
+        'admin': 'ADMIN',
+        'inventaire': 'INVENTAIRE',
+        'stock': 'STOCK',
+        'production': 'PRODUCTION',
+        'commercial': 'COMMERCIAL'
     }
-    page_group = old_to_new.get(permission, permission.upper())
-    return has_access(page_group)
+    
+    group_code = mapping.get(permission, permission.upper())
+    return has_access(group_code)
 
 
-def is_compteur():
-    """
-    Vérifie si l'utilisateur a le rôle COMPTEUR
-    Compatibilité avec pages existantes (11, 12)
-    """
-    role_code = st.session_state.get('role_code', '')
-    # COMPTEUR ou tout admin/super_admin peut aussi faire le travail de compteur
-    return role_code == 'COMPTEUR' or is_admin() or is_super_admin()
-
-
-def get_role():
-    """
-    Retourne le code du rôle pour affichage (compatibilité ancien système)
-    Mappe les nouveaux codes vers ADMIN/USER pour l'ancien affichage
-    """
-    role_code = st.session_state.get('role_code', '')
-    if 'ADMIN' in role_code or is_super_admin():
-        return 'ADMIN'
-    return 'USER'
-
-
-def ensure_role_compatibility():
-    """
-    Assure que session_state['role'] existe pour compatibilité
-    À appeler après login si besoin
-    """
-    if 'role_code' in st.session_state:
-        st.session_state['role'] = get_role()
-
-
-# Export principal
+# Export all
 __all__ = [
-    # Authentification
+    # Authenticator
     'show_login',
     'is_authenticated',
-    'logout',
     'authenticate_user',
-    'get_current_user_id',
-    'get_current_username',
-    'hash_password',
-    'verify_password',
-    
-    # Admin users
     'create_user',
-    'update_user',
+    'update_user', 
     'reset_password',
-    'change_own_password',
     'get_all_users',
     'get_user_by_id',
     
     # Permissions
+    'get_user_permissions',
+    'load_user_session_permissions',
     'require_access',
     'has_access',
     'can_view',
@@ -145,15 +135,12 @@ __all__ = [
     'is_admin',
     'get_role_niveau',
     'can_manage_users',
-    'can_manage_user_of_level',
     'get_manageable_roles',
     'get_accessible_page_groups',
-    'get_page_group_icon',
-    'load_user_session_permissions',
     
-    # Compatibilité ancien système
-    'has_permission',
+    # Compatibilité
     'is_compteur',
+    'is_compteur_only',
     'get_role',
-    'ensure_role_compatibility',
+    'has_permission'
 ]
