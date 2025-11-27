@@ -101,13 +101,13 @@ def get_inventaires_liste(statut=None):
         return pd.DataFrame()
 
 def get_nb_refs_site(site):
-    """Compte les références avec stock > 0 sur un site"""
+    """Compte les références affectées à un site (même stock = 0)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
             SELECT COUNT(*) as nb FROM stock_consommables 
-            WHERE site = %s AND is_active = TRUE AND quantite > 0
+            WHERE site = %s AND is_active = TRUE
         """, (site,))
         result = cursor.fetchone()
         cursor.close()
@@ -117,7 +117,7 @@ def get_nb_refs_site(site):
         return 0
 
 def creer_inventaire(date_inv, site, compteur_1, compteur_2, mois, annee):
-    """Crée inventaire + lignes (uniquement refs avec stock > 0 sur le site)"""
+    """Crée inventaire + lignes (toutes refs affectées au site, même stock = 0)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -141,20 +141,20 @@ def creer_inventaire(date_inv, site, compteur_1, compteur_2, mois, annee):
         """, (date_inv, mois, annee, site, compteur_1, compteur_2, created_by))
         inv_id = cursor.fetchone()['id']
         
-        # ⭐ Charger UNIQUEMENT refs avec stock > 0 sur ce site (avec coefficient)
+        # ⭐ Charger TOUTES les refs affectées au site (même stock = 0)
         cursor.execute("""
             SELECT 
                 sc.consommable_id, sc.site, sc.atelier, sc.emplacement,
                 sc.quantite as stock_theorique,
                 COALESCE(sc.coefficient_conversion, 1.0) as coefficient_conversion
             FROM stock_consommables sc
-            WHERE sc.is_active = TRUE AND sc.site = %s AND sc.quantite > 0
+            WHERE sc.is_active = TRUE AND sc.site = %s
         """, (site,))
         rows = cursor.fetchall()
         
         if not rows:
             conn.rollback()
-            return False, f"❌ Aucune référence avec stock sur {site}"
+            return False, f"❌ Aucune référence affectée à {site}"
         
         # Insérer lignes avec coefficient
         for row in rows:
@@ -340,7 +340,7 @@ with tab1:
         if not compteur_1:
             st.error("❌ Le compteur 1 est obligatoire")
         elif nb_refs == 0:
-            st.error(f"❌ Aucune référence avec stock sur {site_sel}")
+            st.error(f"❌ Aucune référence affectée à {site_sel}")
         else:
             success, msg = creer_inventaire(date_inv, site_sel, compteur_1, compteur_2 or None, mois, annee)
             if success:
