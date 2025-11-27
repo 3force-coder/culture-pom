@@ -9,7 +9,7 @@ import pandas as pd
 from datetime import datetime, date
 from database import get_connection
 from components import show_footer
-from auth import is_authenticated, has_permission, is_compteur
+from auth import is_authenticated, has_access, is_compteur_only
 import io
 
 st.set_page_config(page_title="Inventaire - Culture Pom", page_icon="📦", layout="wide")
@@ -29,12 +29,12 @@ if not is_authenticated():
     st.warning("⚠️ Veuillez vous connecter")
     st.stop()
 
-if not has_permission('inventaire'):
+if not has_access("INVENTAIRE"):
     st.error("❌ Vous n'avez pas accès à cette page")
     st.stop()
 
-# COMPTEUR redirigé
-if is_compteur():
+# COMPTEUR redirigé (seulement rôle COMPTEUR pur, pas les admins)
+if is_compteur_only():
     st.warning("📱 **Mode Compteur** - Accédez à la page **Saisie Inventaire**")
     st.info("👉 Menu latéral → **12 - Saisie Inventaire**")
     st.stop()
@@ -215,71 +215,63 @@ def valider_inventaire(inventaire_id, validateur):
         
         # Récupérer lignes comptées
         cursor.execute("""
-            SELECT il.consommable_id, il.site, il.atelier, il.stock_compte,
-                   il.ecart, il.coefficient_conversion, rc.prix_unitaire
-            FROM inventaires_consommables_lignes il
-            JOIN ref_consommables rc ON il.consommable_id = rc.id
-            WHERE il.inventaire_id = %s AND il.stock_compte IS NOT NULL
+            SELECT consommable_id, site, atelier, emplacement, stock_compte, 
+                   ecart, coefficient_conversion, ecart_valeur
+            FROM inventaires_consommables_lignes
+            WHERE inventaire_id = %s AND stock_compte IS NOT NULL
         """, (inventaire_id,))
         lignes = cursor.fetchall()
         
-        if not lignes:
-            return False, "❌ Aucune ligne comptée"
-        
         nb_ecarts = 0
-        valeur_ecart_total = 0.0
+        valeur_totale = 0
         
-        # Mettre à jour stock (quantité seulement, PAS coefficient)
         for ligne in lignes:
+            # Mettre à jour stock_consommables avec le stock compté
             cursor.execute("""
-                UPDATE stock_consommables
+                UPDATE stock_consommables 
                 SET quantite = %s, updated_at = CURRENT_TIMESTAMP
-                WHERE consommable_id = %s AND site = %s AND atelier = %s AND is_active = TRUE
-            """, (ligne['stock_compte'], ligne['consommable_id'], ligne['site'], ligne['atelier']))
+                WHERE consommable_id = %s AND site = %s AND atelier = %s
+            """, (ligne['stock_compte'], ligne['consommable_id'], 
+                  ligne['site'], ligne['atelier']))
             
-            # Calculer écarts
-            ecart = ligne['ecart'] or 0
-            if ecart != 0:
+            if ligne['ecart'] and ligne['ecart'] != 0:
                 nb_ecarts += 1
-                coef = float(ligne['coefficient_conversion'] or 1)
-                prix = float(ligne['prix_unitaire'] or 0)
-                valeur_ecart_total += abs(ecart * coef * prix)
+                if ligne['ecart_valeur']:
+                    valeur_totale += abs(float(ligne['ecart_valeur']))
         
-        # Valider inventaire
+        # Mettre à jour inventaire
         cursor.execute("""
-            UPDATE inventaires
+            UPDATE inventaires 
             SET statut = 'VALIDE', validateur = %s, validated_at = CURRENT_TIMESTAMP,
                 nb_ecarts = %s, valeur_ecart_total = %s
             WHERE id = %s
-        """, (validateur, nb_ecarts, valeur_ecart_total, inventaire_id))
+        """, (validateur, nb_ecarts, valeur_totale, inventaire_id))
         
         conn.commit()
         cursor.close()
         conn.close()
-        return True, f"✅ Inventaire validé - {len(lignes)} ligne(s), {nb_ecarts} écart(s)"
+        return True, f"✅ Inventaire validé - {nb_ecarts} écart(s), valeur: {valeur_totale:,.2f} €"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
 def supprimer_inventaire(inventaire_id):
-    """Supprime inventaire EN_COURS"""
+    """Supprime définitivement un inventaire et ses lignes"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        cursor.execute("SELECT statut FROM inventaires WHERE id = %s", (inventaire_id,))
-        result = cursor.fetchone()
-        if not result or result['statut'] != 'EN_COURS':
-            return False, "❌ Seuls les inventaires EN_COURS peuvent être supprimés"
-        
+        # Supprimer lignes
         cursor.execute("DELETE FROM inventaires_consommables_lignes WHERE inventaire_id = %s", (inventaire_id,))
+        
+        # Supprimer inventaire
         cursor.execute("DELETE FROM inventaires WHERE id = %s", (inventaire_id,))
         
         conn.commit()
         cursor.close()
         conn.close()
-        return True, f"✅ Inventaire #{inventaire_id} supprimé"
+        return True, "✅ Inventaire supprimé"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
