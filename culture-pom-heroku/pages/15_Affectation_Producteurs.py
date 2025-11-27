@@ -41,12 +41,17 @@ st.markdown("""
 
 # Vérification authentification
 if not is_authenticated():
-    st.warning("⚠️ Veuillez vous connecter")
+    st.warning("⚠️ Veuillez vous connecter pour accéder à cette page")
     st.stop()
 
-require_access("PLANS_RECOLTE")
+# Vérification permissions
+if not has_access("PLANS_RECOLTE"):
+    st.error("🚫 Vous n'avez pas accès à cette page")
+    st.stop()
 
-can_edit = permissions.get('can_edit', False)
+# Permissions utilisateur
+CAN_EDIT = can_edit("PLANS_RECOLTE")
+CAN_DELETE = can_delete("PLANS_RECOLTE")
 
 st.title("👨‍🌾 Affectation Producteurs")
 st.markdown("*Affecter des hectares aux producteurs pour chaque besoin (Variété × Mois)*")
