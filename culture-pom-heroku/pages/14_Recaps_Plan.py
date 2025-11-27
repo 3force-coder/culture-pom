@@ -6,7 +6,7 @@ import streamlit as st
 import pandas as pd
 from database import get_connection
 from components import show_footer
-from auth import is_authenticated, get_user_permissions
+from auth import is_authenticated, has_access, can_edit, can_delete, get_current_username
 import io
 
 st.set_page_config(page_title="Récaps Plan - Culture Pom", page_icon="📊", layout="wide")
