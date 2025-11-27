@@ -1,6 +1,7 @@
 """
 Page 15 - Affectation Producteurs
 Affecter des hectares (entiers) aux producteurs pour chaque besoin (Variété × Mois)
+VERSION CORRIGÉE - Accès dictionnaires pour RealDictCursor
 """
 import streamlit as st
 import pandas as pd
@@ -58,7 +59,7 @@ st.markdown("*Affecter des hectares aux producteurs pour chaque besoin (Variét�
 st.markdown("---")
 
 # ==========================================
-# FONCTIONS
+# FONCTIONS - CORRIGÉES POUR RealDictCursor
 # ==========================================
 
 def get_besoins(campagne, filtre_statut="Tous", filtre_variete="Toutes"):
@@ -101,10 +102,24 @@ def get_besoins(campagne, filtre_statut="Tous", filtre_variete="Toutes"):
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=[
-                'id', 'Variété', 'Mois', 'mois_numero', 'Vol. Net (T)', 'Vol. Brut (T)',
-                'Ha Besoin', 'Ha Affectés', 'Couverture %', 'Complet'
-            ])
+            # ✅ CORRIGÉ : RealDictCursor retourne des dictionnaires
+            df = pd.DataFrame(rows)
+            df = df.rename(columns={
+                'id': 'id',
+                'variete': 'Variété',
+                'mois': 'Mois',
+                'mois_numero': 'mois_numero',
+                'total_volume_net_t': 'Vol. Net (T)',
+                'total_volume_brut_t': 'Vol. Brut (T)',
+                'total_hectares_arrondi': 'Ha Besoin',
+                'total_hectares_affectes': 'Ha Affectés',
+                'taux_couverture_pct': 'Couverture %',
+                'is_complet': 'Complet'
+            })
+            # Convertir colonnes numériques
+            for col in ['Vol. Net (T)', 'Vol. Brut (T)', 'Ha Besoin', 'Ha Affectés', 'Couverture %']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -124,7 +139,8 @@ def get_varietes_besoins(campagne):
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        return [row[0] for row in rows]
+        # ✅ CORRIGÉ : Accès par nom de colonne
+        return [row['variete'] for row in rows]
     except:
         return []
 
@@ -156,10 +172,21 @@ def get_affectations_besoin(besoin_id):
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=[
-                'id', 'producteur_id', 'Code Producteur', 'Producteur',
-                'Hectares', 'Notes', 'Créé par', 'Date'
-            ])
+            # ✅ CORRIGÉ : RealDictCursor retourne des dictionnaires
+            df = pd.DataFrame(rows)
+            df = df.rename(columns={
+                'id': 'id',
+                'producteur_id': 'producteur_id',
+                'code_producteur': 'Code Producteur',
+                'producteur_nom': 'Producteur',
+                'hectares_affectes': 'Hectares',
+                'notes': 'Notes',
+                'created_by': 'Créé par',
+                'created_at': 'Date'
+            })
+            # Convertir colonnes numériques
+            if 'Hectares' in df.columns:
+                df['Hectares'] = pd.to_numeric(df['Hectares'], errors='coerce')
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -185,14 +212,15 @@ def get_producteurs_actifs():
         conn.close()
         
         if rows:
+            # ✅ CORRIGÉ : Accès par nom de colonne
             return [
                 {
-                    'id': row[0],
-                    'code': row[1],
-                    'nom': row[2],
-                    'ville': row[3],
-                    'dept': row[4],
-                    'display': f"{row[1]} - {row[2]} ({row[4] or ''})"
+                    'id': row['id'],
+                    'code': row['code_producteur'],
+                    'nom': row['nom'],
+                    'ville': row['ville'],
+                    'dept': row['departement'],
+                    'display': f"{row['code_producteur']} - {row['nom']} ({row['departement'] or ''})"
                 }
                 for row in rows
             ]
@@ -220,13 +248,14 @@ def get_besoin_info(besoin_id):
         conn.close()
         
         if row:
+            # ✅ CORRIGÉ : Accès par nom de colonne
             return {
-                'campagne': row[0],
-                'mois': row[1],
-                'variete': row[2],
-                'ha_besoin': row[3],
-                'ha_affectes': row[4],
-                'couverture': float(row[5]) if row[5] else 0
+                'campagne': row['campagne'],
+                'mois': row['mois'],
+                'variete': row['variete'],
+                'ha_besoin': row['total_hectares_arrondi'],
+                'ha_affectes': row['total_hectares_affectes'],
+                'couverture': float(row['taux_couverture_pct']) if row['taux_couverture_pct'] else 0
             }
         return None
     except:
@@ -250,7 +279,8 @@ def ajouter_affectation(besoin_id, campagne, mois, variete, producteur_id, hecta
         """, (besoin_id, campagne, mois, variete, producteur_id, 
               hectares, notes, username, username))
         
-        new_id = cursor.fetchone()[0]
+        # ✅ CORRIGÉ : Accès par nom de colonne
+        new_id = cursor.fetchone()['id']
         conn.commit()
         cursor.close()
         conn.close()
@@ -321,11 +351,12 @@ def get_kpis_affectations(campagne):
         conn.close()
         
         if row:
-            total_besoin = int(row[2]) if row[2] else 0
-            total_affectes = int(row[3]) if row[3] else 0
+            # ✅ CORRIGÉ : Accès par nom de colonne
+            total_besoin = int(row['total_besoin']) if row['total_besoin'] else 0
+            total_affectes = int(row['total_affectes']) if row['total_affectes'] else 0
             return {
-                'nb_besoins': row[0],
-                'nb_complets': row[1] or 0,
+                'nb_besoins': row['nb_besoins'],
+                'nb_complets': row['nb_complets'] or 0,
                 'total_besoin': total_besoin,
                 'total_affectes': total_affectes,
                 'couverture': (total_affectes / total_besoin * 100) if total_besoin > 0 else 0
@@ -490,13 +521,13 @@ if 'selected_besoin_id' in st.session_state and st.session_state['selected_besoi
                 st.metric("Hectares", f"{row['Hectares']} ha", label_visibility="collapsed")
             
             with col3:
-                if can_edit:
+                if CAN_EDIT:
                     if st.button("✏️", key=f"edit_{row['id']}", help="Modifier"):
                         st.session_state[f'editing_{row["id"]}'] = True
                         st.rerun()
             
             with col4:
-                if can_edit:
+                if CAN_EDIT:
                     if st.button("🗑️", key=f"del_{row['id']}", help="Supprimer"):
                         success, msg = supprimer_affectation(row['id'])
                         if success:
@@ -558,7 +589,7 @@ if 'selected_besoin_id' in st.session_state and st.session_state['selected_besoi
     # AJOUTER AFFECTATION
     # ==========================================
     
-    if can_edit:
+    if CAN_EDIT:
         st.markdown("---")
         st.markdown("#### ➕ Nouvelle affectation")
         
@@ -646,7 +677,7 @@ with st.expander("⚡ Affectation rapide (plusieurs besoins)", expanded=False):
     **Mode rapide** : Affectez le même producteur à plusieurs besoins d'une variété.
     """)
     
-    if can_edit:
+    if CAN_EDIT:
         col1, col2 = st.columns(2)
         
         with col1:
