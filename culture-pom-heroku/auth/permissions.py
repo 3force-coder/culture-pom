@@ -322,6 +322,7 @@ PAGE_GROUP_ICONS = {
     'FINANCE': '💰',
     'INVENTAIRE': '📊',
     'INVENTAIRE_SAISIE': '✏️',
+    'PLANS_RECOLTE': '🌱',
     'ADMIN': '⚙️'
 }
 
