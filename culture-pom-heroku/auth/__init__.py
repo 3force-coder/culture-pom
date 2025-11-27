@@ -18,6 +18,8 @@ Usage simple dans les pages:
         st.button("Modifier")
 """
 
+import streamlit as st
+
 # Authentification
 from auth.authenticator import (
     show_login,
@@ -59,7 +61,12 @@ from auth.permissions import (
     load_user_session_permissions,
 )
 
-# Ancien alias pour compatibilité (à retirer progressivement)
+
+# =====================================================
+# FONCTIONS DE COMPATIBILITÉ (ancien système)
+# À retirer progressivement quand les pages seront migrées
+# =====================================================
+
 def has_permission(permission):
     """
     DEPRECATED - Utiliser has_access() à la place
@@ -75,6 +82,37 @@ def has_permission(permission):
     }
     page_group = old_to_new.get(permission, permission.upper())
     return has_access(page_group)
+
+
+def is_compteur():
+    """
+    Vérifie si l'utilisateur a le rôle COMPTEUR
+    Compatibilité avec pages existantes (11, 12)
+    """
+    role_code = st.session_state.get('role_code', '')
+    # COMPTEUR ou tout admin/super_admin peut aussi faire le travail de compteur
+    return role_code == 'COMPTEUR' or is_admin() or is_super_admin()
+
+
+def get_role():
+    """
+    Retourne le code du rôle pour affichage (compatibilité ancien système)
+    Mappe les nouveaux codes vers ADMIN/USER pour l'ancien affichage
+    """
+    role_code = st.session_state.get('role_code', '')
+    if 'ADMIN' in role_code or is_super_admin():
+        return 'ADMIN'
+    return 'USER'
+
+
+def ensure_role_compatibility():
+    """
+    Assure que session_state['role'] existe pour compatibilité
+    À appeler après login si besoin
+    """
+    if 'role_code' in st.session_state:
+        st.session_state['role'] = get_role()
+
 
 # Export principal
 __all__ = [
@@ -113,6 +151,9 @@ __all__ = [
     'get_page_group_icon',
     'load_user_session_permissions',
     
-    # Compatibilité
+    # Compatibilité ancien système
     'has_permission',
+    'is_compteur',
+    'get_role',
+    'ensure_role_compatibility',
 ]
