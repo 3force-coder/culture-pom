@@ -1,6 +1,7 @@
 """
 Page 14 - Récaps Plan Récolte
 KPIs globaux + 5 vues agrégées (Mois, Variété, Marque, Type, Croisé)
+VERSION CORRIGÉE - Accès par nom de colonne (RealDictCursor)
 """
 import streamlit as st
 import pandas as pd
@@ -86,15 +87,16 @@ def get_kpis_globaux(campagne):
         conn.close()
         
         if row:
+            # ✅ Accès par nom de colonne (RealDictCursor)
             return {
-                'nb_lignes': row[0],
-                'nb_varietes': row[1],
-                'nb_marques': row[2],
-                'nb_types': row[3],
-                'total_volume_net': float(row[4]),
-                'total_volume_brut': float(row[5]),
-                'total_hectares': float(row[6]),
-                'total_hectares_arrondi': int(row[7])
+                'nb_lignes': row['nb_lignes'],
+                'nb_varietes': row['nb_varietes'],
+                'nb_marques': row['nb_marques'],
+                'nb_types': row['nb_types'],
+                'total_volume_net': float(row['total_volume_net']),
+                'total_volume_brut': float(row['total_volume_brut']),
+                'total_hectares': float(row['total_hectares']),
+                'total_hectares_arrondi': int(row['total_hectares_arrondi'])
             }
         return None
     except Exception as e:
@@ -130,10 +132,17 @@ def get_recap_par_mois(campagne):
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=[
-                'Mois', 'mois_numero', 'Lignes', 'Variétés', 
-                'Volume Net (T)', 'Volume Brut (T)', 'Hectares', 'Ha Arrondi'
-            ])
+            # ✅ Création DataFrame depuis dictionnaires + renommage
+            df = pd.DataFrame(rows)
+            df = df.rename(columns={
+                'mois': 'Mois',
+                'nb_lignes': 'Lignes',
+                'nb_varietes': 'Variétés',
+                'volume_net': 'Volume Net (T)',
+                'volume_brut': 'Volume Brut (T)',
+                'hectares': 'Hectares',
+                'hectares_arrondi': 'Ha Arrondi'
+            })
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -168,10 +177,16 @@ def get_recap_par_variete(campagne):
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=[
-                'Variété', 'Lignes', 'Mois', 
-                'Volume Net (T)', 'Volume Brut (T)', 'Hectares', 'Ha Arrondi'
-            ])
+            df = pd.DataFrame(rows)
+            df = df.rename(columns={
+                'variete': 'Variété',
+                'nb_lignes': 'Lignes',
+                'nb_mois': 'Mois',
+                'volume_net': 'Volume Net (T)',
+                'volume_brut': 'Volume Brut (T)',
+                'hectares': 'Hectares',
+                'hectares_arrondi': 'Ha Arrondi'
+            })
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -206,10 +221,16 @@ def get_recap_par_marque(campagne):
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=[
-                'Marque', 'Lignes', 'Variétés', 
-                'Volume Net (T)', 'Volume Brut (T)', 'Hectares', 'Ha Arrondi'
-            ])
+            df = pd.DataFrame(rows)
+            df = df.rename(columns={
+                'marque': 'Marque',
+                'nb_lignes': 'Lignes',
+                'nb_varietes': 'Variétés',
+                'volume_net': 'Volume Net (T)',
+                'volume_brut': 'Volume Brut (T)',
+                'hectares': 'Hectares',
+                'hectares_arrondi': 'Ha Arrondi'
+            })
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -244,10 +265,16 @@ def get_recap_par_type(campagne):
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=[
-                'Type Produit', 'Lignes', 'Variétés', 
-                'Volume Net (T)', 'Volume Brut (T)', 'Hectares', 'Ha Arrondi'
-            ])
+            df = pd.DataFrame(rows)
+            df = df.rename(columns={
+                'type_produit': 'Type Produit',
+                'nb_lignes': 'Lignes',
+                'nb_varietes': 'Variétés',
+                'volume_net': 'Volume Net (T)',
+                'volume_brut': 'Volume Brut (T)',
+                'hectares': 'Hectares',
+                'hectares_arrondi': 'Ha Arrondi'
+            })
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -257,7 +284,7 @@ def get_recap_par_type(campagne):
 
 @st.cache_data(ttl=60)
 def get_recap_croise(campagne):
-    """Récap croisé Variété × Mois (tableau besoins)"""
+    """Récap croisé variété × mois"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -268,7 +295,7 @@ def get_recap_croise(campagne):
                 mois,
                 mois_numero,
                 SUM(volume_net_t) as volume_net,
-                CEIL(SUM(hectares_necessaires)) as hectares_arrondi
+                SUM(hectares_necessaires) as hectares
             FROM plans_recolte
             WHERE campagne = %s AND is_active = TRUE
             GROUP BY variete, mois, mois_numero
@@ -280,7 +307,13 @@ def get_recap_croise(campagne):
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=['Variété', 'Mois', 'mois_numero', 'Volume Net', 'Hectares'])
+            df = pd.DataFrame(rows)
+            df = df.rename(columns={
+                'variete': 'Variété',
+                'mois': 'Mois',
+                'volume_net': 'Volume Net',
+                'hectares': 'Hectares'
+            })
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -290,25 +323,30 @@ def get_recap_croise(campagne):
 
 @st.cache_data(ttl=60)
 def get_besoins_avec_couverture(campagne):
-    """Besoins avec taux de couverture (depuis table besoins)"""
+    """Récupère les besoins avec taux de couverture"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
         cursor.execute("""
             SELECT 
-                variete,
-                mois,
-                mois_numero,
-                total_volume_net_t,
-                total_volume_brut_t,
-                total_hectares_arrondi,
-                total_hectares_affectes,
-                taux_couverture_pct,
-                is_complet
-            FROM plans_recolte_besoins
-            WHERE campagne = %s
-            ORDER BY mois_numero, variete
+                b.id,
+                b.variete,
+                b.mois,
+                b.mois_numero,
+                b.volume_net_t,
+                b.volume_brut_t,
+                b.hectares_besoin,
+                COALESCE(b.hectares_affectes, 0) as hectares_affectes,
+                CASE 
+                    WHEN b.hectares_besoin > 0 
+                    THEN ROUND((COALESCE(b.hectares_affectes, 0) / b.hectares_besoin * 100)::numeric, 1)
+                    ELSE 0 
+                END as couverture_pct,
+                COALESCE(b.hectares_affectes, 0) >= b.hectares_besoin as complet
+            FROM besoins_recolte b
+            WHERE b.campagne = %s AND b.is_active = TRUE
+            ORDER BY b.mois_numero, b.variete
         """, (campagne,))
         
         rows = cursor.fetchall()
@@ -316,30 +354,70 @@ def get_besoins_avec_couverture(campagne):
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=[
-                'Variété', 'Mois', 'mois_numero', 'Volume Net (T)', 'Volume Brut (T)',
-                'Ha Besoin', 'Ha Affectés', 'Couverture %', 'Complet'
-            ])
+            df = pd.DataFrame(rows)
+            df = df.rename(columns={
+                'variete': 'Variété',
+                'mois': 'Mois',
+                'volume_net_t': 'Volume Net (T)',
+                'volume_brut_t': 'Volume Brut (T)',
+                'hectares_besoin': 'Ha Besoin',
+                'hectares_affectes': 'Ha Affectés',
+                'couverture_pct': 'Couverture %',
+                'complet': 'Complet'
+            })
             return df
         return pd.DataFrame()
     except Exception as e:
-        st.error(f"Erreur : {e}")
+        st.error(f"Erreur besoins : {e}")
         return pd.DataFrame()
+
+
+@st.cache_data(ttl=60)
+def get_campagnes_disponibles():
+    """Liste des campagnes avec données"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT DISTINCT campagne 
+            FROM plans_recolte 
+            WHERE is_active = TRUE
+            ORDER BY campagne DESC
+        """)
+        
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        return [row['campagne'] for row in rows] if rows else []
+    except Exception as e:
+        st.error(f"Erreur : {e}")
+        return []
 
 
 # ==========================================
 # SÉLECTEUR CAMPAGNE
 # ==========================================
 
-col1, col2 = st.columns([1, 4])
-with col1:
-    campagne = st.selectbox("Campagne", [2026, 2025, 2027], index=0)
+campagnes = get_campagnes_disponibles()
 
-# Bouton rafraîchir
+if not campagnes:
+    st.warning("⚠️ Aucune campagne disponible. Créez d'abord un plan de récolte.")
+    show_footer()
+    st.stop()
+
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    campagne = st.selectbox("Campagne", campagnes, key="campagne_recap")
+
 with col2:
-    if st.button("🔄 Rafraîchir", use_container_width=False):
+    if st.button("🔄 Rafraîchir", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
+
+st.markdown("---")
 
 # ==========================================
 # KPIs GLOBAUX
@@ -348,57 +426,49 @@ with col2:
 kpis = get_kpis_globaux(campagne)
 
 if kpis:
-    st.markdown("### 📈 Vue d'ensemble")
-    
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("📋 Lignes", f"{kpis['nb_lignes']:,}")
+        st.metric("📋 Lignes plan", kpis['nb_lignes'])
     
     with col2:
-        st.metric("🌱 Variétés", kpis['nb_varietes'])
+        st.metric("🌾 Variétés", kpis['nb_varietes'])
     
     with col3:
-        st.metric("📊 Volume Net", f"{kpis['total_volume_net']:,.0f} T")
+        st.metric("📦 Volume Net", f"{kpis['total_volume_net']:,.0f} T")
     
     with col4:
-        st.metric("📊 Volume Brut", f"{kpis['total_volume_brut']:,.0f} T")
+        st.metric("🚜 Hectares", f"{kpis['total_hectares_arrondi']:,} ha")
     
-    with col5:
-        st.metric("🌾 Hectares", f"{kpis['total_hectares_arrondi']:,} ha")
-    
-    # Ligne 2 : détails
+    # Ligne 2
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         st.metric("🏷️ Marques", kpis['nb_marques'])
     
     with col2:
-        st.metric("📦 Types", kpis['nb_types'])
+        st.metric("📂 Types", kpis['nb_types'])
     
     with col3:
-        # Calcul taux déchet moyen
-        if kpis['total_volume_brut'] > 0:
-            taux_dechet = (1 - kpis['total_volume_net'] / kpis['total_volume_brut']) * 100
-            st.metric("🗑️ Taux déchet moyen", f"{taux_dechet:.1f} %")
+        st.metric("📦 Volume Brut", f"{kpis['total_volume_brut']:,.0f} T")
     
     with col4:
-        # Rendement moyen implicite
-        if kpis['total_hectares'] > 0:
-            rendement_moyen = kpis['total_volume_brut'] / kpis['total_hectares']
-            st.metric("📈 Rendement moyen", f"{rendement_moyen:.1f} T/ha")
+        rendement_moyen = kpis['total_volume_net'] / kpis['total_hectares'] if kpis['total_hectares'] > 0 else 0
+        st.metric("📊 Rdt moyen", f"{rendement_moyen:.1f} T/ha")
+else:
+    st.warning("⚠️ Impossible de charger les KPIs")
 
 st.markdown("---")
 
 # ==========================================
-# ONGLETS RÉCAPS
+# ONGLETS
 # ==========================================
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📅 Par Mois", 
-    "🌱 Par Variété", 
-    "🏷️ Par Marque", 
-    "📦 Par Type",
+    "🌾 Par Variété", 
+    "🏷️ Par Marque",
+    "📂 Par Type",
     "📊 Croisé (Variété×Mois)",
     "🎯 Besoins & Couverture"
 ])
@@ -413,10 +483,9 @@ with tab1:
     df_mois = get_recap_par_mois(campagne)
     
     if not df_mois.empty:
-        # Masquer colonne mois_numero
-        df_display = df_mois.drop(columns=['mois_numero'])
+        # Masquer colonne technique
+        df_display = df_mois.drop(columns=['mois_numero'], errors='ignore')
         
-        # Formater les nombres
         st.dataframe(
             df_display,
             column_config={
@@ -432,27 +501,19 @@ with tab1:
             hide_index=True
         )
         
-        # Totaux
-        st.markdown(f"""
-        **Totaux :** {df_mois['Volume Net (T)'].sum():,.1f} T net | 
-        {df_mois['Volume Brut (T)'].sum():,.1f} T brut | 
-        {df_mois['Ha Arrondi'].sum():,.0f} ha
-        """)
-        
         # Graphique
         st.markdown("#### 📊 Évolution mensuelle")
-        chart_data = df_mois[['Mois', 'Volume Net (T)', 'Hectares']].copy()
-        chart_data = chart_data.set_index('Mois')
-        st.bar_chart(chart_data['Volume Net (T)'])
+        chart_data = df_display[['Mois', 'Volume Net (T)', 'Hectares']].set_index('Mois')
+        st.line_chart(chart_data)
     else:
-        st.info("Aucune donnée pour cette campagne")
+        st.info("Aucune donnée")
 
 # ==========================================
 # TAB 2 : PAR VARIÉTÉ
 # ==========================================
 
 with tab2:
-    st.subheader("🌱 Récap par Variété")
+    st.subheader("🌾 Récap par Variété")
     
     df_variete = get_recap_par_variete(campagne)
     
@@ -472,10 +533,10 @@ with tab2:
             hide_index=True
         )
         
-        # Top 5 variétés
-        st.markdown("#### 🏆 Top 5 Variétés (Volume Net)")
-        top5 = df_variete.head(5)[['Variété', 'Volume Net (T)']].set_index('Variété')
-        st.bar_chart(top5)
+        # Graphique top 10
+        st.markdown("#### 📊 Top 10 Variétés (Volume Net)")
+        top10 = df_variete.head(10)[['Variété', 'Volume Net (T)']].set_index('Variété')
+        st.bar_chart(top10)
     else:
         st.info("Aucune donnée")
 
@@ -504,7 +565,7 @@ with tab3:
             hide_index=True
         )
         
-        # Graphique répartition
+        # Graphique
         st.markdown("#### 📊 Répartition par Marque")
         chart_marque = df_marque[['Marque', 'Volume Net (T)']].set_index('Marque')
         st.bar_chart(chart_marque)
@@ -516,7 +577,7 @@ with tab3:
 # ==========================================
 
 with tab4:
-    st.subheader("📦 Récap par Type Produit")
+    st.subheader("📂 Récap par Type Produit")
     
     df_type = get_recap_par_type(campagne)
     
@@ -644,8 +705,8 @@ with tab6:
         elif filtre_statut == "Incomplets":
             df_filtered = df_filtered[df_filtered['Complet'] == False]
         
-        # Masquer colonne technique
-        df_display = df_filtered.drop(columns=['mois_numero'])
+        # Masquer colonnes techniques
+        df_display = df_filtered.drop(columns=['mois_numero', 'id'], errors='ignore')
         
         # Afficher avec couleurs conditionnelles
         def highlight_couverture(val):
