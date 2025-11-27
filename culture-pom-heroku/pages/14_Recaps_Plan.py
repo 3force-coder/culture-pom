@@ -328,6 +328,7 @@ def get_besoins_avec_couverture(campagne):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ✅ CORRIGÉ : Nom de table plans_recolte_besoins (pas besoins_recolte)
         cursor.execute("""
             SELECT 
                 b.id,
@@ -336,15 +337,11 @@ def get_besoins_avec_couverture(campagne):
                 b.mois_numero,
                 b.volume_net_t,
                 b.volume_brut_t,
-                b.hectares_besoin,
+                b.total_hectares_arrondi as hectares_besoin,
                 COALESCE(b.hectares_affectes, 0) as hectares_affectes,
-                CASE 
-                    WHEN b.hectares_besoin > 0 
-                    THEN ROUND((COALESCE(b.hectares_affectes, 0) / b.hectares_besoin * 100)::numeric, 1)
-                    ELSE 0 
-                END as couverture_pct,
-                COALESCE(b.hectares_affectes, 0) >= b.hectares_besoin as complet
-            FROM besoins_recolte b
+                COALESCE(b.taux_couverture_pct, 0) as couverture_pct,
+                COALESCE(b.is_complet, FALSE) as complet
+            FROM plans_recolte_besoins b
             WHERE b.campagne = %s AND b.is_active = TRUE
             ORDER BY b.mois_numero, b.variete
         """, (campagne,))
