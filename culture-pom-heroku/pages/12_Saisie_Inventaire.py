@@ -1,116 +1,199 @@
 """
-Page 12 - Saisie Inventaire (Compteur)
-Accès : COMPTEUR uniquement
-Interface : Table scrollable + sauvegarde globale (compatible offline)
+Page 12 - Saisie Inventaire Consommables
+VERSION MOBILE-FIRST - Optimisée pour compteurs terrain
 
-CONCEPT :
-1. Charger toutes les lignes en session_state (1 appel réseau)
-2. Saisie dans table scrollable (PAS de reload)
-3. Données restent en mémoire navigateur
-4. UN bouton "Sauvegarder tout" quand réseau OK
+Architecture :
+- Cartes empilées (pas de tableau)
+- 3 infos par carte : Nom, Unité, Input
+- Clavier numérique natif
+- Sauvegarde globale
+- Groupement par atelier
 """
 
 import streamlit as st
 import pandas as pd
 from datetime import datetime
 from database import get_connection
-from components import show_footer
-from auth import is_authenticated, is_compteur
-import time
+from auth import is_authenticated, is_admin
 
-st.set_page_config(page_title="Saisie Inventaire - Culture Pom", page_icon="📱", layout="wide")
+# Configuration page - DOIT être en premier
+st.set_page_config(
+    page_title="Saisie Inventaire",
+    page_icon="📱",
+    layout="centered",  # Centré = meilleur pour mobile
+    initial_sidebar_state="collapsed"  # Sidebar fermée par défaut sur mobile
+)
 
-# CSS mobile-friendly
+# CSS Mobile-First optimisé
 st.markdown("""
 <style>
-    .block-container { 
-        padding-top: 1rem !important; 
-        padding-bottom: 0.5rem !important;
-        padding-left: 1rem !important;
-        padding-right: 1rem !important;
+    /* Réduire padding général */
+    .block-container {
+        padding-top: 1rem !important;
+        padding-bottom: 1rem !important;
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+        max-width: 100% !important;
     }
-    h1, h2, h3, h4 { margin-top: 0.2rem !important; margin-bottom: 0.2rem !important; }
     
-    /* Table plus grande sur mobile */
-    .stDataFrame { font-size: 14px !important; }
+    /* Carte consommable */
+    .conso-card {
+        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+        border-radius: 12px;
+        padding: 12px 16px;
+        margin-bottom: 8px;
+        border-left: 4px solid #4CAF50;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
     
-    /* Bouton sticky en bas */
+    .conso-card.modified {
+        border-left-color: #ff9800;
+        background: linear-gradient(135deg, #fff8e1 0%, #ffecb3 100%);
+    }
+    
+    .conso-name {
+        font-size: 1rem;
+        font-weight: 600;
+        color: #1a1a2e;
+        margin-bottom: 4px;
+        word-wrap: break-word;
+        line-height: 1.3;
+    }
+    
+    .conso-unit {
+        font-size: 0.8rem;
+        color: #666;
+        margin-bottom: 8px;
+    }
+    
+    /* Groupes atelier */
+    .atelier-header {
+        background: #2196F3;
+        color: white;
+        padding: 10px 16px;
+        border-radius: 8px;
+        margin: 16px 0 8px 0;
+        font-weight: 600;
+        font-size: 1rem;
+    }
+    
+    /* Bouton sauvegarde sticky */
     .save-button-container {
-        position: sticky;
+        position: fixed;
         bottom: 0;
+        left: 0;
+        right: 0;
         background: white;
-        padding: 1rem;
-        border-top: 2px solid #ddd;
-        z-index: 100;
+        padding: 12px 16px;
+        box-shadow: 0 -4px 12px rgba(0,0,0,0.15);
+        z-index: 999;
     }
     
-    /* Highlight lignes modifiées */
-    .modified-row { background-color: #fff3cd !important; }
+    /* Input number plus grand */
+    .stNumberInput input {
+        font-size: 1.2rem !important;
+        font-weight: 600 !important;
+        text-align: center !important;
+        padding: 12px !important;
+    }
+    
+    /* Masquer les flèches du number input sur mobile pour plus de place */
+    @media (max-width: 768px) {
+        .stNumberInput button {
+            display: none !important;
+        }
+        .stNumberInput input {
+            border-radius: 8px !important;
+        }
+    }
+    
+    /* Header compact */
+    h1 {
+        font-size: 1.5rem !important;
+        margin-bottom: 0.5rem !important;
+    }
+    
+    /* Compteur modifications */
+    .modif-counter {
+        background: #ff9800;
+        color: white;
+        padding: 8px 16px;
+        border-radius: 20px;
+        font-weight: 600;
+        text-align: center;
+        margin-bottom: 12px;
+    }
+    
+    /* Success message */
+    .success-banner {
+        background: #4CAF50;
+        color: white;
+        padding: 12px;
+        border-radius: 8px;
+        text-align: center;
+        margin-bottom: 12px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# ============================================================
-# SÉCURITÉ
-# ============================================================
-
+# Vérification authentification
 if not is_authenticated():
     st.warning("⚠️ Veuillez vous connecter")
     st.stop()
 
-# Page réservée aux COMPTEUR (ou tous si pas de fonction is_compteur)
-try:
-    if not is_compteur():
-        st.error("❌ Cette page est réservée aux compteurs")
-        st.info("👉 Managers : utilisez la page **11 - Inventaire**")
-        st.stop()
-except:
-    pass  # Si is_compteur n'existe pas, continuer
+# Vérification accès : Compteurs OU Admins
+def is_compteur():
+    """Vérifie si l'utilisateur est un compteur"""
+    return st.session_state.get('role') == 'COMPTEUR'
 
-st.title("📱 Saisie Inventaire")
-st.markdown("---")
+if not is_compteur() and not is_admin():
+    st.error("🚫 Cette page est réservée aux compteurs")
+    st.info("👉 Managers : utilisez la page 11 - Inventaire")
+    st.stop()
 
-# ============================================================
+# ============================================
 # FONCTIONS
-# ============================================================
+# ============================================
 
 def get_inventaires_en_cours():
-    """Récupère inventaires EN_COURS pour sélection"""
+    """Récupère les inventaires EN_COURS"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, date_inventaire, site, compteur_1, compteur_2, nb_lignes
-            FROM inventaires 
-            WHERE type_inventaire = 'CONSOMMABLES' AND statut = 'EN_COURS'
-            ORDER BY date_inventaire DESC
+            SELECT id, site, date_inventaire, mois, annee,
+                   (SELECT COUNT(*) FROM inventaires_consommables_lignes WHERE inventaire_id = ic.id) as nb_lignes
+            FROM inventaires_consommables ic
+            WHERE statut = 'EN_COURS'
+            ORDER BY created_at DESC
         """)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
         return rows if rows else []
-    except:
+    except Exception as e:
+        st.error(f"Erreur : {e}")
         return []
 
-def charger_lignes_inventaire(inventaire_id):
-    """Charge TOUTES les lignes d'un inventaire en mémoire"""
+def get_lignes_inventaire(inventaire_id):
+    """Récupère les lignes d'un inventaire avec infos consommable"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
             SELECT 
-                il.id as ligne_id,
-                rc.code_consommable,
-                rc.libelle,
-                rc.unite_inventaire,
-                il.site,
-                il.atelier,
-                il.stock_theorique,
-                il.stock_compte,
-                il.coefficient_conversion
-            FROM inventaires_consommables_lignes il
-            JOIN ref_consommables rc ON il.consommable_id = rc.id
-            WHERE il.inventaire_id = %s
-            ORDER BY rc.libelle
+                icl.id,
+                icl.consommable_id,
+                icl.site,
+                icl.atelier,
+                icl.stock_theorique,
+                icl.stock_compte,
+                rc.libelle as nom,
+                rc.unite_inventaire as unite
+            FROM inventaires_consommables_lignes icl
+            JOIN ref_consommables rc ON icl.consommable_id = rc.id
+            WHERE icl.inventaire_id = %s
+            ORDER BY icl.atelier, rc.libelle
         """, (inventaire_id,))
         rows = cursor.fetchall()
         cursor.close()
@@ -118,263 +201,173 @@ def charger_lignes_inventaire(inventaire_id):
         
         if rows:
             df = pd.DataFrame(rows)
-            # Convertir numériques
-            for col in ['stock_theorique', 'stock_compte', 'coefficient_conversion']:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
             return df
         return pd.DataFrame()
     except Exception as e:
-        st.error(f"❌ Erreur chargement : {e}")
+        st.error(f"Erreur : {e}")
         return pd.DataFrame()
 
-def sauvegarder_comptages(inventaire_id, df_comptages):
-    """
-    Sauvegarde TOUS les comptages en UNE transaction
-    df_comptages : DataFrame avec colonnes [ligne_id, stock_compte]
-    """
+def sauvegarder_comptages(inventaire_id, comptages):
+    """Sauvegarde tous les comptages en une transaction"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        nb_maj = 0
-        
-        for _, row in df_comptages.iterrows():
-            ligne_id = int(row['ligne_id'])
-            stock_compte = row['stock_compte']
-            stock_theorique = row['stock_theorique']
-            
-            # Ignorer si pas de valeur saisie
-            if pd.isna(stock_compte):
-                continue
-            
-            stock_compte = float(stock_compte)
-            stock_theorique = float(stock_theorique) if pd.notna(stock_theorique) else 0
-            
-            # Calculer écart
-            ecart = stock_compte - stock_theorique
-            
-            # Récupérer coefficient et prix pour écart_valeur
-            cursor.execute("""
-                SELECT il.coefficient_conversion, rc.prix_unitaire
-                FROM inventaires_consommables_lignes il
-                JOIN ref_consommables rc ON il.consommable_id = rc.id
-                WHERE il.id = %s
-            """, (ligne_id,))
-            info = cursor.fetchone()
-            
-            coef = float(info['coefficient_conversion'] or 1) if info else 1
-            prix = float(info['prix_unitaire'] or 0) if info else 0
-            ecart_valeur = ecart * coef * prix
-            
-            # Mettre à jour ligne
-            cursor.execute("""
-                UPDATE inventaires_consommables_lignes
-                SET stock_compte = %s, ecart = %s, ecart_valeur = %s, updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s
-            """, (stock_compte, ecart, ecart_valeur, ligne_id))
-            
-            nb_maj += 1
+        updated = 0
+        for ligne_id, stock_compte in comptages.items():
+            if stock_compte is not None:
+                cursor.execute("""
+                    UPDATE inventaires_consommables_lignes
+                    SET stock_compte = %s,
+                        ecart = %s - stock_theorique,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                """, (int(stock_compte), int(stock_compte), int(ligne_id)))
+                updated += 1
         
         conn.commit()
         cursor.close()
         conn.close()
         
-        return True, f"✅ {nb_maj} ligne(s) enregistrée(s)"
+        return True, f"✅ {updated} ligne(s) enregistrée(s)"
     except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
-        return False, f"❌ Erreur : {str(e)}"
+        return False, f"❌ Erreur : {e}"
 
-# ============================================================
-# INTERFACE
-# ============================================================
+# ============================================
+# INTERFACE MOBILE
+# ============================================
+
+st.title("📱 Saisie Inventaire")
 
 # Sélection inventaire
 inventaires = get_inventaires_en_cours()
 
 if not inventaires:
-    st.warning("📭 Aucun inventaire en cours")
-    st.info("👉 Demandez à un manager de créer un inventaire")
-    show_footer()
+    st.warning("📋 Aucun inventaire en cours")
+    st.info("Demandez à un manager de créer un inventaire")
     st.stop()
 
-# Dropdown sélection
-options = [f"#{inv['id']} - {inv['date_inventaire']} - {inv['site']} ({inv['nb_lignes']} réf.)" 
-           for inv in inventaires]
-selected = st.selectbox("📋 Sélectionner l'inventaire", options)
-inv_id = int(selected.split('#')[1].split(' ')[0])
+# Dropdown sélection inventaire
+inv_options = {f"{inv['site']} - {inv['mois']}/{inv['annee']} ({inv['nb_lignes']} réf.)": inv['id'] 
+               for inv in inventaires}
 
-# Trouver info inventaire sélectionné
-inv_info = next((inv for inv in inventaires if inv['id'] == inv_id), None)
-
-if inv_info:
-    st.info(f"👤 Compteur(s) : **{inv_info['compteur_1']}** {', ' + inv_info['compteur_2'] if inv_info['compteur_2'] else ''}")
-
-st.markdown("---")
-
-# ============================================================
-# CHARGEMENT DONNÉES EN SESSION
-# ============================================================
-
-# Clé unique pour cet inventaire
-session_key = f"inventaire_{inv_id}_data"
-session_key_original = f"inventaire_{inv_id}_original"
-
-# Bouton recharger
-col1, col2 = st.columns([3, 1])
-with col2:
-    if st.button("🔄 Recharger", use_container_width=True):
-        st.session_state.pop(session_key, None)
-        st.session_state.pop(session_key_original, None)
-        st.rerun()
-
-# Charger données si pas en session
-if session_key not in st.session_state:
-    with st.spinner("⏳ Chargement des références..."):
-        df = charger_lignes_inventaire(inv_id)
-        if not df.empty:
-            st.session_state[session_key] = df.copy()
-            st.session_state[session_key_original] = df.copy()
-            st.success(f"✅ {len(df)} références chargées")
-        else:
-            st.error("❌ Aucune donnée")
-            st.stop()
-
-# Récupérer données de session
-df_data = st.session_state[session_key]
-
-# ============================================================
-# STATISTIQUES
-# ============================================================
-
-nb_total = len(df_data)
-nb_comptees = df_data['stock_compte'].notna().sum()
-
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric("📦 Total références", nb_total)
-with col2:
-    st.metric("✅ Comptées", int(nb_comptees))
-with col3:
-    pct = (nb_comptees / nb_total * 100) if nb_total > 0 else 0
-    st.metric("📊 Progression", f"{pct:.0f}%")
-
-st.progress(nb_comptees / nb_total if nb_total > 0 else 0)
-
-st.markdown("---")
-
-# ============================================================
-# TABLE ÉDITABLE (SCROLL INFINI)
-# ============================================================
-
-st.markdown("### 📝 Saisie des comptages")
-st.caption("💡 Saisissez les quantités comptées puis cliquez sur **Enregistrer tout**")
-
-# Préparer DataFrame pour édition
-df_edit = df_data[['ligne_id', 'libelle', 'atelier', 'unite_inventaire', 'stock_theorique', 'stock_compte']].copy()
-df_edit.columns = ['ID', 'Consommable', 'Atelier', 'Unité', 'Stock Théo', 'Stock Compté']
-
-# Configuration colonnes
-column_config = {
-    "ID": None,  # Masqué
-    "Consommable": st.column_config.TextColumn("Consommable", disabled=True, width="large"),
-    "Atelier": st.column_config.TextColumn("Atelier", disabled=True, width="small"),
-    "Unité": st.column_config.TextColumn("Unité", disabled=True, width="small"),
-    "Stock Théo": st.column_config.NumberColumn("Théorique", disabled=True, format="%.0f"),
-    "Stock Compté": st.column_config.NumberColumn("🎯 COMPTÉ", format="%.0f", required=False, min_value=0),
-}
-
-# ⭐ Table éditable avec scroll (PAS de reload entre lignes)
-edited_df = st.data_editor(
-    df_edit,
-    column_config=column_config,
-    use_container_width=True,
-    hide_index=True,
-    num_rows="fixed",
-    height=500,  # Hauteur fixe avec scroll
-    key=f"editor_{inv_id}"
+selected_inv_label = st.selectbox(
+    "📍 Sélectionner l'inventaire",
+    options=list(inv_options.keys()),
+    key="select_inv"
 )
 
-# ============================================================
-# MISE À JOUR SESSION STATE
-# ============================================================
+inventaire_id = inv_options[selected_inv_label]
 
-# Synchroniser éditions avec session_state
-if edited_df is not None:
-    # Mapper les modifications
-    for idx, row in edited_df.iterrows():
-        ligne_id = df_data.iloc[idx]['ligne_id']
-        new_value = row['Stock Compté']
-        
-        # Mettre à jour session_state
-        mask = st.session_state[session_key]['ligne_id'] == ligne_id
-        st.session_state[session_key].loc[mask, 'stock_compte'] = new_value
+# Charger les lignes
+df_lignes = get_lignes_inventaire(inventaire_id)
 
-# ============================================================
-# BOUTON SAUVEGARDE GLOBAL
-# ============================================================
+if df_lignes.empty:
+    st.warning("Aucune ligne dans cet inventaire")
+    st.stop()
+
+# Initialiser session state pour les comptages
+if 'comptages' not in st.session_state:
+    st.session_state.comptages = {}
+if 'inventaire_id_loaded' not in st.session_state or st.session_state.inventaire_id_loaded != inventaire_id:
+    # Charger les comptages existants
+    st.session_state.comptages = {}
+    for _, row in df_lignes.iterrows():
+        if pd.notna(row['stock_compte']):
+            st.session_state.comptages[row['id']] = int(row['stock_compte'])
+    st.session_state.inventaire_id_loaded = inventaire_id
+
+# Compter les modifications non sauvegardées
+nb_modifs = len([k for k, v in st.session_state.comptages.items() 
+                 if v is not None and k not in []])
+
+# Info inventaire
+site_name = selected_inv_label.split(" - ")[0]
+st.markdown(f"**{len(df_lignes)} références** à compter sur **{site_name}**")
 
 st.markdown("---")
 
-# Compter modifications non sauvegardées
-df_current = st.session_state[session_key]
-nb_modif = df_current['stock_compte'].notna().sum()
+# Grouper par atelier
+ateliers = df_lignes['atelier'].fillna('SANS ATELIER').unique()
 
-if nb_modif > 0:
-    st.warning(f"💾 **{int(nb_modif)} ligne(s)** avec comptage à enregistrer")
+# Formulaire de saisie par cartes
+for atelier in sorted(ateliers):
+    df_atelier = df_lignes[df_lignes['atelier'].fillna('SANS ATELIER') == atelier]
+    
+    # Header atelier
+    st.markdown(f"""
+    <div class="atelier-header">
+        📦 {atelier} ({len(df_atelier)} réf.)
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Cartes consommables
+    for idx, row in df_atelier.iterrows():
+        ligne_id = row['id']
+        nom = row['nom']
+        unite = row['unite'] if pd.notna(row['unite']) else "Unité"
+        
+        # Valeur actuelle (du session_state ou de la base)
+        current_value = st.session_state.comptages.get(ligne_id)
+        if current_value is None and pd.notna(row['stock_compte']):
+            current_value = int(row['stock_compte'])
+        
+        # Carte avec input
+        col1, col2 = st.columns([3, 2])
+        
+        with col1:
+            st.markdown(f"""
+            <div style="padding: 8px 0;">
+                <div class="conso-name">{nom}</div>
+                <div class="conso-unit">📦 {unite}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            # Number input avec clavier numérique
+            new_value = st.number_input(
+                "Compté",
+                min_value=0,
+                max_value=99999,
+                value=current_value if current_value is not None else 0,
+                step=1,
+                key=f"input_{ligne_id}",
+                label_visibility="collapsed"
+            )
+            
+            # Enregistrer la modification
+            if new_value != current_value:
+                st.session_state.comptages[ligne_id] = new_value
+        
+        # Séparateur léger
+        st.markdown("<hr style='margin: 4px 0; border: none; border-top: 1px solid #eee;'>", 
+                    unsafe_allow_html=True)
 
-col1, col2 = st.columns([2, 1])
+# Espace pour le bouton sticky
+st.markdown("<div style='height: 80px;'></div>", unsafe_allow_html=True)
+
+# Bouton sauvegarde (sticky en bas)
+st.markdown("---")
+
+col1, col2 = st.columns([1, 2])
 
 with col1:
-    if st.button("💾 ENREGISTRER TOUT", type="primary", use_container_width=True, 
-                 disabled=(nb_modif == 0)):
-        with st.spinner("⏳ Enregistrement en cours..."):
-            # Préparer données pour sauvegarde
-            df_save = st.session_state[session_key][['ligne_id', 'stock_theorique', 'stock_compte']].copy()
-            
-            success, msg = sauvegarder_comptages(inv_id, df_save)
-            
-            if success:
-                st.success(msg)
-                st.balloons()
-                # Recharger pour avoir les données à jour
-                time.sleep(1)
-                st.session_state.pop(session_key, None)
-                st.session_state.pop(session_key_original, None)
-                st.rerun()
-            else:
-                st.error(msg)
-                st.error("⚠️ Vérifiez votre connexion et réessayez")
+    nb_saisis = len([v for v in st.session_state.comptages.values() if v is not None and v > 0])
+    st.metric("Saisis", f"{nb_saisis}/{len(df_lignes)}")
 
 with col2:
-    if st.button("🔄 Annuler modif.", use_container_width=True):
-        if session_key_original in st.session_state:
-            st.session_state[session_key] = st.session_state[session_key_original].copy()
-            st.rerun()
+    if st.button("💾 ENREGISTRER TOUT", type="primary", use_container_width=True):
+        if st.session_state.comptages:
+            success, message = sauvegarder_comptages(inventaire_id, st.session_state.comptages)
+            if success:
+                st.success(message)
+                st.balloons()
+            else:
+                st.error(message)
+        else:
+            st.warning("Aucun comptage à enregistrer")
 
-# ============================================================
-# AIDE
-# ============================================================
-
-with st.expander("❓ Aide"):
-    st.markdown("""
-    ### Comment utiliser cette page
-    
-    1. **Sélectionnez l'inventaire** en haut de page
-    2. **Scrollez** dans le tableau pour voir toutes les références
-    3. **Saisissez** les quantités comptées dans la colonne "COMPTÉ"
-    4. **Enregistrez** en cliquant sur le bouton vert quand vous avez terminé
-    
-    ### 💡 Astuces
-    - Les données restent en mémoire même si vous perdez le réseau
-    - Vous pouvez saisir plusieurs lignes avant d'enregistrer
-    - Le bouton "Recharger" récupère les données du serveur
-    - Le bouton "Annuler modif." restaure les valeurs initiales
-    
-    ### ⚠️ Important
-    - N'actualisez PAS la page pendant la saisie (perte des données non enregistrées)
-    - Enregistrez régulièrement si vous avez beaucoup de lignes
-    """)
-
-show_footer()
+# Note pour admin
+if is_admin():
+    st.markdown("---")
+    st.info("👤 Mode Admin : vous voyez cette page pour test/debug")
