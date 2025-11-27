@@ -2,12 +2,7 @@
 Page 12 - Saisie Inventaire Consommables
 VERSION MOBILE-FIRST - Optimisée pour compteurs terrain
 
-Architecture :
-- Cartes empilées (pas de tableau)
-- 3 infos par carte : Nom, Unité, Input
-- Clavier numérique natif
-- Sauvegarde globale
-- Groupement par atelier
+CORRECTION: Utilise la table 'inventaires' (pas 'inventaires_consommables')
 """
 
 import streamlit as st
@@ -77,18 +72,6 @@ st.markdown("""
         font-size: 1rem;
     }
     
-    /* Bouton sauvegarde sticky */
-    .save-button-container {
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        background: white;
-        padding: 12px 16px;
-        box-shadow: 0 -4px 12px rgba(0,0,0,0.15);
-        z-index: 999;
-    }
-    
     /* Input number plus grand */
     .stNumberInput input {
         font-size: 1.2rem !important;
@@ -152,20 +135,28 @@ if not is_compteur() and not is_admin():
     st.stop()
 
 # ============================================
-# FONCTIONS
+# FONCTIONS - CORRIGÉES pour table 'inventaires'
 # ============================================
 
 def get_inventaires_en_cours():
-    """Récupère les inventaires EN_COURS"""
+    """Récupère les inventaires EN_COURS depuis la table 'inventaires'"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        
+        # ✅ CORRIGÉ: Utilise la table 'inventaires' (pas 'inventaires_consommables')
         cursor.execute("""
-            SELECT id, site, date_inventaire, mois, annee,
-                   (SELECT COUNT(*) FROM inventaires_consommables_lignes WHERE inventaire_id = ic.id) as nb_lignes
-            FROM inventaires_consommables ic
-            WHERE statut = 'EN_COURS'
-            ORDER BY created_at DESC
+            SELECT 
+                i.id, 
+                i.site, 
+                i.date_inventaire, 
+                i.mois, 
+                i.annee,
+                i.nb_lignes,
+                (SELECT COUNT(*) FROM inventaires_consommables_lignes WHERE inventaire_id = i.id) as nb_refs
+            FROM inventaires i
+            WHERE i.statut = 'EN_COURS'
+            ORDER BY i.created_at DESC
         """)
         rows = cursor.fetchall()
         cursor.close()
@@ -225,6 +216,16 @@ def sauvegarder_comptages(inventaire_id, comptages):
                 """, (int(stock_compte), int(stock_compte), int(ligne_id)))
                 updated += 1
         
+        # Mettre à jour le compteur nb_lignes dans inventaires
+        cursor.execute("""
+            UPDATE inventaires
+            SET nb_lignes = (
+                SELECT COUNT(*) FROM inventaires_consommables_lignes 
+                WHERE inventaire_id = %s AND stock_compte IS NOT NULL
+            )
+            WHERE id = %s
+        """, (inventaire_id, inventaire_id))
+        
         conn.commit()
         cursor.close()
         conn.close()
@@ -248,8 +249,11 @@ if not inventaires:
     st.stop()
 
 # Dropdown sélection inventaire
-inv_options = {f"{inv['site']} - {inv['mois']}/{inv['annee']} ({inv['nb_lignes']} réf.)": inv['id'] 
-               for inv in inventaires}
+inv_options = {}
+for inv in inventaires:
+    nb = inv['nb_refs'] if inv['nb_refs'] else inv['nb_lignes'] if inv['nb_lignes'] else 0
+    label = f"{inv['site']} - {inv['mois']}/{inv['annee']} ({nb} réf.)"
+    inv_options[label] = inv['id']
 
 selected_inv_label = st.selectbox(
     "📍 Sélectionner l'inventaire",
@@ -264,6 +268,7 @@ df_lignes = get_lignes_inventaire(inventaire_id)
 
 if df_lignes.empty:
     st.warning("Aucune ligne dans cet inventaire")
+    st.info("L'inventaire a été créé mais aucune référence n'a été chargée.")
     st.stop()
 
 # Initialiser session state pour les comptages
@@ -276,10 +281,6 @@ if 'inventaire_id_loaded' not in st.session_state or st.session_state.inventaire
         if pd.notna(row['stock_compte']):
             st.session_state.comptages[row['id']] = int(row['stock_compte'])
     st.session_state.inventaire_id_loaded = inventaire_id
-
-# Compter les modifications non sauvegardées
-nb_modifs = len([k for k, v in st.session_state.comptages.items() 
-                 if v is not None and k not in []])
 
 # Info inventaire
 site_name = selected_inv_label.split(" - ")[0]
