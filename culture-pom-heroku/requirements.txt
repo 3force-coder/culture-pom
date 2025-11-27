@@ -9,3 +9,4 @@ streamlit-lottie==0.0.5
 packaging>=21.0
 streamlit-aggrid>=0.3.4
 plotly>=5.18.0
+matplotlib>=3.8.0
