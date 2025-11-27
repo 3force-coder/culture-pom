@@ -154,6 +154,13 @@ def show_login():
                 # Charger les permissions (nouveau!)
                 load_user_session_permissions()
                 
+                # Compatibilité : mettre aussi 'role' pour ancien code
+                role_code = st.session_state.get('role_code', '')
+                if 'ADMIN' in role_code or st.session_state.get('is_super_admin', False):
+                    st.session_state['role'] = 'ADMIN'
+                else:
+                    st.session_state['role'] = 'USER'
+                
                 # Mettre à jour last_login
                 update_last_login(user['id'])
                 
