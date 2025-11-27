@@ -1,6 +1,7 @@
 """
 Page 16 - Suivi Affectations
 Vue par producteur : qui a été affecté à quoi, récaps par producteur
+VERSION CORRIGÉE - Accès dictionnaires pour RealDictCursor
 """
 import streamlit as st
 import pandas as pd
@@ -51,7 +52,7 @@ st.markdown("*Vue par producteur et récapitulatifs des affectations*")
 st.markdown("---")
 
 # ==========================================
-# FONCTIONS
+# FONCTIONS - CORRIGÉES POUR RealDictCursor
 # ==========================================
 
 @st.cache_data(ttl=60)
@@ -83,10 +84,22 @@ def get_recap_par_producteur(campagne):
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=[
-                'id', 'Code', 'Producteur', 'Ville', 'Dept',
-                'Variétés', 'Affectations', 'Total Ha'
-            ])
+            # ✅ CORRIGÉ : RealDictCursor retourne des dictionnaires
+            df = pd.DataFrame(rows)
+            df = df.rename(columns={
+                'id': 'id',
+                'code_producteur': 'Code',
+                'nom': 'Producteur',
+                'ville': 'Ville',
+                'departement': 'Dept',
+                'nb_varietes': 'Variétés',
+                'nb_affectations': 'Affectations',
+                'total_hectares': 'Total Ha'
+            })
+            # Convertir colonnes numériques
+            for col in ['Variétés', 'Affectations', 'Total Ha']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -122,10 +135,22 @@ def get_affectations_producteur(campagne, producteur_id):
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=[
-                'id', 'Variété', 'Mois', 'mois_numero', 'Hectares',
-                'Ha Besoin Total', 'Notes', 'Date'
-            ])
+            # ✅ CORRIGÉ : RealDictCursor retourne des dictionnaires
+            df = pd.DataFrame(rows)
+            df = df.rename(columns={
+                'id': 'id',
+                'variete': 'Variété',
+                'mois': 'Mois',
+                'mois_numero': 'mois_numero',
+                'hectares_affectes': 'Hectares',
+                'ha_besoin_total': 'Ha Besoin Total',
+                'notes': 'Notes',
+                'created_at': 'Date'
+            })
+            # Convertir colonnes numériques
+            for col in ['Hectares', 'Ha Besoin Total']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -157,7 +182,16 @@ def get_recap_par_variete_producteur(campagne):
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=['Producteur', 'Variété', 'Hectares'])
+            # ✅ CORRIGÉ : RealDictCursor retourne des dictionnaires
+            df = pd.DataFrame(rows)
+            df = df.rename(columns={
+                'producteur': 'Producteur',
+                'variete': 'Variété',
+                'hectares': 'Hectares'
+            })
+            # Convertir colonnes numériques
+            if 'Hectares' in df.columns:
+                df['Hectares'] = pd.to_numeric(df['Hectares'], errors='coerce')
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -191,7 +225,18 @@ def get_recap_par_mois_producteur(campagne):
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=['Producteur', 'Mois', 'mois_numero', 'Hectares'])
+            # ✅ CORRIGÉ : RealDictCursor retourne des dictionnaires
+            df = pd.DataFrame(rows)
+            df = df.rename(columns={
+                'producteur': 'Producteur',
+                'mois': 'Mois',
+                'mois_numero': 'mois_numero',
+                'hectares': 'Hectares'
+            })
+            # Convertir colonnes numériques
+            for col in ['mois_numero', 'Hectares']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -208,23 +253,26 @@ def get_kpis_suivi(campagne):
         
         # Producteurs affectés
         cursor.execute("""
-            SELECT COUNT(DISTINCT producteur_id) FROM plans_recolte_affectations WHERE campagne = %s
+            SELECT COUNT(DISTINCT producteur_id) as nb FROM plans_recolte_affectations WHERE campagne = %s
         """, (campagne,))
-        nb_producteurs = cursor.fetchone()[0]
+        # ✅ CORRIGÉ : Accès par nom de colonne
+        nb_producteurs = cursor.fetchone()['nb']
         
         # Total affectations
         cursor.execute("""
-            SELECT COUNT(*), SUM(hectares_affectes) FROM plans_recolte_affectations WHERE campagne = %s
+            SELECT COUNT(*) as nb, SUM(hectares_affectes) as total FROM plans_recolte_affectations WHERE campagne = %s
         """, (campagne,))
         row = cursor.fetchone()
-        nb_affectations = row[0]
-        total_ha = row[1] or 0
+        # ✅ CORRIGÉ : Accès par nom de colonne
+        nb_affectations = row['nb']
+        total_ha = row['total'] or 0
         
         # Variétés couvertes
         cursor.execute("""
-            SELECT COUNT(DISTINCT variete) FROM plans_recolte_affectations WHERE campagne = %s
+            SELECT COUNT(DISTINCT variete) as nb FROM plans_recolte_affectations WHERE campagne = %s
         """, (campagne,))
-        nb_varietes = cursor.fetchone()[0]
+        # ✅ CORRIGÉ : Accès par nom de colonne
+        nb_varietes = cursor.fetchone()['nb']
         
         # Moyenne par producteur
         moyenne = total_ha / nb_producteurs if nb_producteurs > 0 else 0
@@ -261,7 +309,8 @@ def get_producteurs_liste(campagne):
         cursor.close()
         conn.close()
         
-        return [(row[0], row[1]) for row in rows]
+        # ✅ CORRIGÉ : Accès par nom de colonne
+        return [(row['id'], row['nom']) for row in rows]
     except:
         return []
 
