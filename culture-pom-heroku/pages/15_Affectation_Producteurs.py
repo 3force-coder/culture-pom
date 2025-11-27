@@ -701,11 +701,11 @@ with st.expander("⚡ Affectation rapide (plusieurs besoins)", expanded=False):
                 # Tableau avec checkbox
                 df_rapide['Sélectionner'] = False
                 df_rapide['Ha à affecter'] = 1
+                # ✅ CORRIGÉ : Créer 'Reste' AVANT de l'utiliser
+                df_rapide['Reste'] = df_rapide['Ha Besoin'] - df_rapide['Ha Affectés']
                 
                 edited = st.data_editor(
-                    df_rapide[['Sélectionner', 'Mois', 'Ha Besoin', 'Ha Affectés', 'Reste', 'Ha à affecter']].assign(
-                        Reste=df_rapide['Ha Besoin'] - df_rapide['Ha Affectés']
-                    ),
+                    df_rapide[['Sélectionner', 'Mois', 'Ha Besoin', 'Ha Affectés', 'Reste', 'Ha à affecter']],
                     column_config={
                         "Sélectionner": st.column_config.CheckboxColumn("✓", default=False),
                         "Ha à affecter": st.column_config.NumberColumn("Ha à affecter", min_value=1, max_value=100, step=1),
