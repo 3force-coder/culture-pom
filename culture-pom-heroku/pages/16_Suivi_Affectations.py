@@ -1,7 +1,7 @@
 """
 Page 16 - Suivi Affectations
 Vue par producteur : qui a été affecté à quoi, récaps par producteur
-VERSION CORRIGÉE - Accès dictionnaires pour RealDictCursor
+VERSION MODIFIÉE - Support hectares décimaux + édition dans Détail Producteur
 """
 import streamlit as st
 import pandas as pd
@@ -107,9 +107,8 @@ def get_recap_par_producteur(campagne):
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=60)
 def get_affectations_producteur(campagne, producteur_id):
-    """Détail affectations pour un producteur"""
+    """Détail affectations pour un producteur - SANS CACHE pour édition"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -117,6 +116,7 @@ def get_affectations_producteur(campagne, producteur_id):
         cursor.execute("""
             SELECT 
                 a.id,
+                a.besoin_id,
                 a.variete,
                 a.mois,
                 b.mois_numero,
@@ -139,6 +139,7 @@ def get_affectations_producteur(campagne, producteur_id):
             df = pd.DataFrame(rows)
             df = df.rename(columns={
                 'id': 'id',
+                'besoin_id': 'besoin_id',
                 'variete': 'Variété',
                 'mois': 'Mois',
                 'mois_numero': 'mois_numero',
@@ -283,9 +284,9 @@ def get_kpis_suivi(campagne):
         return {
             'nb_producteurs': nb_producteurs,
             'nb_affectations': nb_affectations,
-            'total_ha': int(total_ha),
+            'total_ha': float(total_ha),  # ✅ MODIFIÉ : float() pour décimaux
             'nb_varietes': nb_varietes,
-            'moyenne_ha': moyenne
+            'moyenne_ha': float(moyenne)
         }
     except:
         return None
@@ -316,6 +317,56 @@ def get_producteurs_liste(campagne):
 
 
 # ==========================================
+# FONCTIONS D'ÉDITION (NOUVELLES)
+# ==========================================
+
+def modifier_affectation(affectation_id, hectares, notes):
+    """Modifie une affectation"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        username = st.session_state.get('username', 'system')
+        
+        cursor.execute("""
+            UPDATE plans_recolte_affectations 
+            SET hectares_affectes = %s, notes = %s, updated_by = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (hectares, notes, username, affectation_id))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        # Vider le cache pour rafraîchir les données
+        st.cache_data.clear()
+        
+        return True, "✅ Affectation modifiée"
+    except Exception as e:
+        return False, f"❌ Erreur : {e}"
+
+
+def supprimer_affectation(affectation_id):
+    """Supprime une affectation"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM plans_recolte_affectations WHERE id = %s", (affectation_id,))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        # Vider le cache pour rafraîchir les données
+        st.cache_data.clear()
+        
+        return True, "✅ Affectation supprimée"
+    except Exception as e:
+        return False, f"❌ Erreur : {e}"
+
+
+# ==========================================
 # SÉLECTEUR CAMPAGNE + KPIs
 # ==========================================
 
@@ -341,13 +392,15 @@ if kpis:
         st.metric("📝 Affectations", kpis['nb_affectations'])
     
     with col3:
-        st.metric("🌾 Total Ha", f"{kpis['total_ha']:,}")
+        # ✅ MODIFIÉ : Format décimal
+        st.metric("🌾 Total Ha", f"{kpis['total_ha']:,.1f}")
     
     with col4:
         st.metric("🌱 Variétés", kpis['nb_varietes'])
     
     with col5:
-        st.metric("📊 Moy./Prod.", f"{kpis['moyenne_ha']:.0f} ha")
+        # ✅ MODIFIÉ : Format décimal
+        st.metric("📊 Moy./Prod.", f"{kpis['moyenne_ha']:.1f} ha")
 
 st.markdown("---")
 
@@ -384,17 +437,18 @@ with tab1:
                 "Dept": st.column_config.TextColumn("Dept", width="small"),
                 "Variétés": st.column_config.NumberColumn("Variétés", format="%d"),
                 "Affectations": st.column_config.NumberColumn("Affectations", format="%d"),
-                "Total Ha": st.column_config.NumberColumn("Total Ha", format="%d"),
+                # ✅ MODIFIÉ : Format décimal
+                "Total Ha": st.column_config.NumberColumn("Total Ha", format="%.1f"),
             },
             use_container_width=True,
             hide_index=True
         )
         
-        # Totaux
+        # Totaux - ✅ MODIFIÉ : Format décimal
         st.markdown(f"""
         **Totaux :** {len(df_prod)} producteurs | 
         {df_prod['Affectations'].sum()} affectations | 
-        {df_prod['Total Ha'].sum():,.0f} ha
+        {df_prod['Total Ha'].sum():,.1f} ha
         """)
         
         # Top 10
@@ -430,8 +484,9 @@ with tab2:
         # Trier par total décroissant
         pivot = pivot.sort_values('TOTAL', ascending=False)
         
+        # ✅ MODIFIÉ : Format décimal
         st.dataframe(
-            pivot.style.format("{:.0f}").background_gradient(cmap='Greens', subset=pivot.columns[:-1]),
+            pivot.style.format("{:.1f}").background_gradient(cmap='Greens', subset=pivot.columns[:-1]),
             use_container_width=True
         )
         
@@ -469,15 +524,16 @@ with tab3:
         # Trier par total décroissant
         pivot = pivot.sort_values('TOTAL', ascending=False)
         
+        # ✅ MODIFIÉ : Format décimal
         st.dataframe(
-            pivot.style.format("{:.0f}").background_gradient(cmap='Blues', subset=pivot.columns[:-1]),
+            pivot.style.format("{:.1f}").background_gradient(cmap='Blues', subset=pivot.columns[:-1]),
             use_container_width=True
         )
     else:
         st.info("Aucune donnée")
 
 # ==========================================
-# TAB 4 : DÉTAIL PRODUCTEUR
+# TAB 4 : DÉTAIL PRODUCTEUR (AVEC ÉDITION)
 # ==========================================
 
 with tab4:
@@ -499,7 +555,7 @@ with tab4:
             df_detail = get_affectations_producteur(campagne, producteur_id)
             
             if not df_detail.empty:
-                # KPIs producteur
+                # KPIs producteur - ✅ MODIFIÉ : Format décimal
                 total_ha = df_detail['Hectares'].sum()
                 nb_varietes = df_detail['Variété'].nunique()
                 nb_mois = df_detail['Mois'].nunique()
@@ -507,7 +563,7 @@ with tab4:
                 col1, col2, col3 = st.columns(3)
                 
                 with col1:
-                    st.metric("🌾 Total Ha", f"{total_ha:,.0f}")
+                    st.metric("🌾 Total Ha", f"{total_ha:,.1f}")
                 
                 with col2:
                     st.metric("🌱 Variétés", nb_varietes)
@@ -517,24 +573,96 @@ with tab4:
                 
                 st.markdown("---")
                 
-                # Tableau détail
-                df_display = df_detail.drop(columns=['id', 'mois_numero'])
+                # ==========================================
+                # AFFICHAGE AVEC ÉDITION
+                # ==========================================
                 
-                st.dataframe(
-                    df_display,
-                    column_config={
-                        "Variété": st.column_config.TextColumn("Variété", width="medium"),
-                        "Mois": st.column_config.TextColumn("Mois", width="small"),
-                        "Hectares": st.column_config.NumberColumn("Hectares", format="%d"),
-                        "Ha Besoin Total": st.column_config.NumberColumn("Besoin Total", format="%d"),
-                        "Notes": st.column_config.TextColumn("Notes", width="medium"),
-                        "Date": st.column_config.DatetimeColumn("Date", format="DD/MM/YYYY"),
-                    },
-                    use_container_width=True,
-                    hide_index=True
-                )
+                st.markdown("#### 📝 Affectations")
                 
-                # Récap par variété pour ce producteur
+                if CAN_EDIT:
+                    st.info("💡 Cliquez sur ✏️ pour modifier ou 🗑️ pour supprimer une affectation")
+                
+                for idx, row in df_detail.iterrows():
+                    col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 0.5, 0.5])
+                    
+                    with col1:
+                        st.markdown(f"**{row['Variété']}** - {row['Mois']}")
+                        if row['Notes']:
+                            st.caption(f"📝 {row['Notes']}")
+                    
+                    with col2:
+                        # ✅ MODIFIÉ : Format décimal
+                        st.metric("Ha", f"{row['Hectares']:.1f}", label_visibility="collapsed")
+                    
+                    with col3:
+                        if row['Ha Besoin Total']:
+                            st.caption(f"Besoin: {row['Ha Besoin Total']:.1f} ha")
+                    
+                    with col4:
+                        if CAN_EDIT:
+                            if st.button("✏️", key=f"edit16_{row['id']}", help="Modifier"):
+                                st.session_state[f'editing16_{row["id"]}'] = True
+                                st.rerun()
+                    
+                    with col5:
+                        if CAN_DELETE:
+                            if st.button("🗑️", key=f"del16_{row['id']}", help="Supprimer"):
+                                success, msg = supprimer_affectation(row['id'])
+                                if success:
+                                    st.success(msg)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+                    
+                    # Formulaire modification si édition active
+                    if st.session_state.get(f'editing16_{row["id"]}', False):
+                        with st.container():
+                            st.markdown("---")
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                # ✅ MODIFIÉ : Décimaux par pas de 0.5
+                                new_ha = st.number_input(
+                                    "Hectares",
+                                    min_value=0.5,
+                                    value=float(row['Hectares']),
+                                    step=0.5,
+                                    format="%.1f",
+                                    key=f"edit16_ha_{row['id']}"
+                                )
+                            
+                            with col2:
+                                new_notes = st.text_input(
+                                    "Notes",
+                                    value=row['Notes'] or "",
+                                    key=f"edit16_notes_{row['id']}"
+                                )
+                            
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                if st.button("💾 Enregistrer", key=f"save16_edit_{row['id']}", type="primary"):
+                                    success, msg = modifier_affectation(row['id'], new_ha, new_notes)
+                                    if success:
+                                        st.success(msg)
+                                        st.session_state.pop(f'editing16_{row["id"]}', None)
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
+                            
+                            with col2:
+                                if st.button("❌ Annuler", key=f"cancel16_edit_{row['id']}"):
+                                    st.session_state.pop(f'editing16_{row["id"]}', None)
+                                    st.rerun()
+                            
+                            st.markdown("---")
+                    
+                    st.markdown("<hr style='margin: 0.3rem 0; border: none; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
+                
+                # ==========================================
+                # RÉCAP PAR VARIÉTÉ
+                # ==========================================
+                
                 st.markdown("#### 🌱 Récap par Variété")
                 recap_var = df_detail.groupby('Variété')['Hectares'].sum().reset_index()
                 recap_var = recap_var.sort_values('Hectares', ascending=False)
