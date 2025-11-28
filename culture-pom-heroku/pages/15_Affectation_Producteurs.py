@@ -1,7 +1,7 @@
 """
 Page 15 - Affectation Producteurs
-Affecter des hectares (entiers) aux producteurs pour chaque besoin (Variété × Mois)
-VERSION CORRIGÉE - Accès dictionnaires pour RealDictCursor
+Affecter des hectares (décimaux par pas de 0.5) aux producteurs pour chaque besoin (Variété × Mois)
+VERSION MODIFIÉE - Support hectares décimaux (0.5 ha minimum)
 """
 import streamlit as st
 import pandas as pd
@@ -55,7 +55,7 @@ CAN_EDIT = can_edit("PLANS_RECOLTE")
 CAN_DELETE = can_delete("PLANS_RECOLTE")
 
 st.title("👨‍🌾 Affectation Producteurs")
-st.markdown("*Affecter des hectares aux producteurs pour chaque besoin (Variété × Mois)*")
+st.markdown("*Affecter des hectares aux producteurs pour chaque besoin (Variété × Mois) - Par pas de 0.5 ha*")
 st.markdown("---")
 
 # ==========================================
@@ -253,8 +253,8 @@ def get_besoin_info(besoin_id):
                 'campagne': row['campagne'],
                 'mois': row['mois'],
                 'variete': row['variete'],
-                'ha_besoin': row['total_hectares_arrondi'],
-                'ha_affectes': row['total_hectares_affectes'],
+                'ha_besoin': float(row['total_hectares_arrondi']) if row['total_hectares_arrondi'] else 0,
+                'ha_affectes': float(row['total_hectares_affectes']) if row['total_hectares_affectes'] else 0,
                 'couverture': float(row['taux_couverture_pct']) if row['taux_couverture_pct'] else 0
             }
         return None
@@ -285,7 +285,8 @@ def ajouter_affectation(besoin_id, campagne, mois, variete, producteur_id, hecta
         cursor.close()
         conn.close()
         
-        return True, f"✅ Affectation #{new_id} créée ({hectares} ha)"
+        # ✅ MODIFIÉ : Format décimal dans message
+        return True, f"✅ Affectation #{new_id} créée ({hectares:.1f} ha)"
     except Exception as e:
         return False, f"❌ Erreur : {e}"
 
@@ -351,9 +352,9 @@ def get_kpis_affectations(campagne):
         conn.close()
         
         if row:
-            # ✅ CORRIGÉ : Accès par nom de colonne
-            total_besoin = int(row['total_besoin']) if row['total_besoin'] else 0
-            total_affectes = int(row['total_affectes']) if row['total_affectes'] else 0
+            # ✅ MODIFIÉ : float() au lieu de int() pour décimaux
+            total_besoin = float(row['total_besoin']) if row['total_besoin'] else 0
+            total_affectes = float(row['total_affectes']) if row['total_affectes'] else 0
             return {
                 'nb_besoins': row['nb_besoins'],
                 'nb_complets': row['nb_complets'] or 0,
@@ -387,10 +388,12 @@ if kpis:
         st.metric("✅ Complets", kpis['nb_complets'])
     
     with col3:
-        st.metric("🌾 Ha à affecter", f"{kpis['total_besoin']:,}")
+        # ✅ MODIFIÉ : Format décimal
+        st.metric("🌾 Ha à affecter", f"{kpis['total_besoin']:,.1f}")
     
     with col4:
-        st.metric("👨‍🌾 Ha affectés", f"{kpis['total_affectes']:,}")
+        # ✅ MODIFIÉ : Format décimal
+        st.metric("👨‍🌾 Ha affectés", f"{kpis['total_affectes']:,.1f}")
     
     with col5:
         color = "normal" if kpis['couverture'] < 50 else ("off" if kpis['couverture'] < 100 else "inverse")
@@ -430,16 +433,16 @@ if not df_besoins.empty:
     # Ajouter colonne "Reste"
     df_display['Reste'] = df_display['Ha Besoin'] - df_display['Ha Affectés']
     
-    # Configuration colonnes
+    # Configuration colonnes - ✅ MODIFIÉ : Format décimal
     column_config = {
         "id": None,  # Masquer
         "Variété": st.column_config.TextColumn("Variété", width="medium"),
         "Mois": st.column_config.TextColumn("Mois", width="small"),
         "Vol. Net (T)": st.column_config.NumberColumn("Vol. Net", format="%.0f"),
         "Vol. Brut (T)": st.column_config.NumberColumn("Vol. Brut", format="%.0f"),
-        "Ha Besoin": st.column_config.NumberColumn("Ha Besoin", format="%d"),
-        "Ha Affectés": st.column_config.NumberColumn("Ha Affectés", format="%d"),
-        "Reste": st.column_config.NumberColumn("Reste", format="%d"),
+        "Ha Besoin": st.column_config.NumberColumn("Ha Besoin", format="%.1f"),
+        "Ha Affectés": st.column_config.NumberColumn("Ha Affectés", format="%.1f"),
+        "Reste": st.column_config.NumberColumn("Reste", format="%.1f"),
         "Couverture %": st.column_config.ProgressColumn("Couverture", format="%.0f%%", min_value=0, max_value=100),
         "Complet": st.column_config.CheckboxColumn("✓"),
     }
@@ -463,14 +466,14 @@ if not df_besoins.empty:
         selected_besoin = df_besoins.iloc[selected_idx]
         besoin_id = int(selected_besoin['id'])
         
-        # Stocker en session
+        # Stocker en session - ✅ MODIFIÉ : float() au lieu de int()
         st.session_state['selected_besoin_id'] = besoin_id
         st.session_state['selected_besoin_info'] = {
             'variete': selected_besoin['Variété'],
             'mois': selected_besoin['Mois'],
-            'ha_besoin': int(selected_besoin['Ha Besoin']),
-            'ha_affectes': int(selected_besoin['Ha Affectés']),
-            'reste': int(selected_besoin['Ha Besoin'] - selected_besoin['Ha Affectés'])
+            'ha_besoin': float(selected_besoin['Ha Besoin']),
+            'ha_affectes': float(selected_besoin['Ha Affectés']),
+            'reste': float(selected_besoin['Ha Besoin'] - selected_besoin['Ha Affectés'])
         }
 else:
     st.info("Aucun besoin pour cette campagne. Lancez 'Recalculer besoins' dans la page Plan Récolte.")
@@ -488,14 +491,14 @@ if 'selected_besoin_id' in st.session_state and st.session_state['selected_besoi
     
     st.subheader("2️⃣ Besoin sélectionné")
     
-    # Afficher infos besoin
+    # Afficher infos besoin - ✅ MODIFIÉ : Format décimal
     st.markdown(f"""
     <div class="besoin-selected">
         <h4>🌱 {info.get('variete', '?')} - 📅 {info.get('mois', '?')}</h4>
         <p>
-            <strong>Besoin :</strong> {info.get('ha_besoin', 0)} ha | 
-            <strong>Affectés :</strong> {info.get('ha_affectes', 0)} ha | 
-            <strong>Reste :</strong> {info.get('reste', 0)} ha
+            <strong>Besoin :</strong> {info.get('ha_besoin', 0):.1f} ha | 
+            <strong>Affectés :</strong> {info.get('ha_affectes', 0):.1f} ha | 
+            <strong>Reste :</strong> {info.get('reste', 0):.1f} ha
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -518,7 +521,8 @@ if 'selected_besoin_id' in st.session_state and st.session_state['selected_besoi
                     st.caption(f"📝 {row['Notes']}")
             
             with col2:
-                st.metric("Hectares", f"{row['Hectares']} ha", label_visibility="collapsed")
+                # ✅ MODIFIÉ : Format décimal
+                st.metric("Hectares", f"{row['Hectares']:.1f} ha", label_visibility="collapsed")
             
             with col3:
                 if CAN_EDIT:
@@ -543,11 +547,13 @@ if 'selected_besoin_id' in st.session_state and st.session_state['selected_besoi
                     col1, col2 = st.columns(2)
                     
                     with col1:
+                        # ✅ MODIFIÉ : Décimaux par pas de 0.5
                         new_ha = st.number_input(
                             "Hectares",
-                            min_value=1,
-                            value=int(row['Hectares']),
-                            step=1,
+                            min_value=0.5,
+                            value=float(row['Hectares']),
+                            step=0.5,
+                            format="%.1f",
                             key=f"edit_ha_{row['id']}"
                         )
                     
@@ -579,9 +585,9 @@ if 'selected_besoin_id' in st.session_state and st.session_state['selected_besoi
             
             st.markdown("<hr style='margin: 0.3rem 0; border: none; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
         
-        # Total
+        # Total - ✅ MODIFIÉ : Format décimal
         total_ha = df_affectations['Hectares'].sum()
-        st.markdown(f"**Total affecté :** {total_ha} ha sur {info.get('ha_besoin', 0)} ha")
+        st.markdown(f"**Total affecté :** {total_ha:.1f} ha sur {info.get('ha_besoin', 0):.1f} ha")
     else:
         st.info("Aucune affectation pour ce besoin")
     
@@ -614,13 +620,14 @@ if 'selected_besoin_id' in st.session_state and st.session_state['selected_besoi
                     )
                 
                 with col2:
-                    # Hectares (entiers uniquement)
+                    # ✅ MODIFIÉ : Hectares décimaux par pas de 0.5
                     hectares = st.number_input(
-                        f"Hectares * (max suggéré: {reste})",
-                        min_value=1,
-                        max_value=1000,
-                        value=min(reste, 10) if reste > 0 else 1,
-                        step=1,
+                        f"Hectares * (max suggéré: {reste:.1f})",
+                        min_value=0.5,
+                        max_value=1000.0,
+                        value=min(reste, 10.0) if reste > 0 else 0.5,
+                        step=0.5,
+                        format="%.1f",
                         key="new_hectares"
                     )
                 
@@ -698,9 +705,9 @@ with st.expander("⚡ Affectation rapide (plusieurs besoins)", expanded=False):
             if not df_rapide.empty:
                 st.markdown(f"**{len(df_rapide)} besoin(s) incomplet(s) pour {variete_rapide}**")
                 
-                # Tableau avec checkbox
+                # Tableau avec checkbox - ✅ MODIFIÉ : Valeur par défaut décimale
                 df_rapide['Sélectionner'] = False
-                df_rapide['Ha à affecter'] = 1
+                df_rapide['Ha à affecter'] = 0.5
                 # ✅ CORRIGÉ : Créer 'Reste' AVANT de l'utiliser
                 df_rapide['Reste'] = df_rapide['Ha Besoin'] - df_rapide['Ha Affectés']
                 
@@ -708,7 +715,11 @@ with st.expander("⚡ Affectation rapide (plusieurs besoins)", expanded=False):
                     df_rapide[['Sélectionner', 'Mois', 'Ha Besoin', 'Ha Affectés', 'Reste', 'Ha à affecter']],
                     column_config={
                         "Sélectionner": st.column_config.CheckboxColumn("✓", default=False),
-                        "Ha à affecter": st.column_config.NumberColumn("Ha à affecter", min_value=1, max_value=100, step=1),
+                        # ✅ MODIFIÉ : Décimaux par pas de 0.5
+                        "Ha Besoin": st.column_config.NumberColumn("Ha Besoin", format="%.1f"),
+                        "Ha Affectés": st.column_config.NumberColumn("Ha Affectés", format="%.1f"),
+                        "Reste": st.column_config.NumberColumn("Reste", format="%.1f"),
+                        "Ha à affecter": st.column_config.NumberColumn("Ha à affecter", min_value=0.5, max_value=100.0, step=0.5, format="%.1f"),
                     },
                     hide_index=True,
                     key="rapide_editor"
@@ -727,13 +738,14 @@ with st.expander("⚡ Affectation rapide (plusieurs besoins)", expanded=False):
                         for idx, row in edited.iterrows():
                             if row['Sélectionner']:
                                 besoin = df_rapide.iloc[idx]
+                                # ✅ MODIFIÉ : float() au lieu de int()
                                 success, _ = ajouter_affectation(
                                     int(besoin['id']),
                                     campagne,
                                     besoin['Mois'],
                                     variete_rapide,
                                     producteur_id,
-                                    int(row['Ha à affecter']),
+                                    float(row['Ha à affecter']),
                                     ""
                                 )
                                 if success:
