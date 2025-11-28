@@ -9,7 +9,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from database import get_connection
-from auth import is_authenticated, is_admin
+from auth import is_authenticated, is_admin, is_compteur  # ✅ CORRIGÉ: importer is_compteur
 
 # Configuration page - DOIT être en premier
 st.set_page_config(
@@ -125,9 +125,7 @@ if not is_authenticated():
     st.stop()
 
 # Vérification accès : Compteurs OU Admins
-def is_compteur():
-    """Vérifie si l'utilisateur est un compteur"""
-    return st.session_state.get('role') == 'COMPTEUR'
+# ✅ CORRIGÉ: Utilise is_compteur() importé depuis auth (vérifie role_code == 'COMPTEUR')
 
 if not is_compteur() and not is_admin():
     st.error("🚫 Cette page est réservée aux compteurs")
