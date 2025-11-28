@@ -4,7 +4,7 @@ import numpy as np
 from datetime import datetime
 from database import get_connection
 from components import show_footer
-from auth import is_authenticated
+from auth import require_access
 import io
 
 st.set_page_config(page_title="Détails Stock - Culture Pom", page_icon="📍", layout="wide")
@@ -55,27 +55,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-if not is_authenticated():
-    st.warning("⚠️ Veuillez vous connecter pour accéder à cette page")
-    st.stop()
-
-# ============================================================
-# 🔒 BLOCAGE ACCÈS COMPTEUR
-# ============================================================
-from auth.roles import is_compteur
-
-if is_compteur():
-    st.markdown("""
-    <div style="display: flex; justify-content: center; align-items: center; height: 60vh;">
-        <div style="text-align: center; padding: 3rem; background-color: #fee2e2; border-radius: 1rem; border: 2px solid #dc2626;">
-            <h1 style="color: #dc2626; margin-bottom: 1rem;">🚫 Accès Refusé</h1>
-            <p style="font-size: 1.2rem; color: #333;">Désolé, vous n'avez pas accès à cette ressource.</p>
-            <p style="color: #666; margin-top: 1rem;">Votre compte est limité à la page <strong>Inventaire</strong>.</p>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.stop()
-# ============================================================
+# ⭐ CONTRÔLE D'ACCÈS RBAC - UNE SEULE LIGNE
+require_access("STOCK")
 
 st.title("📍 Détails Stock par Lot")
 st.caption("*Gestion des emplacements de stockage par lot*")
@@ -1040,7 +1021,7 @@ if len(lots_to_display) > 0:
                                     else:
                                         st.error(message)
                                 else:
-                                    st.error("❌ Site et emplacement destination obligatoires")
+                                    st.error("❌ Destination obligatoire")
                         
                         with col_cancel:
                             if st.button("❌ Annuler", key=f"cancel_transfer_{lot_id}", use_container_width=True):
@@ -1058,19 +1039,19 @@ if len(lots_to_display) > 0:
                     empl_options = {f"{row['id']} - {row['site_stockage']} / {row['emplacement_stockage']} ({format_number_fr(row['nombre_unites'])} pallox)": row['id'] 
                                    for _, row in df_empl.iterrows()}
                     
-                    selected_empl = st.selectbox("Emplacement *", options=[""] + list(empl_options.keys()), key=f"modify_empl_{lot_id}")
+                    selected_empl = st.selectbox("Emplacement à modifier *", options=[""] + list(empl_options.keys()), key=f"modify_empl_{lot_id}")
                     
                     if selected_empl and selected_empl != "":
                         empl_id = empl_options[selected_empl]
                         
+                        # Récupérer quantité actuelle
                         empl_data = df_empl[df_empl['id'] == empl_id].iloc[0]
                         quantite_actuelle = int(empl_data['nombre_unites'])
                         
                         nouvelle_quantite = st.number_input(
-                            f"Nouvelle quantité (actuelle: {format_number_fr(quantite_actuelle)}) *",
-                            min_value=0,
+                            "Nouvelle quantité *",
+                            min_value=1,
                             value=quantite_actuelle,
-                            step=1,
                             key=f"modify_qty_{lot_id}"
                         )
                         
