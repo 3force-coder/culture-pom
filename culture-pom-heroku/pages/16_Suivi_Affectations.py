@@ -1,7 +1,7 @@
 """
 Page 16 - Suivi Affectations
 Vue par producteur : qui a été affecté à quoi, récaps par producteur
-VERSION MODIFIÉE - Support hectares décimaux + édition dans Détail Producteur
+VERSION MODIFIÉE - Type contrat RÉCOLTE/HIVER + Police agrandie + Conservation onglet
 """
 import streamlit as st
 import pandas as pd
@@ -12,7 +12,7 @@ import io
 
 st.set_page_config(page_title="Suivi Affectations - Culture Pom", page_icon="📋", layout="wide")
 
-# CSS
+# CSS - Police agrandie pour hectares
 st.markdown("""
 <style>
     .block-container {
@@ -29,6 +29,34 @@ st.markdown("""
         border-radius: 0.5rem;
         margin: 0.5rem 0;
         border-left: 4px solid #4CAF50;
+    }
+    /* ✅ NOUVEAU : Style pour les hectares agrandis */
+    .big-hectares {
+        font-size: 2rem !important;
+        font-weight: bold !important;
+        color: #2E7D32 !important;
+    }
+    .besoin-label {
+        font-size: 1.1rem !important;
+        color: #555 !important;
+        font-weight: 500 !important;
+    }
+    /* Style pour les badges contrat */
+    .badge-recolte {
+        background-color: #4CAF50;
+        color: white;
+        padding: 0.3rem 0.6rem;
+        border-radius: 0.3rem;
+        font-size: 0.85rem;
+        font-weight: bold;
+    }
+    .badge-hiver {
+        background-color: #2196F3;
+        color: white;
+        padding: 0.3rem 0.6rem;
+        border-radius: 0.3rem;
+        font-size: 0.85rem;
+        font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -84,7 +112,6 @@ def get_recap_par_producteur(campagne):
         conn.close()
         
         if rows:
-            # ✅ CORRIGÉ : RealDictCursor retourne des dictionnaires
             df = pd.DataFrame(rows)
             df = df.rename(columns={
                 'id': 'id',
@@ -96,7 +123,6 @@ def get_recap_par_producteur(campagne):
                 'nb_affectations': 'Affectations',
                 'total_hectares': 'Total Ha'
             })
-            # Convertir colonnes numériques
             for col in ['Variétés', 'Affectations', 'Total Ha']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -113,6 +139,7 @@ def get_affectations_producteur(campagne, producteur_id):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ✅ MODIFIÉ : Ajout type_contrat
         cursor.execute("""
             SELECT 
                 a.id,
@@ -122,6 +149,7 @@ def get_affectations_producteur(campagne, producteur_id):
                 b.mois_numero,
                 a.hectares_affectes,
                 b.total_hectares_arrondi as ha_besoin_total,
+                COALESCE(a.type_contrat, 'RÉCOLTE') as type_contrat,
                 a.notes,
                 a.created_at
             FROM plans_recolte_affectations a
@@ -135,7 +163,6 @@ def get_affectations_producteur(campagne, producteur_id):
         conn.close()
         
         if rows:
-            # ✅ CORRIGÉ : RealDictCursor retourne des dictionnaires
             df = pd.DataFrame(rows)
             df = df.rename(columns={
                 'id': 'id',
@@ -145,10 +172,10 @@ def get_affectations_producteur(campagne, producteur_id):
                 'mois_numero': 'mois_numero',
                 'hectares_affectes': 'Hectares',
                 'ha_besoin_total': 'Ha Besoin Total',
+                'type_contrat': 'Type Contrat',
                 'notes': 'Notes',
                 'created_at': 'Date'
             })
-            # Convertir colonnes numériques
             for col in ['Hectares', 'Ha Besoin Total']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -183,14 +210,12 @@ def get_recap_par_variete_producteur(campagne):
         conn.close()
         
         if rows:
-            # ✅ CORRIGÉ : RealDictCursor retourne des dictionnaires
             df = pd.DataFrame(rows)
             df = df.rename(columns={
                 'producteur': 'Producteur',
                 'variete': 'Variété',
                 'hectares': 'Hectares'
             })
-            # Convertir colonnes numériques
             if 'Hectares' in df.columns:
                 df['Hectares'] = pd.to_numeric(df['Hectares'], errors='coerce')
             return df
@@ -226,7 +251,6 @@ def get_recap_par_mois_producteur(campagne):
         conn.close()
         
         if rows:
-            # ✅ CORRIGÉ : RealDictCursor retourne des dictionnaires
             df = pd.DataFrame(rows)
             df = df.rename(columns={
                 'producteur': 'Producteur',
@@ -234,7 +258,6 @@ def get_recap_par_mois_producteur(campagne):
                 'mois_numero': 'mois_numero',
                 'hectares': 'Hectares'
             })
-            # Convertir colonnes numériques
             for col in ['mois_numero', 'Hectares']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -247,7 +270,7 @@ def get_recap_par_mois_producteur(campagne):
 
 @st.cache_data(ttl=60)
 def get_kpis_suivi(campagne):
-    """KPIs de suivi"""
+    """KPIs de suivi - ✅ MODIFIÉ : Ajout KPIs par type contrat"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -256,7 +279,6 @@ def get_kpis_suivi(campagne):
         cursor.execute("""
             SELECT COUNT(DISTINCT producteur_id) as nb FROM plans_recolte_affectations WHERE campagne = %s
         """, (campagne,))
-        # ✅ CORRIGÉ : Accès par nom de colonne
         nb_producteurs = cursor.fetchone()['nb']
         
         # Total affectations
@@ -264,7 +286,6 @@ def get_kpis_suivi(campagne):
             SELECT COUNT(*) as nb, SUM(hectares_affectes) as total FROM plans_recolte_affectations WHERE campagne = %s
         """, (campagne,))
         row = cursor.fetchone()
-        # ✅ CORRIGÉ : Accès par nom de colonne
         nb_affectations = row['nb']
         total_ha = row['total'] or 0
         
@@ -272,8 +293,25 @@ def get_kpis_suivi(campagne):
         cursor.execute("""
             SELECT COUNT(DISTINCT variete) as nb FROM plans_recolte_affectations WHERE campagne = %s
         """, (campagne,))
-        # ✅ CORRIGÉ : Accès par nom de colonne
         nb_varietes = cursor.fetchone()['nb']
+        
+        # ✅ NOUVEAU : Hectares par type de contrat
+        cursor.execute("""
+            SELECT 
+                COALESCE(type_contrat, 'RÉCOLTE') as type_contrat,
+                SUM(hectares_affectes) as total_ha
+            FROM plans_recolte_affectations 
+            WHERE campagne = %s
+            GROUP BY COALESCE(type_contrat, 'RÉCOLTE')
+        """, (campagne,))
+        
+        ha_recolte = 0
+        ha_hiver = 0
+        for row in cursor.fetchall():
+            if row['type_contrat'] == 'RÉCOLTE':
+                ha_recolte = float(row['total_ha'] or 0)
+            elif row['type_contrat'] == 'HIVER':
+                ha_hiver = float(row['total_ha'] or 0)
         
         # Moyenne par producteur
         moyenne = total_ha / nb_producteurs if nb_producteurs > 0 else 0
@@ -284,9 +322,11 @@ def get_kpis_suivi(campagne):
         return {
             'nb_producteurs': nb_producteurs,
             'nb_affectations': nb_affectations,
-            'total_ha': float(total_ha),  # ✅ MODIFIÉ : float() pour décimaux
+            'total_ha': float(total_ha),
             'nb_varietes': nb_varietes,
-            'moyenne_ha': float(moyenne)
+            'moyenne_ha': float(moyenne),
+            'ha_recolte': ha_recolte,
+            'ha_hiver': ha_hiver
         }
     except:
         return None
@@ -310,18 +350,17 @@ def get_producteurs_liste(campagne):
         cursor.close()
         conn.close()
         
-        # ✅ CORRIGÉ : Accès par nom de colonne
         return [(row['id'], row['nom']) for row in rows]
     except:
         return []
 
 
 # ==========================================
-# FONCTIONS D'ÉDITION (NOUVELLES)
+# FONCTIONS D'ÉDITION - ✅ MODIFIÉ : Ajout type_contrat
 # ==========================================
 
-def modifier_affectation(affectation_id, hectares, notes):
-    """Modifie une affectation"""
+def modifier_affectation(affectation_id, hectares, type_contrat, notes):
+    """Modifie une affectation - ✅ MODIFIÉ : Ajout type_contrat"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -330,9 +369,9 @@ def modifier_affectation(affectation_id, hectares, notes):
         
         cursor.execute("""
             UPDATE plans_recolte_affectations 
-            SET hectares_affectes = %s, notes = %s, updated_by = %s, updated_at = CURRENT_TIMESTAMP
+            SET hectares_affectes = %s, type_contrat = %s, notes = %s, updated_by = %s, updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
-        """, (hectares, notes, username, affectation_id))
+        """, (hectares, type_contrat, notes, username, affectation_id))
         
         conn.commit()
         cursor.close()
@@ -379,10 +418,11 @@ with col2:
         st.cache_data.clear()
         st.rerun()
 
-# KPIs
+# KPIs - ✅ MODIFIÉ : Ajout KPIs par type contrat
 kpis = get_kpis_suivi(campagne)
 
 if kpis:
+    # Ligne 1 : KPIs généraux
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
@@ -392,15 +432,33 @@ if kpis:
         st.metric("📝 Affectations", kpis['nb_affectations'])
     
     with col3:
-        # ✅ MODIFIÉ : Format décimal
         st.metric("🌾 Total Ha", f"{kpis['total_ha']:,.1f}")
     
     with col4:
         st.metric("🌱 Variétés", kpis['nb_varietes'])
     
     with col5:
-        # ✅ MODIFIÉ : Format décimal
         st.metric("📊 Moy./Prod.", f"{kpis['moyenne_ha']:.1f} ha")
+    
+    # ✅ NOUVEAU : Ligne 2 - KPIs par type de contrat
+    st.markdown("---")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("🌾 Ha RÉCOLTE", f"{kpis['ha_recolte']:,.1f}", help="Récupération à la récolte")
+    
+    with col2:
+        st.metric("❄️ Ha HIVER", f"{kpis['ha_hiver']:,.1f}", help="Récupération en saison")
+    
+    with col3:
+        # Pourcentage récolte
+        pct_recolte = (kpis['ha_recolte'] / kpis['total_ha'] * 100) if kpis['total_ha'] > 0 else 0
+        st.metric("📊 % Récolte", f"{pct_recolte:.0f}%")
+    
+    with col4:
+        # Pourcentage hiver
+        pct_hiver = (kpis['ha_hiver'] / kpis['total_ha'] * 100) if kpis['total_ha'] > 0 else 0
+        st.metric("📊 % Hiver", f"{pct_hiver:.0f}%")
 
 st.markdown("---")
 
@@ -437,14 +495,12 @@ with tab1:
                 "Dept": st.column_config.TextColumn("Dept", width="small"),
                 "Variétés": st.column_config.NumberColumn("Variétés", format="%d"),
                 "Affectations": st.column_config.NumberColumn("Affectations", format="%d"),
-                # ✅ MODIFIÉ : Format décimal
                 "Total Ha": st.column_config.NumberColumn("Total Ha", format="%.1f"),
             },
             use_container_width=True,
             hide_index=True
         )
         
-        # Totaux - ✅ MODIFIÉ : Format décimal
         st.markdown(f"""
         **Totaux :** {len(df_prod)} producteurs | 
         {df_prod['Affectations'].sum()} affectations | 
@@ -468,7 +524,6 @@ with tab2:
     df_cross = get_recap_par_variete_producteur(campagne)
     
     if not df_cross.empty:
-        # Pivot
         pivot = df_cross.pivot_table(
             index='Producteur',
             columns='Variété',
@@ -477,14 +532,10 @@ with tab2:
             fill_value=0
         )
         
-        # Ajouter totaux
         pivot['TOTAL'] = pivot.sum(axis=1)
         pivot.loc['TOTAL'] = pivot.sum()
-        
-        # Trier par total décroissant
         pivot = pivot.sort_values('TOTAL', ascending=False)
         
-        # ✅ MODIFIÉ : Format décimal
         st.dataframe(
             pivot.style.format("{:.1f}").background_gradient(cmap='Greens', subset=pivot.columns[:-1]),
             use_container_width=True
@@ -504,7 +555,6 @@ with tab3:
     df_mois = get_recap_par_mois_producteur(campagne)
     
     if not df_mois.empty:
-        # Pivot
         pivot = df_mois.pivot_table(
             index='Producteur',
             columns='Mois',
@@ -513,18 +563,13 @@ with tab3:
             fill_value=0
         )
         
-        # Réordonner colonnes par mois_numero
         mois_order = df_mois.drop_duplicates('Mois').sort_values('mois_numero')['Mois'].tolist()
         pivot = pivot.reindex(columns=[m for m in mois_order if m in pivot.columns])
         
-        # Ajouter totaux
         pivot['TOTAL'] = pivot.sum(axis=1)
         pivot.loc['TOTAL'] = pivot.sum()
-        
-        # Trier par total décroissant
         pivot = pivot.sort_values('TOTAL', ascending=False)
         
-        # ✅ MODIFIÉ : Format décimal
         st.dataframe(
             pivot.style.format("{:.1f}").background_gradient(cmap='Blues', subset=pivot.columns[:-1]),
             use_container_width=True
@@ -542,9 +587,21 @@ with tab4:
     producteurs = get_producteurs_liste(campagne)
     
     if producteurs:
-        # Sélecteur producteur
+        # ✅ MODIFIÉ : Mémoriser le producteur sélectionné
+        if 'selected_producteur_index' not in st.session_state:
+            st.session_state.selected_producteur_index = 0
+        
         prod_options = ["-- Sélectionner --"] + [f"{p[1]}" for p in producteurs]
-        selected_prod = st.selectbox("Producteur", prod_options, key="detail_prod")
+        selected_prod = st.selectbox(
+            "Producteur", 
+            prod_options, 
+            index=st.session_state.selected_producteur_index,
+            key="detail_prod"
+        )
+        
+        # Mémoriser l'index sélectionné
+        if selected_prod != "-- Sélectionner --":
+            st.session_state.selected_producteur_index = prod_options.index(selected_prod)
         
         if selected_prod != "-- Sélectionner --":
             prod_idx = prod_options.index(selected_prod) - 1
@@ -555,12 +612,16 @@ with tab4:
             df_detail = get_affectations_producteur(campagne, producteur_id)
             
             if not df_detail.empty:
-                # KPIs producteur - ✅ MODIFIÉ : Format décimal
+                # KPIs producteur
                 total_ha = df_detail['Hectares'].sum()
                 nb_varietes = df_detail['Variété'].nunique()
                 nb_mois = df_detail['Mois'].nunique()
                 
-                col1, col2, col3 = st.columns(3)
+                # ✅ NOUVEAU : Comptage par type contrat
+                ha_recolte_prod = df_detail[df_detail['Type Contrat'] == 'RÉCOLTE']['Hectares'].sum()
+                ha_hiver_prod = df_detail[df_detail['Type Contrat'] == 'HIVER']['Hectares'].sum()
+                
+                col1, col2, col3, col4, col5 = st.columns(5)
                 
                 with col1:
                     st.metric("🌾 Total Ha", f"{total_ha:,.1f}")
@@ -571,10 +632,16 @@ with tab4:
                 with col3:
                     st.metric("📅 Mois", nb_mois)
                 
+                with col4:
+                    st.metric("🌾 Récolte", f"{ha_recolte_prod:,.1f} ha")
+                
+                with col5:
+                    st.metric("❄️ Hiver", f"{ha_hiver_prod:,.1f} ha")
+                
                 st.markdown("---")
                 
                 # ==========================================
-                # AFFICHAGE AVEC ÉDITION
+                # AFFICHAGE AVEC ÉDITION - ✅ MODIFIÉ
                 # ==========================================
                 
                 st.markdown("#### 📝 Affectations")
@@ -583,28 +650,37 @@ with tab4:
                     st.info("💡 Cliquez sur ✏️ pour modifier ou 🗑️ pour supprimer une affectation")
                 
                 for idx, row in df_detail.iterrows():
-                    col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 0.5, 0.5])
+                    # ✅ MODIFIÉ : Nouvelle disposition avec type contrat
+                    col1, col2, col3, col4, col5, col6 = st.columns([1, 2.5, 1.2, 1.3, 0.5, 0.5])
                     
+                    # Badge type contrat
                     with col1:
+                        if row['Type Contrat'] == 'HIVER':
+                            st.markdown(f'<span class="badge-hiver">❄️ HIVER</span>', unsafe_allow_html=True)
+                        else:
+                            st.markdown(f'<span class="badge-recolte">🌾 RÉCOLTE</span>', unsafe_allow_html=True)
+                    
+                    with col2:
                         st.markdown(f"**{row['Variété']}** - {row['Mois']}")
                         if row['Notes']:
                             st.caption(f"📝 {row['Notes']}")
                     
-                    with col2:
-                        # ✅ MODIFIÉ : Format décimal
-                        st.metric("Ha", f"{row['Hectares']:.1f}", label_visibility="collapsed")
-                    
+                    # ✅ MODIFIÉ : Hectares plus gros
                     with col3:
-                        if row['Ha Besoin Total']:
-                            st.caption(f"Besoin: {row['Ha Besoin Total']:.1f} ha")
+                        st.markdown(f'<span class="big-hectares">{row["Hectares"]:.1f}</span>', unsafe_allow_html=True)
                     
+                    # ✅ MODIFIÉ : Besoin plus visible
                     with col4:
+                        if row['Ha Besoin Total']:
+                            st.markdown(f'<span class="besoin-label">Besoin: <b>{row["Ha Besoin Total"]:.1f}</b> ha</span>', unsafe_allow_html=True)
+                    
+                    with col5:
                         if CAN_EDIT:
                             if st.button("✏️", key=f"edit16_{row['id']}", help="Modifier"):
                                 st.session_state[f'editing16_{row["id"]}'] = True
                                 st.rerun()
                     
-                    with col5:
+                    with col6:
                         if CAN_DELETE:
                             if st.button("🗑️", key=f"del16_{row['id']}", help="Supprimer"):
                                 success, msg = supprimer_affectation(row['id'])
@@ -618,10 +694,9 @@ with tab4:
                     if st.session_state.get(f'editing16_{row["id"]}', False):
                         with st.container():
                             st.markdown("---")
-                            col1, col2 = st.columns(2)
+                            col1, col2, col3 = st.columns(3)
                             
                             with col1:
-                                # ✅ MODIFIÉ : Décimaux par pas de 0.5
                                 new_ha = st.number_input(
                                     "Hectares",
                                     min_value=0.5,
@@ -632,6 +707,17 @@ with tab4:
                                 )
                             
                             with col2:
+                                # ✅ NOUVEAU : Dropdown type contrat
+                                type_options = ['RÉCOLTE', 'HIVER']
+                                current_type = row['Type Contrat'] if row['Type Contrat'] in type_options else 'RÉCOLTE'
+                                new_type = st.selectbox(
+                                    "Type Contrat",
+                                    options=type_options,
+                                    index=type_options.index(current_type),
+                                    key=f"edit16_type_{row['id']}"
+                                )
+                            
+                            with col3:
                                 new_notes = st.text_input(
                                     "Notes",
                                     value=row['Notes'] or "",
@@ -642,10 +728,12 @@ with tab4:
                             
                             with col1:
                                 if st.button("💾 Enregistrer", key=f"save16_edit_{row['id']}", type="primary"):
-                                    success, msg = modifier_affectation(row['id'], new_ha, new_notes)
+                                    # ✅ MODIFIÉ : Passer type_contrat
+                                    success, msg = modifier_affectation(row['id'], new_ha, new_type, new_notes)
                                     if success:
                                         st.success(msg)
                                         st.session_state.pop(f'editing16_{row["id"]}', None)
+                                        # ✅ NOUVEAU : Ne pas changer d'onglet - rerun reste sur le même onglet
                                         st.rerun()
                                     else:
                                         st.error(msg)
@@ -668,6 +756,17 @@ with tab4:
                 recap_var = recap_var.sort_values('Hectares', ascending=False)
                 
                 st.bar_chart(recap_var.set_index('Variété'))
+                
+                # ✅ NOUVEAU : Récap par type contrat
+                st.markdown("#### 📊 Récap par Type Contrat")
+                recap_type = df_detail.groupby('Type Contrat')['Hectares'].sum().reset_index()
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.bar_chart(recap_type.set_index('Type Contrat'))
+                with col2:
+                    st.dataframe(recap_type, hide_index=True)
+                
             else:
                 st.info(f"Aucune affectation pour {producteur_nom}")
     else:
@@ -683,7 +782,6 @@ st.subheader("📤 Exports")
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    # Export Excel complet
     if st.button("📥 Export Excel complet", use_container_width=True):
         try:
             buffer = io.BytesIO()
@@ -719,7 +817,6 @@ with col1:
             st.error(f"Erreur export : {e}")
 
 with col2:
-    # Export CSV producteurs
     df_prod = get_recap_par_producteur(campagne)
     if not df_prod.empty:
         csv = df_prod.to_csv(index=False).encode('utf-8')
@@ -732,7 +829,6 @@ with col2:
         )
 
 with col3:
-    # Lien retour affectations
     st.markdown("""
     <a href="/Affectation_Producteurs" target="_self">
         <button style="width:100%; padding:0.5rem; cursor:pointer;">
