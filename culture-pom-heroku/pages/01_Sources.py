@@ -5,7 +5,7 @@ from datetime import datetime
 import time
 from database import get_connection
 from components import show_footer
-from auth import is_authenticated
+from auth import require_access  # ✅ MODIFIÉ
 import io
 import streamlit.components.v1 as components
 
@@ -60,7 +60,7 @@ st.markdown("""
     [data-testid="stMetricValue"] {
         font-size: 1.4rem !important;
     }
-    
+
     [data-testid="metric-container"] {
         padding: 0.3rem !important;
     }
@@ -90,27 +90,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-if not is_authenticated():
-    st.warning("⚠️ Veuillez vous connecter pour accéder à cette page")
-    st.stop()
-
-# ============================================================
-# 🔒 BLOCAGE ACCÈS COMPTEUR
-# ============================================================
-from auth.roles import is_compteur
-
-if is_compteur():
-    st.markdown("""
-    <div style="display: flex; justify-content: center; align-items: center; height: 60vh;">
-        <div style="text-align: center; padding: 3rem; background-color: #fee2e2; border-radius: 1rem; border: 2px solid #dc2626;">
-            <h1 style="color: #dc2626; margin-bottom: 1rem;">🚫 Accès Refusé</h1>
-            <p style="font-size: 1.2rem; color: #333;">Désolé, vous n'avez pas accès à cette ressource.</p>
-            <p style="color: #666; margin-top: 1rem;">Votre compte est limité à la page <strong>Inventaire</strong>.</p>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.stop()
-# ============================================================
+# ✅ CONTRÔLE D'ACCÈS SIMPLIFIÉ - UNE SEULE LIGNE !
+require_access("REFERENTIELS")
 
 # ⭐ Afficher bloc utilisateur dans sidebar
 show_user_info()
