@@ -58,6 +58,28 @@ st.markdown("""
         font-size: 0.85rem;
         font-weight: bold;
     }
+    /* ✅ NOUVEAU : Style pour radio horizontal comme onglets */
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] > div > div > div > div[role="radiogroup"] {
+        gap: 0 !important;
+    }
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] > div > div > div > div[role="radiogroup"] > label {
+        background-color: #f0f2f6;
+        padding: 0.5rem 1rem;
+        border: 1px solid #ddd;
+        margin: 0 !important;
+        cursor: pointer;
+    }
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] > div > div > div > div[role="radiogroup"] > label:first-child {
+        border-radius: 0.5rem 0 0 0.5rem;
+    }
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] > div > div > div > div[role="radiogroup"] > label:last-child {
+        border-radius: 0 0.5rem 0.5rem 0;
+    }
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] > div > div > div > div[role="radiogroup"] > label[data-checked="true"] {
+        background-color: #4CAF50;
+        color: white;
+        border-color: #4CAF50;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -463,21 +485,43 @@ if kpis:
 st.markdown("---")
 
 # ==========================================
-# ONGLETS
+# ONGLETS - ✅ CORRIGÉ : st.radio au lieu de st.tabs pour conserver l'état
 # ==========================================
 
-tab1, tab2, tab3, tab4 = st.tabs([
-    "👨‍🌾 Par Producteur",
-    "🌱 Producteur × Variété",
-    "📅 Producteur × Mois",
-    "📋 Détail Producteur"
-])
+# Initialiser l'onglet actif dans session_state
+if 'onglet_actif_16' not in st.session_state:
+    st.session_state.onglet_actif_16 = "👨‍🌾 Par Producteur"
+
+# Radio horizontal qui ressemble à des onglets
+onglet_selectionne = st.radio(
+    "Navigation",
+    options=[
+        "👨‍🌾 Par Producteur",
+        "🌱 Producteur × Variété",
+        "📅 Producteur × Mois",
+        "📋 Détail Producteur"
+    ],
+    index=[
+        "👨‍🌾 Par Producteur",
+        "🌱 Producteur × Variété",
+        "📅 Producteur × Mois",
+        "📋 Détail Producteur"
+    ].index(st.session_state.onglet_actif_16),
+    horizontal=True,
+    key="nav_onglets_16",
+    label_visibility="collapsed"
+)
+
+# Mémoriser l'onglet sélectionné
+st.session_state.onglet_actif_16 = onglet_selectionne
+
+st.markdown("---")
 
 # ==========================================
 # TAB 1 : RÉCAP PAR PRODUCTEUR
 # ==========================================
 
-with tab1:
+if onglet_selectionne == "👨‍🌾 Par Producteur":
     st.subheader("👨‍🌾 Récap par Producteur")
     
     df_prod = get_recap_par_producteur(campagne)
@@ -518,7 +562,7 @@ with tab1:
 # TAB 2 : PRODUCTEUR × VARIÉTÉ
 # ==========================================
 
-with tab2:
+elif onglet_selectionne == "🌱 Producteur × Variété":
     st.subheader("🌱 Tableau Producteur × Variété")
     
     df_cross = get_recap_par_variete_producteur(campagne)
@@ -549,7 +593,7 @@ with tab2:
 # TAB 3 : PRODUCTEUR × MOIS
 # ==========================================
 
-with tab3:
+elif onglet_selectionne == "📅 Producteur × Mois":
     st.subheader("📅 Tableau Producteur × Mois")
     
     df_mois = get_recap_par_mois_producteur(campagne)
@@ -581,7 +625,7 @@ with tab3:
 # TAB 4 : DÉTAIL PRODUCTEUR (AVEC ÉDITION)
 # ==========================================
 
-with tab4:
+elif onglet_selectionne == "📋 Détail Producteur":
     st.subheader("📋 Détail par Producteur")
     
     producteurs = get_producteurs_liste(campagne)
@@ -678,6 +722,7 @@ with tab4:
                         if CAN_EDIT:
                             if st.button("✏️", key=f"edit16_{row['id']}", help="Modifier"):
                                 st.session_state[f'editing16_{row["id"]}'] = True
+                                st.session_state.onglet_actif_16 = "📋 Détail Producteur"  # ✅ FORCER ONGLET
                                 st.rerun()
                     
                     with col6:
@@ -686,6 +731,7 @@ with tab4:
                                 success, msg = supprimer_affectation(row['id'])
                                 if success:
                                     st.success(msg)
+                                    st.session_state.onglet_actif_16 = "📋 Détail Producteur"  # ✅ FORCER ONGLET
                                     st.rerun()
                                 else:
                                     st.error(msg)
@@ -733,7 +779,7 @@ with tab4:
                                     if success:
                                         st.success(msg)
                                         st.session_state.pop(f'editing16_{row["id"]}', None)
-                                        # ✅ NOUVEAU : Ne pas changer d'onglet - rerun reste sur le même onglet
+                                        st.session_state.onglet_actif_16 = "📋 Détail Producteur"  # ✅ FORCER ONGLET
                                         st.rerun()
                                     else:
                                         st.error(msg)
@@ -741,6 +787,7 @@ with tab4:
                             with col2:
                                 if st.button("❌ Annuler", key=f"cancel16_edit_{row['id']}"):
                                     st.session_state.pop(f'editing16_{row["id"]}', None)
+                                    st.session_state.onglet_actif_16 = "📋 Détail Producteur"  # ✅ FORCER ONGLET
                                     st.rerun()
                             
                             st.markdown("---")
