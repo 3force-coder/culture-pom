@@ -1,7 +1,7 @@
 """
 Page 14 - Récaps Plan Récolte
 KPIs globaux + 5 vues agrégées (Mois, Variété, Marque, Type, Croisé)
-VERSION CORRIGÉE - Accès par nom de colonne (RealDictCursor)
+VERSION DÉCIMAUX - Support hectares par pas de 0.5
 """
 import streamlit as st
 import pandas as pd
@@ -68,6 +68,7 @@ def get_kpis_globaux(campagne):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ✅ MODIFIÉ : ROUND au lieu de CEIL pour décimaux
         cursor.execute("""
             SELECT 
                 COUNT(*) as nb_lignes,
@@ -77,7 +78,7 @@ def get_kpis_globaux(campagne):
                 COALESCE(SUM(volume_net_t), 0) as total_volume_net,
                 COALESCE(SUM(volume_brut_t), 0) as total_volume_brut,
                 COALESCE(SUM(hectares_necessaires), 0) as total_hectares,
-                COALESCE(CEIL(SUM(hectares_necessaires)), 0) as total_hectares_arrondi
+                COALESCE(ROUND(SUM(hectares_necessaires)::NUMERIC, 1), 0) as total_hectares_arrondi
             FROM plans_recolte
             WHERE campagne = %s AND is_active = TRUE
         """, (campagne,))
@@ -87,7 +88,7 @@ def get_kpis_globaux(campagne):
         conn.close()
         
         if row:
-            # ✅ Accès par nom de colonne (RealDictCursor)
+            # ✅ MODIFIÉ : float au lieu de int pour décimaux
             return {
                 'nb_lignes': row['nb_lignes'],
                 'nb_varietes': row['nb_varietes'],
@@ -96,7 +97,7 @@ def get_kpis_globaux(campagne):
                 'total_volume_net': float(row['total_volume_net']),
                 'total_volume_brut': float(row['total_volume_brut']),
                 'total_hectares': float(row['total_hectares']),
-                'total_hectares_arrondi': int(row['total_hectares_arrondi'])
+                'total_hectares_arrondi': float(row['total_hectares_arrondi'])
             }
         return None
     except Exception as e:
@@ -111,6 +112,7 @@ def get_recap_par_mois(campagne):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ✅ MODIFIÉ : ROUND au lieu de CEIL
         cursor.execute("""
             SELECT 
                 mois,
@@ -120,7 +122,7 @@ def get_recap_par_mois(campagne):
                 SUM(volume_net_t) as volume_net,
                 SUM(volume_brut_t) as volume_brut,
                 SUM(hectares_necessaires) as hectares,
-                CEIL(SUM(hectares_necessaires)) as hectares_arrondi
+                ROUND(SUM(hectares_necessaires)::NUMERIC, 1) as hectares_arrondi
             FROM plans_recolte
             WHERE campagne = %s AND is_active = TRUE
             GROUP BY mois, mois_numero
@@ -132,7 +134,6 @@ def get_recap_par_mois(campagne):
         conn.close()
         
         if rows:
-            # ✅ Création DataFrame depuis dictionnaires + renommage
             df = pd.DataFrame(rows)
             df = df.rename(columns={
                 'mois': 'Mois',
@@ -157,6 +158,7 @@ def get_recap_par_variete(campagne):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ✅ MODIFIÉ : ROUND au lieu de CEIL
         cursor.execute("""
             SELECT 
                 variete,
@@ -165,7 +167,7 @@ def get_recap_par_variete(campagne):
                 SUM(volume_net_t) as volume_net,
                 SUM(volume_brut_t) as volume_brut,
                 SUM(hectares_necessaires) as hectares,
-                CEIL(SUM(hectares_necessaires)) as hectares_arrondi
+                ROUND(SUM(hectares_necessaires)::NUMERIC, 1) as hectares_arrondi
             FROM plans_recolte
             WHERE campagne = %s AND is_active = TRUE
             GROUP BY variete
@@ -201,6 +203,7 @@ def get_recap_par_marque(campagne):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ✅ MODIFIÉ : ROUND au lieu de CEIL
         cursor.execute("""
             SELECT 
                 COALESCE(marque, '(Non défini)') as marque,
@@ -209,7 +212,7 @@ def get_recap_par_marque(campagne):
                 SUM(volume_net_t) as volume_net,
                 SUM(volume_brut_t) as volume_brut,
                 SUM(hectares_necessaires) as hectares,
-                CEIL(SUM(hectares_necessaires)) as hectares_arrondi
+                ROUND(SUM(hectares_necessaires)::NUMERIC, 1) as hectares_arrondi
             FROM plans_recolte
             WHERE campagne = %s AND is_active = TRUE
             GROUP BY marque
@@ -245,6 +248,7 @@ def get_recap_par_type(campagne):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ✅ MODIFIÉ : ROUND au lieu de CEIL
         cursor.execute("""
             SELECT 
                 COALESCE(type_produit, '(Non défini)') as type_produit,
@@ -253,7 +257,7 @@ def get_recap_par_type(campagne):
                 SUM(volume_net_t) as volume_net,
                 SUM(volume_brut_t) as volume_brut,
                 SUM(hectares_necessaires) as hectares,
-                CEIL(SUM(hectares_necessaires)) as hectares_arrondi
+                ROUND(SUM(hectares_necessaires)::NUMERIC, 1) as hectares_arrondi
             FROM plans_recolte
             WHERE campagne = %s AND is_active = TRUE
             GROUP BY type_produit
@@ -328,7 +332,6 @@ def get_besoins_avec_couverture(campagne):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ✅ CORRIGÉ : Nom de table plans_recolte_besoins (pas besoins_recolte)
         cursor.execute("""
             SELECT 
                 b.id,
@@ -338,7 +341,7 @@ def get_besoins_avec_couverture(campagne):
                 b.volume_net_t,
                 b.volume_brut_t,
                 b.total_hectares_arrondi as hectares_besoin,
-                COALESCE(b.hectares_affectes, 0) as hectares_affectes,
+                COALESCE(b.total_hectares_affectes, 0) as hectares_affectes,
                 COALESCE(b.taux_couverture_pct, 0) as couverture_pct,
                 COALESCE(b.is_complet, FALSE) as complet
             FROM plans_recolte_besoins b
@@ -435,7 +438,8 @@ if kpis:
         st.metric("📦 Volume Net", f"{kpis['total_volume_net']:,.0f} T")
     
     with col4:
-        st.metric("🚜 Hectares", f"{kpis['total_hectares_arrondi']:,} ha")
+        # ✅ MODIFIÉ : Affichage avec 1 décimale
+        st.metric("🚜 Hectares", f"{kpis['total_hectares_arrondi']:,.1f} ha")
     
     # Ligne 2
     col1, col2, col3, col4 = st.columns(4)
@@ -492,7 +496,8 @@ with tab1:
                 "Volume Net (T)": st.column_config.NumberColumn("Volume Net (T)", format="%.1f"),
                 "Volume Brut (T)": st.column_config.NumberColumn("Volume Brut (T)", format="%.1f"),
                 "Hectares": st.column_config.NumberColumn("Hectares", format="%.1f"),
-                "Ha Arrondi": st.column_config.NumberColumn("Ha Arrondi", format="%d"),
+                # ✅ MODIFIÉ : Format décimal au lieu d'entier
+                "Ha Arrondi": st.column_config.NumberColumn("Ha Arrondi", format="%.1f"),
             },
             use_container_width=True,
             hide_index=True
@@ -524,7 +529,8 @@ with tab2:
                 "Volume Net (T)": st.column_config.NumberColumn("Volume Net (T)", format="%.1f"),
                 "Volume Brut (T)": st.column_config.NumberColumn("Volume Brut (T)", format="%.1f"),
                 "Hectares": st.column_config.NumberColumn("Hectares", format="%.1f"),
-                "Ha Arrondi": st.column_config.NumberColumn("Ha Arrondi", format="%d"),
+                # ✅ MODIFIÉ : Format décimal
+                "Ha Arrondi": st.column_config.NumberColumn("Ha Arrondi", format="%.1f"),
             },
             use_container_width=True,
             hide_index=True
@@ -556,7 +562,8 @@ with tab3:
                 "Volume Net (T)": st.column_config.NumberColumn("Volume Net (T)", format="%.1f"),
                 "Volume Brut (T)": st.column_config.NumberColumn("Volume Brut (T)", format="%.1f"),
                 "Hectares": st.column_config.NumberColumn("Hectares", format="%.1f"),
-                "Ha Arrondi": st.column_config.NumberColumn("Ha Arrondi", format="%d"),
+                # ✅ MODIFIÉ : Format décimal
+                "Ha Arrondi": st.column_config.NumberColumn("Ha Arrondi", format="%.1f"),
             },
             use_container_width=True,
             hide_index=True
@@ -588,7 +595,8 @@ with tab4:
                 "Volume Net (T)": st.column_config.NumberColumn("Volume Net (T)", format="%.1f"),
                 "Volume Brut (T)": st.column_config.NumberColumn("Volume Brut (T)", format="%.1f"),
                 "Hectares": st.column_config.NumberColumn("Hectares", format="%.1f"),
-                "Ha Arrondi": st.column_config.NumberColumn("Ha Arrondi", format="%d"),
+                # ✅ MODIFIÉ : Format décimal
+                "Ha Arrondi": st.column_config.NumberColumn("Ha Arrondi", format="%.1f"),
             },
             use_container_width=True,
             hide_index=True
@@ -639,9 +647,9 @@ with tab5:
         # Ajouter total par mois
         pivot.loc['TOTAL'] = pivot.sum()
         
-        # Afficher
+        # ✅ MODIFIÉ : Format décimal au lieu d'entier
         st.dataframe(
-            pivot.style.format("{:.0f}").background_gradient(cmap='YlOrRd', subset=pivot.columns[:-1]),
+            pivot.style.format("{:.1f}").background_gradient(cmap='YlOrRd', subset=pivot.columns[:-1]),
             use_container_width=True
         )
         
@@ -666,20 +674,29 @@ with tab6:
         nb_complets = df_besoins['Complet'].sum()
         nb_total = len(df_besoins)
         
+        # ✅ MODIFIÉ : Calcul reste
+        reste_total = total_besoin - total_affecte
+        
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             st.metric("🎯 Besoins", f"{nb_total}")
         
         with col2:
-            st.metric("🌾 Ha à affecter", f"{total_besoin:,.0f}")
+            # ✅ MODIFIÉ : Format décimal
+            st.metric("🌾 Ha à affecter", f"{total_besoin:,.1f}")
         
         with col3:
-            st.metric("✅ Ha affectés", f"{total_affecte:,.0f}")
+            # ✅ MODIFIÉ : Format décimal
+            st.metric("✅ Ha affectés", f"{total_affecte:,.1f}")
         
         with col4:
             taux_global = (total_affecte / total_besoin * 100) if total_besoin > 0 else 0
             st.metric("📊 Couverture globale", f"{taux_global:.1f} %")
+        
+        # ✅ AJOUT : Affichage reste à affecter
+        if reste_total > 0:
+            st.markdown(f"⏳ **Reste à affecter : {reste_total:,.1f} ha**")
         
         st.markdown("---")
         
@@ -723,8 +740,9 @@ with tab6:
                 "Mois": st.column_config.TextColumn("Mois", width="small"),
                 "Volume Net (T)": st.column_config.NumberColumn("Vol. Net (T)", format="%.1f"),
                 "Volume Brut (T)": st.column_config.NumberColumn("Vol. Brut (T)", format="%.1f"),
-                "Ha Besoin": st.column_config.NumberColumn("Ha Besoin", format="%d"),
-                "Ha Affectés": st.column_config.NumberColumn("Ha Affectés", format="%d"),
+                # ✅ MODIFIÉ : Format décimal
+                "Ha Besoin": st.column_config.NumberColumn("Ha Besoin", format="%.1f"),
+                "Ha Affectés": st.column_config.NumberColumn("Ha Affectés", format="%.1f"),
                 "Couverture %": st.column_config.NumberColumn("Couverture %", format="%.1f"),
                 "Complet": st.column_config.CheckboxColumn("Complet"),
             },
