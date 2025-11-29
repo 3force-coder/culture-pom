@@ -408,7 +408,7 @@ def display_taches_list(statut_filter):
     df_display['Échéance'] = df_display['date_echeance'].apply(
         lambda x: x.strftime('%d/%m/%Y') if pd.notna(x) else '-'
     )
-    df_display['Source'] = df_display['source_type'].apply(lambda x: x if pd.notna(x) else '-')
+    df_display['Source'] = df_display['source_label'].apply(lambda x: x if pd.notna(x) else '-')
     
     # Tableau avec sélection
     event = st.dataframe(
