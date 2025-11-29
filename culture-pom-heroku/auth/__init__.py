@@ -28,7 +28,9 @@ from .permissions import (
     get_role_niveau,
     can_manage_users,
     get_manageable_roles,
-    get_accessible_page_groups
+    get_accessible_page_groups,
+    get_page_group_icon,  # ⭐ AJOUTÉ pour module Tâches
+    PAGE_GROUP_ICONS      # ⭐ AJOUTÉ - dictionnaire des icônes
 )
 
 # ============================================================
@@ -141,7 +143,8 @@ def has_permission(permission):
         'inventaire': 'INVENTAIRE',
         'stock': 'STOCK',
         'production': 'PRODUCTION',
-        'commercial': 'COMMERCIAL'
+        'commercial': 'COMMERCIAL',
+        'taches': 'TACHES'  # ⭐ AJOUTÉ
     }
     
     group_code = mapping.get(permission, permission.upper())
@@ -312,6 +315,8 @@ __all__ = [
     'can_manage_users',
     'get_manageable_roles',
     'get_accessible_page_groups',
+    'get_page_group_icon',   # ⭐ AJOUTÉ
+    'PAGE_GROUP_ICONS',      # ⭐ AJOUTÉ
     
     # Session utilisateur
     'get_current_user_id',
