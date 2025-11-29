@@ -9,7 +9,7 @@ import pandas as pd
 from datetime import datetime, date
 from database import get_connection
 from components import show_footer
-from auth import is_authenticated, has_access, is_compteur_only
+from auth import require_access
 import io
 
 st.set_page_config(page_title="Inventaire - Culture Pom", page_icon="📦", layout="wide")
@@ -21,23 +21,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ============================================================
-# SÉCURITÉ
-# ============================================================
-
-if not is_authenticated():
-    st.warning("⚠️ Veuillez vous connecter")
-    st.stop()
-
-if not has_access("INVENTAIRE"):
-    st.error("❌ Vous n'avez pas accès à cette page")
-    st.stop()
-
-# COMPTEUR redirigé (seulement rôle COMPTEUR pur, pas les admins)
-if is_compteur_only():
-    st.warning("📱 **Mode Compteur** - Accédez à la page **Saisie Inventaire**")
-    st.info("👉 Menu latéral → **12 - Saisie Inventaire**")
-    st.stop()
+require_access("INVENTAIRE")
 
 st.title("📋 Gestion des Inventaires")
 st.markdown("*Création, validation et historique*")
