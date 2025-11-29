@@ -13,35 +13,17 @@ st.set_page_config(
 # ============================================================
 
 if not is_authenticated():
-    # CSS pour masquer complètement la sidebar sur la page de login
     st.markdown("""
     <style>
-        [data-testid="stSidebar"] {
-            display: none !important;
-        }
-        [data-testid="stSidebarCollapsedControl"] {
-            display: none !important;
-        }
-        .stApp > header {
-            display: none !important;
-        }
-        /* Centrer le contenu */
-        .main .block-container {
-            max-width: 500px;
-            padding-top: 5rem;
-        }
+        [data-testid="stSidebar"] { display: none !important; }
+        [data-testid="stSidebarCollapsedControl"] { display: none !important; }
+        .stApp > header { display: none !important; }
+        .main .block-container { max-width: 500px; padding-top: 5rem; }
     </style>
     """, unsafe_allow_html=True)
     
     show_login()
     st.stop()
-
-# ============================================================
-# UTILISATEUR CONNECTÉ - AFFICHER LOGO ET SIDEBAR
-# ============================================================
-
-# Logo TOUT EN HAUT de la sidebar
-st.logo('https://i.imgur.com/kuLXrHZ.png')
 
 # ============================================================
 # FONCTION COMPTEUR TÂCHES
@@ -54,7 +36,6 @@ def get_taches_sidebar_count():
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Tâches urgentes
         cursor.execute("""
             SELECT COUNT(*) as cnt FROM taches 
             WHERE statut IN ('À faire', 'En cours') 
@@ -63,7 +44,6 @@ def get_taches_sidebar_count():
         """)
         urgentes = cursor.fetchone()['cnt']
         
-        # Tâches ouvertes (non terminées)
         cursor.execute("""
             SELECT COUNT(*) as cnt FROM taches 
             WHERE statut IN ('À faire', 'En cours') 
@@ -79,42 +59,116 @@ def get_taches_sidebar_count():
         return 0, 0
 
 # ============================================================
-# SIDEBAR - ALERTE TÂCHES EN HAUT + INFOS UTILISATEUR
+# ⭐ ALERTE TÂCHES - BANDEAU FIXE EN HAUT VIA CSS
 # ============================================================
 
-with st.sidebar:
-    # ⭐ ALERTE TÂCHES TOUT EN HAUT (avec lien cliquable)
-    try:
-        urgentes, ouvertes = get_taches_sidebar_count()
-        if urgentes > 0:
-            st.error(f"🔴 {urgentes} tâche(s) urgente(s)")
-            if st.button("📋 Voir les tâches", key="btn_taches_urgentes", use_container_width=True, type="primary"):
-                st.switch_page("pages/17_Taches.py")
-        elif ouvertes > 0:
-            st.warning(f"📋 {ouvertes} tâche(s) ouverte(s)")
-            if st.button("📋 Voir les tâches", key="btn_taches_ouvertes", use_container_width=True):
-                st.switch_page("pages/17_Taches.py")
-        else:
-            st.success("✅ Aucune tâche en attente")
-    except:
-        pass  # Silencieux si tables pas encore créées
+try:
+    urgentes, ouvertes = get_taches_sidebar_count()
     
-    st.markdown("---")
-    
-    # Infos utilisateur
-    st.write(f"👤 {st.session_state.get('name', 'Utilisateur')}")
-    st.caption(f"📧 {st.session_state.get('email', '')}")
-    st.caption(f"🔑 {st.session_state.get('role_libelle', st.session_state.get('role', 'USER'))}")
-    st.markdown("---")
-    
-    # Bouton déconnexion
-    if st.button("🚪 Déconnexion", use_container_width=True):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.rerun()
+    if urgentes > 0:
+        # Bandeau ROUGE urgent
+        st.markdown(f"""
+        <style>
+            [data-testid="stSidebar"] > div:first-child {{
+                padding-top: 70px !important;
+            }}
+            .taches-alert {{
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: var(--sidebar-width, 300px);
+                z-index: 999999;
+                background: #ffcdd2;
+                border-bottom: 2px solid #f44336;
+                padding: 12px 16px;
+                text-align: center;
+                font-weight: bold;
+                color: #b71c1c;
+            }}
+            .taches-alert a {{
+                color: #b71c1c;
+                text-decoration: none;
+            }}
+            .taches-alert a:hover {{
+                text-decoration: underline;
+            }}
+        </style>
+        <div class="taches-alert">
+            🔴 {urgentes} tâche(s) urgente(s)<br>
+            <a href="/Tâches" target="_self">📋 Voir les tâches</a>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    elif ouvertes > 0:
+        # Bandeau ORANGE warning
+        st.markdown(f"""
+        <style>
+            [data-testid="stSidebar"] > div:first-child {{
+                padding-top: 70px !important;
+            }}
+            .taches-alert {{
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: var(--sidebar-width, 300px);
+                z-index: 999999;
+                background: #fff3e0;
+                border-bottom: 2px solid #ff9800;
+                padding: 12px 16px;
+                text-align: center;
+                font-weight: bold;
+                color: #e65100;
+            }}
+            .taches-alert a {{
+                color: #e65100;
+                text-decoration: none;
+            }}
+            .taches-alert a:hover {{
+                text-decoration: underline;
+            }}
+        </style>
+        <div class="taches-alert">
+            📋 {ouvertes} tâche(s) en attente<br>
+            <a href="/Tâches" target="_self">Voir les tâches</a>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    else:
+        # Bandeau VERT ok
+        st.markdown("""
+        <style>
+            [data-testid="stSidebar"] > div:first-child {
+                padding-top: 55px !important;
+            }
+            .taches-alert {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: var(--sidebar-width, 300px);
+                z-index: 999999;
+                background: #e8f5e9;
+                border-bottom: 2px solid #4caf50;
+                padding: 10px 16px;
+                text-align: center;
+                font-weight: bold;
+                color: #2e7d32;
+            }
+        </style>
+        <div class="taches-alert">
+            ✅ Aucune tâche en attente
+        </div>
+        """, unsafe_allow_html=True)
+except:
+    pass
 
 # ============================================================
-# DÉFINITION DES PAGES - NOMS EXACTS DES FICHIERS
+# LOGO
+# ============================================================
+
+st.logo('https://i.imgur.com/kuLXrHZ.png')
+
+# ============================================================
+# DÉFINITION DES PAGES
 # ============================================================
 
 pages = {
@@ -164,4 +218,25 @@ pages = {
 # ============================================================
 
 pg = st.navigation(pages)
+
+# ============================================================
+# SIDEBAR - INFOS UTILISATEUR (EN BAS)
+# ============================================================
+
+with st.sidebar:
+    st.markdown("---")
+    st.write(f"👤 {st.session_state.get('name', 'Utilisateur')}")
+    st.caption(f"📧 {st.session_state.get('email', '')}")
+    st.caption(f"🔑 {st.session_state.get('role_libelle', st.session_state.get('role', 'USER'))}")
+    st.markdown("---")
+    
+    if st.button("🚪 Déconnexion", use_container_width=True):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+
+# ============================================================
+# EXÉCUTION DE LA PAGE
+# ============================================================
+
 pg.run()
