@@ -5,7 +5,7 @@ from datetime import datetime
 import time
 from database import get_connection
 from components import show_footer
-from auth import is_authenticated, has_access, can_edit, can_delete, get_current_username
+from auth import require_access, can_edit, can_delete, get_current_username
 import io
 
 st.set_page_config(page_title="Plan Récolte - Culture Pom", page_icon="🌾", layout="wide")
@@ -41,15 +41,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Vérification authentification
-if not is_authenticated():
-    st.warning("⚠️ Veuillez vous connecter pour accéder à cette page")
-    st.stop()
-
-# Vérification permissions
-if not has_access("PLANS_RECOLTE"):
-    st.error("🚫 Vous n'avez pas accès à cette page")
-    st.stop()
+# Vérification authentification et permissions RBAC
+require_access("PLANS_RECOLTE")
 
 # Permissions utilisateur
 CAN_EDIT = can_edit("PLANS_RECOLTE")
