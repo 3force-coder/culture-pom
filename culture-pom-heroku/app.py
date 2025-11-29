@@ -79,28 +79,33 @@ def get_taches_sidebar_count():
         return 0, 0
 
 # ============================================================
-# SIDEBAR - INFOS UTILISATEUR + COMPTEUR TÂCHES
+# SIDEBAR - ALERTE TÂCHES EN HAUT + INFOS UTILISATEUR
 # ============================================================
 
 with st.sidebar:
-    st.markdown("---")
-    st.write(f"👤 {st.session_state.get('name', 'Utilisateur')}")
-    st.caption(f"📧 {st.session_state.get('email', '')}")
-    st.caption(f"🔑 {st.session_state.get('role_libelle', st.session_state.get('role', 'USER'))}")
-    st.markdown("---")
-    
-    # ⭐ COMPTEUR TÂCHES
+    # ⭐ ALERTE TÂCHES TOUT EN HAUT (avec lien cliquable)
     try:
         urgentes, ouvertes = get_taches_sidebar_count()
         if urgentes > 0:
             st.error(f"🔴 {urgentes} tâche(s) urgente(s)")
+            if st.button("📋 Voir les tâches", key="btn_taches_urgentes", use_container_width=True, type="primary"):
+                st.switch_page("pages/17_Taches.py")
         elif ouvertes > 0:
             st.warning(f"📋 {ouvertes} tâche(s) ouverte(s)")
+            if st.button("📋 Voir les tâches", key="btn_taches_ouvertes", use_container_width=True):
+                st.switch_page("pages/17_Taches.py")
         else:
             st.success("✅ Aucune tâche en attente")
-        st.markdown("---")
     except:
         pass  # Silencieux si tables pas encore créées
+    
+    st.markdown("---")
+    
+    # Infos utilisateur
+    st.write(f"👤 {st.session_state.get('name', 'Utilisateur')}")
+    st.caption(f"📧 {st.session_state.get('email', '')}")
+    st.caption(f"🔑 {st.session_state.get('role_libelle', st.session_state.get('role', 'USER'))}")
+    st.markdown("---")
     
     # Bouton déconnexion
     if st.button("🚪 Déconnexion", use_container_width=True):
