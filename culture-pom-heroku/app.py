@@ -98,6 +98,9 @@ pages = {
         st.Page("pages/15_Affectation_Producteurs.py", title="Affectation Producteurs", icon="👨‍🌾"),
         st.Page("pages/16_Suivi_Affectations.py", title="Suivi Affectations", icon="📋"),
     ],
+    "✅ Tâches": [
+        st.Page("pages/17_Taches.py", title="Tâches", icon="📋"),
+    ],
     "🔧 Admin": [
         st.Page("pages/99_Admin_Users.py", title="Admin Users", icon="👥"),
     ],
