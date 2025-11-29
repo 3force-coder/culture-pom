@@ -704,8 +704,8 @@ with tab1:
                 axis=1
             )
             
-            # Affichage avec tooltips améliorés (avec % Lavé)
-            st.dataframe(
+            # Affichage avec tooltips améliorés (avec % Lavé) + SÉLECTION
+            event = st.dataframe(
                 df_display[['Semaine', 'marque', 'libelle', 'Prévu (T)', 'LAVÉ (T)', 
                            'BRUT net (T)', 'Total (T)', 'Delta (T)', '% Lavé', 'Statut']],
                 column_config={
@@ -759,10 +759,40 @@ with tab1:
                     ),
                 },
                 use_container_width=True,
-                hide_index=True
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="table_previsions_suivi"
             )
             
             st.caption("*BRUT net = estimation après application de la tare (réelle si connue, sinon théorique ~22%)")
+            
+            # ⭐ NOUVEAU : Bouton "Créer tâche" si ligne sélectionnée avec delta > 0
+            selected_rows = event.selection.rows if hasattr(event, 'selection') else []
+            
+            if len(selected_rows) > 0:
+                selected_idx = selected_rows[0]
+                selected_row = df_display.iloc[selected_idx]
+                delta = selected_row['delta']
+                
+                if delta > 0:
+                    st.markdown("---")
+                    col_info, col_btn = st.columns([3, 1])
+                    
+                    with col_info:
+                        st.warning(f"📋 **{selected_row['marque']} - {selected_row['libelle']}** ({selected_row['Semaine']}) : Manque **{delta:.1f} T**")
+                    
+                    with col_btn:
+                        if st.button("📋 Créer tâche", type="primary", use_container_width=True):
+                            # Pré-remplir les infos pour la page Tâches
+                            st.session_state['tache_prefill_titre'] = f"Manque stock {selected_row['marque']} {selected_row['libelle']}"
+                            st.session_state['tache_prefill_source_type'] = 'prevision'
+                            st.session_state['tache_prefill_source_label'] = f"{selected_row['marque']} - {selected_row['libelle']} - {selected_row['Semaine']} - Delta: {delta:.1f}T"
+                            
+                            st.success("✅ Redirection vers Tâches...")
+                            st.switch_page("pages/17_Taches.py")
+                else:
+                    st.success(f"✅ **{selected_row['marque']} - {selected_row['libelle']}** : Stock suffisant")
         
         # ⭐ AMÉLIORATION : Totaux par semaine enrichis
         st.markdown("---")
