@@ -605,105 +605,164 @@ with tab1:
     if previsions.empty:
         st.info("📭 Aucune prévision trouvée pour les 3 prochaines semaines")
     else:
-        # Filtre semaine
-        semaines_dispo = previsions.apply(lambda r: f"S{int(r['semaine']):02d}/{int(r['annee'])}", axis=1).unique().tolist()
-        filtre_semaine = st.selectbox("Filtrer par semaine", ["Toutes"] + semaines_dispo, key="filtre_sem_conso")
+        # ==========================================
+        # FILTRES AMÉLIORÉS
+        # ==========================================
         
-        # ⭐ AMÉLIORATION : Si "Toutes" → agréger par produit (somme des 3 semaines)
-        if filtre_semaine == "Toutes":
-            # Calculer la période dynamique
-            sem_min = int(previsions['semaine'].min())
-            sem_max = int(previsions['semaine'].max())
-            periode_label = f"S{sem_min}-{sem_max}"
-            
-            # Agrégation par produit (somme sur les semaines)
-            df_display = previsions.groupby(['code_produit_commercial', 'marque', 'libelle']).agg({
-                'prevu': 'sum',
-                'affecte_lave': 'sum',
-                'affecte_brut': 'sum',
-                'affecte_brut_net': 'sum',
-                'total_affecte_net': 'sum',
-                'delta': 'sum',
-                'besoin_lavage': 'sum'
-            }).reset_index()
-            
-            # Colonne période pour "Toutes"
-            df_display['Semaine'] = periode_label
+        col_f1, col_f2 = st.columns(2)
+        
+        with col_f1:
+            # Filtre semaine
+            semaines_dispo = previsions.apply(lambda r: f"S{int(r['semaine']):02d}/{int(r['annee'])}", axis=1).unique().tolist()
+            filtre_semaine = st.selectbox("Filtrer par semaine", ["Toutes"] + semaines_dispo, key="filtre_sem_conso")
+        
+        with col_f2:
+            # Filtre marque
+            marques_dispo = sorted(previsions['marque'].dropna().unique().tolist())
+            filtre_marque = st.selectbox("Filtrer par marque", ["Toutes"] + marques_dispo, key="filtre_marque_conso")
+        
+        # Filtre produit multi-sélection avec recherche
+        produits_dispo = sorted(previsions['libelle'].dropna().unique().tolist())
+        filtre_produits = st.multiselect(
+            "🔍 Rechercher/Sélectionner produits (tapez pour filtrer, ex: 'vapeur')",
+            options=produits_dispo,
+            default=[],
+            key="filtre_produits_conso",
+            placeholder="Tous les produits (ou tapez pour rechercher...)"
+        )
+        
+        st.markdown("---")
+        
+        # ==========================================
+        # PRÉPARATION DONNÉES
+        # ==========================================
+        
+        # Appliquer filtre marque AVANT agrégation
+        df_filtered = previsions.copy()
+        if filtre_marque != "Toutes":
+            df_filtered = df_filtered[df_filtered['marque'] == filtre_marque]
+        
+        # Appliquer filtre produits AVANT agrégation
+        if filtre_produits:
+            df_filtered = df_filtered[df_filtered['libelle'].isin(filtre_produits)]
+        
+        if df_filtered.empty:
+            st.warning("⚠️ Aucun résultat avec ces filtres")
         else:
-            # Filtrer par semaine spécifique
-            parts = filtre_semaine.split('/')
-            sem = int(parts[0].replace('S', ''))
-            annee = int(parts[1])
-            df_display = previsions[(previsions['semaine'] == sem) & (previsions['annee'] == annee)].copy()
-            df_display['Semaine'] = df_display.apply(lambda r: f"S{int(r['semaine']):02d}", axis=1)
-        
-        # Formater pour affichage (sans BRUT, uniquement BRUT net*)
-        df_display['Prévu (T)'] = df_display['prevu'].round(1)
-        df_display['LAVÉ (T)'] = df_display['affecte_lave'].round(1)
-        df_display['BRUT net (T)'] = df_display['affecte_brut_net'].round(1)
-        df_display['Total (T)'] = df_display['total_affecte_net'].round(1)
-        df_display['Delta (T)'] = df_display['delta'].round(1)
-        
-        # ⭐ Statut basé sur % du prévu
-        df_display['Statut'] = df_display.apply(
-            lambda r: get_statut_delta(r['delta'], r['prevu']), 
-            axis=1
-        )
-        
-        # Affichage avec tooltips améliorés (SANS colonne BRUT)
-        st.dataframe(
-            df_display[['Semaine', 'marque', 'libelle', 'Prévu (T)', 'LAVÉ (T)', 
-                       'BRUT net (T)', 'Total (T)', 'Delta (T)', 'Statut']],
-            column_config={
-                "Semaine": st.column_config.TextColumn(
-                    "Sem", 
-                    width="small",
-                    help="Semaine ou période (S49-51 si Toutes)"
-                ),
-                "marque": st.column_config.TextColumn(
-                    "Marque", 
-                    width="small"
-                ),
-                "libelle": st.column_config.TextColumn(
-                    "Produit", 
-                    width="large"
-                ),
-                "Prévu (T)": st.column_config.NumberColumn(
-                    "Prévu", 
-                    format="%.1f",
-                    help="Quantité prévue en tonnes (somme si Toutes)"
-                ),
-                "LAVÉ (T)": st.column_config.NumberColumn(
-                    "LAVÉ", 
-                    format="%.1f",
-                    help="Stock LAVÉ affecté (prêt à conditionner)"
-                ),
-                "BRUT net (T)": st.column_config.NumberColumn(
-                    "BRUT net*", 
-                    format="%.1f", 
-                    help="Stock BRUT après tare estimée (~22%)"
-                ),
-                "Total (T)": st.column_config.NumberColumn(
-                    "Total", 
-                    format="%.1f",
-                    help="Total affecté NET = LAVÉ + BRUT net*"
-                ),
-                "Delta (T)": st.column_config.NumberColumn(
-                    "Delta", 
-                    format="%.1f",
-                    help="Écart = Prévu - Total. Positif = manque"
-                ),
-                "Statut": st.column_config.TextColumn(
-                    "Statut", 
-                    width="small",
-                    help="✅ OK | ⚠️ <50% | ❌ ≥50% | ➖ Ø"
-                ),
-            },
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        st.caption("*BRUT net = estimation après application de la tare (réelle si connue, sinon théorique ~22%)")
+            # ⭐ Si "Toutes" → agréger par produit (somme des semaines)
+            if filtre_semaine == "Toutes":
+                # Calculer la période dynamique
+                sem_min = int(df_filtered['semaine'].min())
+                sem_max = int(df_filtered['semaine'].max())
+                periode_label = f"S{sem_min}-{sem_max}"
+                
+                # Agrégation par produit (somme sur les semaines)
+                df_display = df_filtered.groupby(['code_produit_commercial', 'marque', 'libelle']).agg({
+                    'prevu': 'sum',
+                    'affecte_lave': 'sum',
+                    'affecte_brut': 'sum',
+                    'affecte_brut_net': 'sum',
+                    'total_affecte_net': 'sum',
+                    'delta': 'sum',
+                    'besoin_lavage': 'sum'
+                }).reset_index()
+                
+                # Colonne période pour "Toutes"
+                df_display['Semaine'] = periode_label
+            else:
+                # Filtrer par semaine spécifique
+                parts = filtre_semaine.split('/')
+                sem = int(parts[0].replace('S', ''))
+                annee = int(parts[1])
+                df_display = df_filtered[(df_filtered['semaine'] == sem) & (df_filtered['annee'] == annee)].copy()
+                df_display['Semaine'] = df_display.apply(lambda r: f"S{int(r['semaine']):02d}", axis=1)
+            
+            # Formater pour affichage
+            df_display['Prévu (T)'] = df_display['prevu'].round(1)
+            df_display['LAVÉ (T)'] = df_display['affecte_lave'].round(1)
+            df_display['BRUT net (T)'] = df_display['affecte_brut_net'].round(1)
+            df_display['Total (T)'] = df_display['total_affecte_net'].round(1)
+            df_display['Delta (T)'] = df_display['delta'].round(1)
+            
+            # ⭐ NOUVELLE COLONNE : % Lavé = LAVÉ / Total affecté (si Total > 0)
+            def calc_pct_lave(row):
+                total = row['total_affecte_net']
+                lave = row['affecte_lave']
+                if total > 0:
+                    pct = (lave / total) * 100
+                    return f"{pct:.0f}%"
+                elif lave == 0 and total == 0:
+                    return "-"
+                else:
+                    return "100%"
+            
+            df_display['% Lavé'] = df_display.apply(calc_pct_lave, axis=1)
+            
+            # ⭐ Statut basé sur % du prévu
+            df_display['Statut'] = df_display.apply(
+                lambda r: get_statut_delta(r['delta'], r['prevu']), 
+                axis=1
+            )
+            
+            # Affichage avec tooltips améliorés (avec % Lavé)
+            st.dataframe(
+                df_display[['Semaine', 'marque', 'libelle', 'Prévu (T)', 'LAVÉ (T)', 
+                           'BRUT net (T)', 'Total (T)', 'Delta (T)', '% Lavé', 'Statut']],
+                column_config={
+                    "Semaine": st.column_config.TextColumn(
+                        "Sem", 
+                        width="small",
+                        help="Semaine ou période"
+                    ),
+                    "marque": st.column_config.TextColumn(
+                        "Marque", 
+                        width="small"
+                    ),
+                    "libelle": st.column_config.TextColumn(
+                        "Produit", 
+                        width="large"
+                    ),
+                    "Prévu (T)": st.column_config.NumberColumn(
+                        "Prévu", 
+                        format="%.1f",
+                        help="Quantité prévue en tonnes"
+                    ),
+                    "LAVÉ (T)": st.column_config.NumberColumn(
+                        "LAVÉ", 
+                        format="%.1f",
+                        help="Stock LAVÉ affecté"
+                    ),
+                    "BRUT net (T)": st.column_config.NumberColumn(
+                        "BRUT net*", 
+                        format="%.1f", 
+                        help="Stock BRUT après tare (~22%)"
+                    ),
+                    "Total (T)": st.column_config.NumberColumn(
+                        "Total", 
+                        format="%.1f",
+                        help="LAVÉ + BRUT net*"
+                    ),
+                    "Delta (T)": st.column_config.NumberColumn(
+                        "Delta", 
+                        format="%.1f",
+                        help="Prévu - Total"
+                    ),
+                    "% Lavé": st.column_config.TextColumn(
+                        "% Lavé",
+                        width="small",
+                        help="Part du LAVÉ dans le total affecté. S+1 devrait être ~100%"
+                    ),
+                    "Statut": st.column_config.TextColumn(
+                        "Statut", 
+                        width="small",
+                        help="✅ OK | ⚠️ <50% | ❌ ≥50%"
+                    ),
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            st.caption("*BRUT net = estimation après application de la tare (réelle si connue, sinon théorique ~22%)")
         
         # ⭐ AMÉLIORATION : Totaux par semaine enrichis
         st.markdown("---")
