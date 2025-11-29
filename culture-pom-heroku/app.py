@@ -44,15 +44,63 @@ if not is_authenticated():
 st.logo('https://i.imgur.com/kuLXrHZ.png')
 
 # ============================================================
-# SIDEBAR - INFOS UTILISATEUR
+# FONCTION COMPTEUR TÂCHES
+# ============================================================
+
+def get_taches_sidebar_count():
+    """Récupère le nombre de tâches ouvertes pour la sidebar"""
+    try:
+        from database import get_connection
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Tâches urgentes
+        cursor.execute("""
+            SELECT COUNT(*) as cnt FROM taches 
+            WHERE statut IN ('À faire', 'En cours') 
+            AND priorite = 'Urgente' 
+            AND is_active = TRUE
+        """)
+        urgentes = cursor.fetchone()['cnt']
+        
+        # Tâches ouvertes (non terminées)
+        cursor.execute("""
+            SELECT COUNT(*) as cnt FROM taches 
+            WHERE statut IN ('À faire', 'En cours') 
+            AND is_active = TRUE
+        """)
+        ouvertes = cursor.fetchone()['cnt']
+        
+        cursor.close()
+        conn.close()
+        
+        return urgentes, ouvertes
+    except:
+        return 0, 0
+
+# ============================================================
+# SIDEBAR - INFOS UTILISATEUR + COMPTEUR TÂCHES
 # ============================================================
 
 with st.sidebar:
     st.markdown("---")
     st.write(f"👤 {st.session_state.get('name', 'Utilisateur')}")
     st.caption(f"📧 {st.session_state.get('email', '')}")
-    st.caption(f"🔑 {st.session_state.get('role', 'USER')}")
+    st.caption(f"🔑 {st.session_state.get('role_libelle', st.session_state.get('role', 'USER'))}")
     st.markdown("---")
+    
+    # ⭐ COMPTEUR TÂCHES
+    try:
+        urgentes, ouvertes = get_taches_sidebar_count()
+        if urgentes > 0:
+            st.error(f"🔴 {urgentes} tâche(s) urgente(s)")
+        elif ouvertes > 0:
+            st.warning(f"📋 {ouvertes} tâche(s) ouverte(s)")
+        else:
+            st.success("✅ Aucune tâche en attente")
+        st.markdown("---")
+    except:
+        pass  # Silencieux si tables pas encore créées
     
     # Bouton déconnexion
     if st.button("🚪 Déconnexion", use_container_width=True):
