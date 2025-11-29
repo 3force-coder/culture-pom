@@ -311,7 +311,7 @@ def get_manageable_roles():
         return []
 
 
-# Mapping page_group → titre de page pour le menu
+# Mapping page_group → icône pour le menu
 PAGE_GROUP_ICONS = {
     'ACCUEIL': '🏠',
     'REFERENTIELS': '📋',
@@ -323,6 +323,7 @@ PAGE_GROUP_ICONS = {
     'INVENTAIRE': '📊',
     'INVENTAIRE_SAISIE': '✏️',
     'PLANS_RECOLTE': '🌱',
+    'TACHES': '✅',  # ⭐ AJOUTÉ pour module Tâches
     'ADMIN': '⚙️'
 }
 
