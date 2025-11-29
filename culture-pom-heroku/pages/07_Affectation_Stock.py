@@ -20,6 +20,7 @@ st.markdown("""
     .delta-ok { color: #2ca02c; font-weight: bold; }
     .delta-warning { color: #ff7f0e; font-weight: bold; }
     .delta-danger { color: #d62728; font-weight: bold; }
+    .kpi-detail { font-size: 0.8rem; color: #666; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -233,7 +234,7 @@ def get_stock_par_lot():
         query = """
         WITH stock_detail AS (
             SELECT 
-                se.lot_id,
+                l.id as lot_id,
                 l.code_lot_interne,
                 l.nom_usage,
                 COALESCE(v.nom_variete, l.code_variete) as variete,
@@ -454,7 +455,7 @@ def create_affectation(code_produit, annee, semaine, lot_id, emplacement_id,
         return False, f"❌ Erreur : {str(e)}"
 
 def delete_affectation(affectation_id):
-    """Supprime (désactive) une affectation"""
+    """Supprime (désactive) une affectation - SOFT DELETE"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -495,13 +496,62 @@ def get_produits_commerciaux():
         st.error(f"❌ Erreur : {str(e)}")
         return []
 
+
 # ==========================================
-# KPIs
+# ⭐ FONCTIONS AMÉLIORÉES - STATUT DELTA
+# ==========================================
+
+def get_statut_delta(delta, prevu):
+    """
+    Calcule l'icône de statut basée sur le % de couverture
+    
+    ✅ Couvert : delta <= 0 (prévu couvert ou surplus)
+    ⚠️ Manque partiel : 0 < delta < 50% du prévu
+    ❌ Manque critique : delta >= 50% du prévu
+    ➖ Pas de prévision : prevu = 0
+    """
+    if prevu == 0 or pd.isna(prevu):
+        return "➖"  # Pas de prévision
+    
+    if delta <= 0:
+        return "✅"  # Couvert ou surplus
+    
+    pct_manquant = (delta / prevu) * 100
+    
+    if pct_manquant < 50:
+        return "⚠️"  # Manque < 50%
+    else:
+        return "❌"  # Manque >= 50%
+
+def get_statut_counts(df):
+    """
+    Compte les statuts par catégorie pour un DataFrame
+    Retourne un dict {ok: n, warning: n, critical: n}
+    """
+    counts = {'ok': 0, 'warning': 0, 'critical': 0, 'none': 0}
+    
+    for _, row in df.iterrows():
+        statut = get_statut_delta(row['delta'], row['prevu'])
+        if statut == "✅":
+            counts['ok'] += 1
+        elif statut == "⚠️":
+            counts['warning'] += 1
+        elif statut == "❌":
+            counts['critical'] += 1
+        else:
+            counts['none'] += 1
+    
+    return counts
+
+
+# ==========================================
+# KPIs AMÉLIORÉS
 # ==========================================
 
 previsions = get_previsions_avec_affectations()
 
 if not previsions.empty:
+    # KPIs globaux
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
@@ -522,7 +572,8 @@ if not previsions.empty:
         st.metric("📉 Delta Global", f"{delta_total:.0f} T", delta_color=delta_color)
     
     with col5:
-        nb_complets = len(previsions[previsions['delta'] <= 0])
+        counts_global = get_statut_counts(previsions)
+        nb_complets = counts_global['ok']
         nb_total = len(previsions)
         st.metric("✅ Prévisions OK", f"{nb_complets}/{nb_total}")
 
@@ -535,7 +586,7 @@ st.markdown("---")
 tab1, tab2, tab3 = st.tabs(["📊 Vue Consolidée", "➕ Affecter un Lot", "📋 Affectations"])
 
 # ==========================================
-# ONGLET 1 : VUE CONSOLIDÉE
+# ONGLET 1 : VUE CONSOLIDÉE AMÉLIORÉE
 # ==========================================
 
 with tab1:
@@ -564,41 +615,73 @@ with tab1:
         df_display['Total (T)'] = df_display['total_affecte_net'].round(1)
         df_display['Delta (T)'] = df_display['delta'].round(1)
         
-        # Statut delta
-        def statut_delta(delta):
-            if delta <= 0:
-                return "✅"
-            elif delta <= 10:
-                return "⚠️"
-            else:
-                return "❌"
+        # ⭐ AMÉLIORATION : Statut basé sur % du prévu
+        df_display['Statut'] = df_display.apply(
+            lambda r: get_statut_delta(r['delta'], r['prevu']), 
+            axis=1
+        )
         
-        df_display['Statut'] = df_display['delta'].apply(statut_delta)
-        
-        # Affichage
+        # Affichage avec tooltips améliorés
         st.dataframe(
             df_display[['Semaine', 'marque', 'libelle', 'Prévu (T)', 'LAVÉ (T)', 
                        'BRUT (T)', 'BRUT net (T)', 'Total (T)', 'Delta (T)', 'Statut']],
             column_config={
-                "Semaine": st.column_config.TextColumn("Sem", width="small"),
-                "marque": st.column_config.TextColumn("Marque", width="small"),
-                "libelle": st.column_config.TextColumn("Produit", width="large"),
-                "Prévu (T)": st.column_config.NumberColumn("Prévu", format="%.1f"),
-                "LAVÉ (T)": st.column_config.NumberColumn("LAVÉ", format="%.1f"),
-                "BRUT (T)": st.column_config.NumberColumn("BRUT", format="%.1f"),
-                "BRUT net (T)": st.column_config.NumberColumn("BRUT net*", format="%.1f", 
-                    help="Estimation après tare"),
-                "Total (T)": st.column_config.NumberColumn("Total", format="%.1f"),
-                "Delta (T)": st.column_config.NumberColumn("Delta", format="%.1f"),
-                "Statut": st.column_config.TextColumn("Statut", width="small"),
+                "Semaine": st.column_config.TextColumn(
+                    "Sem", 
+                    width="small",
+                    help="Numéro de semaine"
+                ),
+                "marque": st.column_config.TextColumn(
+                    "Marque", 
+                    width="small"
+                ),
+                "libelle": st.column_config.TextColumn(
+                    "Produit", 
+                    width="large"
+                ),
+                "Prévu (T)": st.column_config.NumberColumn(
+                    "Prévu", 
+                    format="%.1f",
+                    help="Quantité prévue en tonnes pour cette semaine"
+                ),
+                "LAVÉ (T)": st.column_config.NumberColumn(
+                    "LAVÉ", 
+                    format="%.1f",
+                    help="Stock LAVÉ affecté (prêt à conditionner)"
+                ),
+                "BRUT (T)": st.column_config.NumberColumn(
+                    "BRUT", 
+                    format="%.1f",
+                    help="Stock BRUT affecté (poids brut avant lavage)"
+                ),
+                "BRUT net (T)": st.column_config.NumberColumn(
+                    "BRUT net*", 
+                    format="%.1f", 
+                    help="Stock BRUT après tare estimée (rendement après lavage)"
+                ),
+                "Total (T)": st.column_config.NumberColumn(
+                    "Total", 
+                    format="%.1f",
+                    help="Total affecté NET = LAVÉ + BRUT net*"
+                ),
+                "Delta (T)": st.column_config.NumberColumn(
+                    "Delta", 
+                    format="%.1f",
+                    help="Écart = Prévu - Total. Positif = manque, Négatif = surplus"
+                ),
+                "Statut": st.column_config.TextColumn(
+                    "Statut", 
+                    width="small",
+                    help="✅ Couvert | ⚠️ Manque <50% | ❌ Manque ≥50% | ➖ Pas de prévision"
+                ),
             },
             use_container_width=True,
             hide_index=True
         )
         
-        st.caption("*BRUT net = estimation après application de la tare (réelle si connue, sinon théorique)")
+        st.caption("*BRUT net = estimation après application de la tare (réelle si connue, sinon théorique ~22%)")
         
-        # Totaux par semaine
+        # ⭐ AMÉLIORATION : Totaux par semaine enrichis
         st.markdown("---")
         st.markdown("### 📊 Totaux par Semaine")
         
@@ -611,23 +694,46 @@ with tab1:
         }).reset_index()
         
         cols = st.columns(len(totaux) + 1)
+        
         for i, (_, row) in enumerate(totaux.iterrows()):
             with cols[i]:
                 sem_label = f"S{int(row['semaine']):02d}"
                 delta = row['delta']
+                
+                # Compter statuts pour cette semaine
+                df_sem = previsions[(previsions['semaine'] == row['semaine']) & 
+                                    (previsions['annee'] == row['annee'])]
+                counts = get_statut_counts(df_sem)
+                
+                # Afficher métrique
                 st.metric(
                     sem_label,
                     f"{row['total_affecte_net']:.0f} / {row['prevu']:.0f} T",
-                    f"Delta: {delta:.0f} T",
+                    f"{'↑' if delta > 0 else '↓'} Delta: {abs(delta):.0f} T",
                     delta_color="normal" if delta <= 0 else "inverse"
                 )
+                
+                # Détail statuts sous la métrique
+                st.markdown(
+                    f"<div class='kpi-detail'>✅ {counts['ok']} | ⚠️ {counts['warning']} | ❌ {counts['critical']}</div>",
+                    unsafe_allow_html=True
+                )
         
+        # Total global
         with cols[-1]:
+            delta_tot = totaux['delta'].sum()
+            counts_all = get_statut_counts(previsions)
+            
             st.metric(
                 "🎯 Total",
                 f"{totaux['total_affecte_net'].sum():.0f} / {totaux['prevu'].sum():.0f} T",
-                f"Delta: {totaux['delta'].sum():.0f} T",
-                delta_color="normal" if totaux['delta'].sum() <= 0 else "inverse"
+                f"{'↑' if delta_tot > 0 else '↓'} Delta: {abs(delta_tot):.0f} T",
+                delta_color="normal" if delta_tot <= 0 else "inverse"
+            )
+            
+            st.markdown(
+                f"<div class='kpi-detail'>✅ {counts_all['ok']} | ⚠️ {counts_all['warning']} | ❌ {counts_all['critical']}</div>",
+                unsafe_allow_html=True
             )
 
 # ==========================================
