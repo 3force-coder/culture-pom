@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from database import get_connection
 from components import show_footer
 from auth import require_access
@@ -47,6 +47,22 @@ st.markdown("""
         font-size: 0.8rem;
         color: #666;
     }
+    
+    /* Stats cards */
+    .stat-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        text-align: center;
+        margin: 0.5rem 0;
+    }
+    .stat-card-warning {
+        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    }
+    .stat-card-success {
+        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -76,6 +92,14 @@ STATUT_ICONS = {
     'En cours': '🔄',
     'Terminée': '✅'
 }
+
+# ⭐ RÔLES AUTORISÉS POUR LA SUPPRESSION
+ROLES_SUPPRESSION = ['SUPER_ADMIN', 'ADMIN']
+
+def can_delete_tache():
+    """Vérifie si l'utilisateur peut supprimer des tâches"""
+    user_role = st.session_state.get('role', '')
+    return user_role in ROLES_SUPPRESSION
 
 # ==========================================
 # FONCTIONS UTILITAIRES
@@ -169,6 +193,152 @@ def get_taches_counts():
         
     except Exception as e:
         return {'urgentes': 0, 'a_faire': 0, 'en_cours': 0, 'terminees': 0}
+
+def get_taches_statistics():
+    """Récupère les statistiques détaillées des tâches"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        stats = {}
+        
+        # 1. Compteurs globaux
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE statut = 'À faire') as a_faire,
+                COUNT(*) FILTER (WHERE statut = 'En cours') as en_cours,
+                COUNT(*) FILTER (WHERE statut = 'Terminée') as terminees,
+                COUNT(*) FILTER (WHERE statut IN ('À faire', 'En cours') AND priorite = 'Urgente') as urgentes_ouvertes
+            FROM taches
+            WHERE is_active = TRUE
+        """)
+        row = cursor.fetchone()
+        stats['total'] = row['total'] or 0
+        stats['a_faire'] = row['a_faire'] or 0
+        stats['en_cours'] = row['en_cours'] or 0
+        stats['terminees'] = row['terminees'] or 0
+        stats['urgentes_ouvertes'] = row['urgentes_ouvertes'] or 0
+        
+        # 2. Taux de complétion
+        if stats['total'] > 0:
+            stats['taux_completion'] = round((stats['terminees'] / stats['total']) * 100, 1)
+        else:
+            stats['taux_completion'] = 0
+        
+        # 3. Tâches en retard (échéance dépassée et non terminée)
+        cursor.execute("""
+            SELECT COUNT(*) as cnt
+            FROM taches
+            WHERE is_active = TRUE 
+            AND statut IN ('À faire', 'En cours')
+            AND date_echeance < CURRENT_DATE
+        """)
+        stats['en_retard'] = cursor.fetchone()['cnt'] or 0
+        
+        # 4. Tâches échéance proche (< 3 jours)
+        cursor.execute("""
+            SELECT COUNT(*) as cnt
+            FROM taches
+            WHERE is_active = TRUE 
+            AND statut IN ('À faire', 'En cours')
+            AND date_echeance BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '3 days'
+        """)
+        stats['echeance_proche'] = cursor.fetchone()['cnt'] or 0
+        
+        # 5. Temps moyen de résolution (en jours)
+        cursor.execute("""
+            SELECT AVG(EXTRACT(EPOCH FROM (closed_at - created_at)) / 86400) as avg_days
+            FROM taches
+            WHERE is_active = TRUE 
+            AND statut = 'Terminée'
+            AND closed_at IS NOT NULL
+        """)
+        avg_days = cursor.fetchone()['avg_days']
+        stats['temps_moyen_resolution'] = round(avg_days, 1) if avg_days else 0
+        
+        # 6. Répartition par priorité
+        cursor.execute("""
+            SELECT priorite, COUNT(*) as cnt
+            FROM taches
+            WHERE is_active = TRUE
+            GROUP BY priorite
+            ORDER BY CASE priorite WHEN 'Urgente' THEN 1 WHEN 'Haute' THEN 2 WHEN 'Normale' THEN 3 ELSE 4 END
+        """)
+        stats['par_priorite'] = {row['priorite']: row['cnt'] for row in cursor.fetchall()}
+        
+        # 7. Répartition par assigné
+        cursor.execute("""
+            SELECT COALESCE(assigne_a, 'Non assigné') as assigne, COUNT(*) as cnt
+            FROM taches
+            WHERE is_active = TRUE AND statut IN ('À faire', 'En cours')
+            GROUP BY assigne_a
+            ORDER BY cnt DESC
+        """)
+        stats['par_assigne'] = {row['assigne']: row['cnt'] for row in cursor.fetchall()}
+        
+        # 8. Répartition par source
+        cursor.execute("""
+            SELECT COALESCE(source_type, 'Manuel') as source, COUNT(*) as cnt
+            FROM taches
+            WHERE is_active = TRUE
+            GROUP BY source_type
+            ORDER BY cnt DESC
+        """)
+        stats['par_source'] = {row['source']: row['cnt'] for row in cursor.fetchall()}
+        
+        # 9. Créées cette semaine
+        cursor.execute("""
+            SELECT COUNT(*) as cnt
+            FROM taches
+            WHERE is_active = TRUE 
+            AND created_at >= CURRENT_DATE - INTERVAL '7 days'
+        """)
+        stats['creees_semaine'] = cursor.fetchone()['cnt'] or 0
+        
+        # 10. Terminées cette semaine
+        cursor.execute("""
+            SELECT COUNT(*) as cnt
+            FROM taches
+            WHERE is_active = TRUE 
+            AND statut = 'Terminée'
+            AND closed_at >= CURRENT_DATE - INTERVAL '7 days'
+        """)
+        stats['terminees_semaine'] = cursor.fetchone()['cnt'] or 0
+        
+        # 11. Liste des tâches en retard
+        cursor.execute("""
+            SELECT id, titre, priorite, assigne_a, date_echeance,
+                   (CURRENT_DATE - date_echeance) as jours_retard
+            FROM taches
+            WHERE is_active = TRUE 
+            AND statut IN ('À faire', 'En cours')
+            AND date_echeance < CURRENT_DATE
+            ORDER BY date_echeance ASC
+            LIMIT 10
+        """)
+        stats['liste_retard'] = cursor.fetchall()
+        
+        # 12. Liste des échéances proches
+        cursor.execute("""
+            SELECT id, titre, priorite, assigne_a, date_echeance
+            FROM taches
+            WHERE is_active = TRUE 
+            AND statut IN ('À faire', 'En cours')
+            AND date_echeance BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
+            ORDER BY date_echeance ASC
+            LIMIT 10
+        """)
+        stats['liste_echeance_proche'] = cursor.fetchall()
+        
+        cursor.close()
+        conn.close()
+        
+        return stats
+        
+    except Exception as e:
+        st.error(f"❌ Erreur statistiques : {str(e)}")
+        return None
 
 def get_commentaires(tache_id):
     """Récupère les commentaires d'une tâche"""
@@ -352,13 +522,13 @@ with col4:
 st.markdown("---")
 
 # ==========================================
-# ONGLETS
+# ONGLETS (5 onglets maintenant)
 # ==========================================
 
-tab1, tab2, tab3, tab4 = st.tabs(["📝 À faire", "🔄 En cours", "✅ Terminées", "➕ Créer"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 À faire", "🔄 En cours", "✅ Terminées", "➕ Créer", "📊 Statistiques"])
 
 # ==========================================
-# ONGLET 1, 2, 3 : LISTES DE TÂCHES
+# FONCTION AFFICHAGE LISTE TÂCHES
 # ==========================================
 
 def display_taches_list(statut_filter):
@@ -408,6 +578,7 @@ def display_taches_list(statut_filter):
     df_display['Échéance'] = df_display['date_echeance'].apply(
         lambda x: x.strftime('%d/%m/%Y') if pd.notna(x) else '-'
     )
+    # ⭐ CORRECTION BUG : Afficher source_label au lieu de source_type
     df_display['Source'] = df_display['source_label'].apply(lambda x: x if pd.notna(x) else '-')
     
     # Tableau avec sélection
@@ -419,7 +590,7 @@ def display_taches_list(statut_filter):
             "Priorité": st.column_config.TextColumn("Priorité", width="small"),
             "assigne_a": st.column_config.TextColumn("Assigné", width="small"),
             "Échéance": st.column_config.TextColumn("Échéance", width="small"),
-            "Source": st.column_config.TextColumn("Source", width="small"),
+            "Source": st.column_config.TextColumn("Source", width="medium"),
         },
         use_container_width=True,
         hide_index=True,
@@ -448,9 +619,7 @@ def display_taches_list(statut_filter):
             st.write(f"**Échéance** : {selected_tache['date_echeance'].strftime('%d/%m/%Y') if pd.notna(selected_tache['date_echeance']) else '-'}")
         
         with col2:
-            st.write(f"**Source** : {selected_tache['source_type'] or '-'}")
-            if selected_tache['source_label']:
-                st.write(f"**Détail** : {selected_tache['source_label']}")
+            st.write(f"**Source** : {selected_tache['source_label'] or '-'}")
             st.write(f"**Créé par** : {selected_tache['created_by']} le {selected_tache['created_at'].strftime('%d/%m/%Y %H:%M')}")
         
         if selected_tache['description']:
@@ -493,13 +662,17 @@ def display_taches_list(statut_filter):
                         st.error(msg)
         
         with col_a4:
-            if st.button("🗑️ Supprimer", key=f"suppr_{tache_id}", use_container_width=True):
-                success, msg = delete_tache(tache_id)
-                if success:
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.error(msg)
+            # ⭐ SUPPRESSION RÉSERVÉE AUX ADMINS
+            if can_delete_tache():
+                if st.button("🗑️ Supprimer", key=f"suppr_{tache_id}", use_container_width=True):
+                    success, msg = delete_tache(tache_id)
+                    if success:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            else:
+                st.button("🗑️ Supprimer", key=f"suppr_{tache_id}", use_container_width=True, disabled=True, help="Réservé aux administrateurs")
         
         # Commentaires
         st.markdown("---")
@@ -651,6 +824,153 @@ with tab4:
                 st.error(msg)
         else:
             st.warning("⚠️ Le titre est obligatoire")
+
+# ==========================================
+# ONGLET 5 : STATISTIQUES
+# ==========================================
+
+with tab5:
+    st.subheader("📊 Statistiques des Tâches")
+    
+    stats = get_taches_statistics()
+    
+    if stats:
+        # ==========================================
+        # LIGNE 1 : KPIs PRINCIPAUX
+        # ==========================================
+        st.markdown("### 🎯 Vue d'ensemble")
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            st.metric("📋 Total tâches", stats['total'])
+        
+        with col2:
+            st.metric("✅ Taux complétion", f"{stats['taux_completion']}%")
+        
+        with col3:
+            delta_color = "inverse" if stats['en_retard'] > 0 else "off"
+            st.metric("⏰ En retard", stats['en_retard'], delta=f"-{stats['en_retard']}" if stats['en_retard'] > 0 else None, delta_color=delta_color)
+        
+        with col4:
+            st.metric("⚡ Échéance proche", stats['echeance_proche'])
+        
+        with col5:
+            st.metric("⏱️ Temps moyen résolution", f"{stats['temps_moyen_resolution']} j")
+        
+        st.markdown("---")
+        
+        # ==========================================
+        # LIGNE 2 : ACTIVITÉ CETTE SEMAINE
+        # ==========================================
+        st.markdown("### 📅 Activité cette semaine")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("➕ Créées", stats['creees_semaine'])
+        
+        with col2:
+            st.metric("✅ Terminées", stats['terminees_semaine'])
+        
+        with col3:
+            balance = stats['terminees_semaine'] - stats['creees_semaine']
+            st.metric("📊 Balance", balance, delta=f"{'+' if balance > 0 else ''}{balance}")
+        
+        st.markdown("---")
+        
+        # ==========================================
+        # LIGNE 3 : RÉPARTITIONS
+        # ==========================================
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 🎨 Par priorité")
+            if stats['par_priorite']:
+                for priorite, count in stats['par_priorite'].items():
+                    icon = PRIORITE_ICONS.get(priorite, '⚪')
+                    pct = round((count / stats['total']) * 100, 1) if stats['total'] > 0 else 0
+                    st.write(f"{icon} **{priorite}** : {count} ({pct}%)")
+                    st.progress(pct / 100)
+            else:
+                st.info("Aucune donnée")
+        
+        with col2:
+            st.markdown("### 👥 Charge par assigné (ouvertes)")
+            if stats['par_assigne']:
+                for assigne, count in stats['par_assigne'].items():
+                    st.write(f"👤 **{assigne}** : {count} tâche(s)")
+            else:
+                st.info("Aucune donnée")
+        
+        st.markdown("---")
+        
+        # ==========================================
+        # LIGNE 4 : PAR SOURCE
+        # ==========================================
+        st.markdown("### 📎 Par source")
+        
+        if stats['par_source']:
+            cols = st.columns(len(stats['par_source']))
+            for i, (source, count) in enumerate(stats['par_source'].items()):
+                with cols[i]:
+                    st.metric(source, count)
+        else:
+            st.info("Aucune donnée")
+        
+        st.markdown("---")
+        
+        # ==========================================
+        # LIGNE 5 : ALERTES - TÂCHES EN RETARD
+        # ==========================================
+        if stats['liste_retard']:
+            st.markdown("### ⚠️ Tâches en retard")
+            
+            df_retard = pd.DataFrame(stats['liste_retard'])
+            df_retard['Priorité'] = df_retard['priorite'].apply(lambda x: f"{PRIORITE_ICONS.get(x, '')} {x}")
+            df_retard['Échéance'] = df_retard['date_echeance'].apply(lambda x: x.strftime('%d/%m/%Y') if x else '-')
+            df_retard['Retard'] = df_retard['jours_retard'].apply(lambda x: f"{int(x)} jour(s)")
+            
+            st.dataframe(
+                df_retard[['id', 'titre', 'Priorité', 'assigne_a', 'Échéance', 'Retard']],
+                column_config={
+                    "id": st.column_config.NumberColumn("ID", width="small"),
+                    "titre": st.column_config.TextColumn("Titre", width="large"),
+                    "Priorité": st.column_config.TextColumn("Priorité", width="small"),
+                    "assigne_a": st.column_config.TextColumn("Assigné", width="small"),
+                    "Échéance": st.column_config.TextColumn("Échéance", width="small"),
+                    "Retard": st.column_config.TextColumn("Retard", width="small"),
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            st.markdown("---")
+        
+        # ==========================================
+        # LIGNE 6 : ÉCHÉANCES PROCHES
+        # ==========================================
+        if stats['liste_echeance_proche']:
+            st.markdown("### ⏰ Échéances dans les 7 prochains jours")
+            
+            df_proche = pd.DataFrame(stats['liste_echeance_proche'])
+            df_proche['Priorité'] = df_proche['priorite'].apply(lambda x: f"{PRIORITE_ICONS.get(x, '')} {x}")
+            df_proche['Échéance'] = df_proche['date_echeance'].apply(lambda x: x.strftime('%d/%m/%Y') if x else '-')
+            
+            st.dataframe(
+                df_proche[['id', 'titre', 'Priorité', 'assigne_a', 'Échéance']],
+                column_config={
+                    "id": st.column_config.NumberColumn("ID", width="small"),
+                    "titre": st.column_config.TextColumn("Titre", width="large"),
+                    "Priorité": st.column_config.TextColumn("Priorité", width="small"),
+                    "assigne_a": st.column_config.TextColumn("Assigné", width="small"),
+                    "Échéance": st.column_config.TextColumn("Échéance", width="small"),
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+    else:
+        st.warning("⚠️ Impossible de charger les statistiques")
 
 st.markdown("---")
 show_footer()
