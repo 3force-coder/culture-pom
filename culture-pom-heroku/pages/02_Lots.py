@@ -1059,6 +1059,14 @@ with tab1:
     
     else:
         st.warning("⚠️ Aucun lot trouvé")
+        
+        # ⭐ BOUTON AJOUTER MÊME SI TABLE VIDE
+        st.markdown("---")
+        col1, col2, col3 = st.columns([3, 1, 3])
+        with col2:
+            if st.button("➕ Ajouter un Lot", use_container_width=True, type="primary", key="btn_add_empty"):
+                st.session_state.show_add_form = not st.session_state.get('show_add_form', False)
+                st.rerun()
     
     show_footer()
 
