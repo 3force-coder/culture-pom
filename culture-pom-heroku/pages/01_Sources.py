@@ -729,8 +729,10 @@ if st.session_state.get('show_add_form', False):
                 st.session_state.new_data[col] = st.checkbox(label, value=False, key=f"add_{col}")
             elif 'capacite' in col or 'prix' in col or 'poids' in col or 'cout' in col:
                 st.session_state.new_data[col] = st.number_input(label, min_value=0.0, value=0.0, step=0.1, key=f"add_{col}")
-            elif 'nbr' in col:
-                st.session_state.new_data[col] = st.number_input(label, min_value=0, value=0, step=1, key=f"add_{col}")
+            elif 'nbr' in col or col == 'nb_uvc':
+                # nb_uvc avec valeur par défaut 1 (au moins 1 UVC)
+                default_val = 1 if col == 'nb_uvc' else 0
+                st.session_state.new_data[col] = st.number_input(label, min_value=1 if col == 'nb_uvc' else 0, value=default_val, step=1, key=f"add_{col}")
             else:
                 st.session_state.new_data[col] = st.text_input(label, key=f"add_{col}")
     
@@ -1064,6 +1066,20 @@ if not df_full.empty:
         st.download_button("📥 Excel", buffer.getvalue(), f"{config['table']}_{datetime.now().strftime('%Y%m%d')}.xlsx",
                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 else:
+    # ⭐ TABLE VIDE - Afficher quand même le bouton Ajouter
+    config = TABLES_CONFIG[selected_table]
+    
     st.warning(f"⚠️ Aucune donnée pour {selected_table}")
+    
+    st.markdown("---")
+    
+    # Bouton Ajouter même si table vide
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        st.subheader(f"📋 {selected_table}")
+    with col3:
+        if st.button("➕ Ajouter", use_container_width=True, type="primary", key="btn_add_empty"):
+            st.session_state.show_add_form = True
+            st.rerun()
 
 show_footer()
