@@ -199,9 +199,27 @@ def calculate_metrics(df):
     if df.empty:
         return {'total_lots': 0, 'tonnage_total': 0.0, 'nb_varietes': 0, 'nb_producteurs': 0}
     
+    # ⭐ Récupérer le tonnage réel depuis stock_emplacements (pas lots_bruts.poids_total_brut_kg qui est NULL)
+    tonnage_total = 0.0
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT COALESCE(SUM(se.poids_total_kg), 0) as total
+            FROM stock_emplacements se
+            JOIN lots_bruts l ON se.lot_id = l.id
+            WHERE se.is_active = TRUE AND l.is_active = TRUE
+        """)
+        result = cursor.fetchone()
+        tonnage_total = float(result['total']) / 1000 if result and result['total'] else 0.0
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        st.error(f"Erreur calcul tonnage : {e}")
+    
     return {
         'total_lots': len(df),
-        'tonnage_total': df['poids_total_brut_kg'].sum() / 1000 if 'poids_total_brut_kg' in df.columns else 0.0,
+        'tonnage_total': tonnage_total,
         'nb_varietes': df['code_variete'].nunique(),
         'nb_producteurs': df['code_producteur'].nunique()
     }
