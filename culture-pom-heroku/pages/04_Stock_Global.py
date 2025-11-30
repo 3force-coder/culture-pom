@@ -40,48 +40,55 @@ st.markdown("---")
 # ==========================================
 
 def get_stock_global_kpis():
-    """Récupère les KPIs globaux du stock"""
+    """Récupère les KPIs globaux du stock (uniquement lots actifs)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ⭐ Toutes les requêtes joignent avec lots_bruts pour ne prendre que les lots actifs
+        
         # Tonnage total
         cursor.execute("""
-            SELECT COALESCE(SUM(poids_total_kg), 0) as tonnage_total
-            FROM stock_emplacements
-            WHERE is_active = TRUE
+            SELECT COALESCE(SUM(se.poids_total_kg), 0) as tonnage_total
+            FROM stock_emplacements se
+            JOIN lots_bruts l ON se.lot_id = l.id
+            WHERE se.is_active = TRUE AND l.is_active = TRUE
         """)
         tonnage_total = cursor.fetchone()['tonnage_total'] / 1000  # Conversion en tonnes
         
         # Nombre de lots avec stock
         cursor.execute("""
-            SELECT COUNT(DISTINCT lot_id) as nb_lots
-            FROM stock_emplacements
-            WHERE is_active = TRUE AND nombre_unites > 0
+            SELECT COUNT(DISTINCT se.lot_id) as nb_lots
+            FROM stock_emplacements se
+            JOIN lots_bruts l ON se.lot_id = l.id
+            WHERE se.is_active = TRUE AND l.is_active = TRUE AND se.nombre_unites > 0
         """)
         nb_lots = cursor.fetchone()['nb_lots']
         
         # Nombre d'emplacements actifs
         cursor.execute("""
             SELECT COUNT(*) as nb_emplacements
-            FROM stock_emplacements
-            WHERE is_active = TRUE AND nombre_unites > 0
+            FROM stock_emplacements se
+            JOIN lots_bruts l ON se.lot_id = l.id
+            WHERE se.is_active = TRUE AND l.is_active = TRUE AND se.nombre_unites > 0
         """)
         nb_emplacements = cursor.fetchone()['nb_emplacements']
         
         # Nombre de sites utilisés
         cursor.execute("""
-            SELECT COUNT(DISTINCT site_stockage) as nb_sites
-            FROM stock_emplacements
-            WHERE is_active = TRUE AND nombre_unites > 0
+            SELECT COUNT(DISTINCT se.site_stockage) as nb_sites
+            FROM stock_emplacements se
+            JOIN lots_bruts l ON se.lot_id = l.id
+            WHERE se.is_active = TRUE AND l.is_active = TRUE AND se.nombre_unites > 0
         """)
         nb_sites = cursor.fetchone()['nb_sites']
         
         # Nombre total de pallox
         cursor.execute("""
-            SELECT COALESCE(SUM(nombre_unites), 0) as total_pallox
-            FROM stock_emplacements
-            WHERE is_active = TRUE
+            SELECT COALESCE(SUM(se.nombre_unites), 0) as total_pallox
+            FROM stock_emplacements se
+            JOIN lots_bruts l ON se.lot_id = l.id
+            WHERE se.is_active = TRUE AND l.is_active = TRUE
         """)
         total_pallox = cursor.fetchone()['total_pallox']
         
@@ -101,22 +108,23 @@ def get_stock_global_kpis():
         return None
 
 def get_stock_par_site():
-    """Récupère le stock agrégé par site"""
+    """Récupère le stock agrégé par site (uniquement lots actifs)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
         query = """
         SELECT 
-            site_stockage,
-            COUNT(DISTINCT emplacement_stockage) as nb_emplacements,
-            COUNT(DISTINCT lot_id) as nb_lots,
-            SUM(nombre_unites) as total_pallox,
-            SUM(poids_total_kg) as total_poids_kg
-        FROM stock_emplacements
-        WHERE is_active = TRUE AND nombre_unites > 0
-        GROUP BY site_stockage
-        ORDER BY site_stockage
+            se.site_stockage,
+            COUNT(DISTINCT se.emplacement_stockage) as nb_emplacements,
+            COUNT(DISTINCT se.lot_id) as nb_lots,
+            SUM(se.nombre_unites) as total_pallox,
+            SUM(se.poids_total_kg) as total_poids_kg
+        FROM stock_emplacements se
+        JOIN lots_bruts l ON se.lot_id = l.id
+        WHERE se.is_active = TRUE AND l.is_active = TRUE AND se.nombre_unites > 0
+        GROUP BY se.site_stockage
+        ORDER BY se.site_stockage
         """
         
         cursor.execute(query)
@@ -156,7 +164,7 @@ def get_stock_par_site():
         return pd.DataFrame()
 
 def get_stock_par_variete():
-    """Récupère le stock agrégé par variété"""
+    """Récupère le stock agrégé par variété (uniquement lots actifs)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -169,9 +177,9 @@ def get_stock_par_variete():
             SUM(se.nombre_unites) as total_pallox,
             SUM(se.poids_total_kg) as total_poids_kg
         FROM stock_emplacements se
-        LEFT JOIN lots_bruts l ON se.lot_id = l.id
+        JOIN lots_bruts l ON se.lot_id = l.id
         LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
-        WHERE se.is_active = TRUE AND se.nombre_unites > 0
+        WHERE se.is_active = TRUE AND l.is_active = TRUE AND se.nombre_unites > 0
         GROUP BY variete
         ORDER BY variete
         """
@@ -213,7 +221,7 @@ def get_stock_par_variete():
         return pd.DataFrame()
 
 def get_stock_par_producteur():
-    """Récupère le stock agrégé par producteur"""
+    """Récupère le stock agrégé par producteur (uniquement lots actifs)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -226,9 +234,9 @@ def get_stock_par_producteur():
             SUM(se.nombre_unites) as total_pallox,
             SUM(se.poids_total_kg) as total_poids_kg
         FROM stock_emplacements se
-        LEFT JOIN lots_bruts l ON se.lot_id = l.id
+        JOIN lots_bruts l ON se.lot_id = l.id
         LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
-        WHERE se.is_active = TRUE AND se.nombre_unites > 0
+        WHERE se.is_active = TRUE AND l.is_active = TRUE AND se.nombre_unites > 0
         GROUP BY producteur
         ORDER BY producteur
         """
