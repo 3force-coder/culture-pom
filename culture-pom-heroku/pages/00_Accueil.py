@@ -303,10 +303,15 @@ if conn:
         result = cursor.fetchone()
         nb_lots_actifs = result['nb'] if result else 0
         
-        # Tonnage total
+        # Tonnage total (depuis stock_emplacements avec JOIN lots actifs)
         tonnage_tonnes = 0
         try:
-            cursor.execute("SELECT COALESCE(SUM(poids_total_brut_kg), 0) as total FROM lots_bruts WHERE is_active = TRUE")
+            cursor.execute("""
+                SELECT COALESCE(SUM(se.poids_total_kg), 0) as total 
+                FROM stock_emplacements se
+                JOIN lots_bruts l ON se.lot_id = l.id
+                WHERE se.is_active = TRUE AND l.is_active = TRUE
+            """)
             result = cursor.fetchone()
             tonnage_total = result['total'] if result else 0
             tonnage_tonnes = float(tonnage_total) / 1000
