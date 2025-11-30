@@ -415,16 +415,20 @@ def demarrer_job(job_id):
 
 def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
                 site_dest, emplacement_dest, notes=""):
-    """Termine un job avec création stocks LAVÉ/GRENAILLES et déduction BRUT"""
+    """Termine un job avec création stocks LAVÉ/GRENAILLES et déduction source
+    
+    Si source = BRUT → crée LAVÉ + GRENAILLES_BRUTES
+    Si source = GRENAILLES_BRUTES → crée GRENAILLES_LAVÉES (pas de sous-grenailles)
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Récupérer job complet
+        # Récupérer job complet avec emplacement_id et statut_source
         cursor.execute("""
             SELECT lj.lot_id, lj.quantite_pallox, lj.poids_brut_kg,
                    lj.code_lot_interne, lj.ligne_lavage, lj.date_activation,
-                   lj.variete
+                   lj.variete, lj.emplacement_id, lj.statut_source
             FROM lavages_jobs lj
             WHERE lj.id = %s AND lj.statut = 'EN_COURS'
         """, (job_id,))
@@ -432,36 +436,61 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
         if not job:
             return False, "❌ Job introuvable ou pas EN_COURS"
         
-        # Récupérer l'emplacement source BRUT (ou NULL = stock créé manuellement)
-        cursor.execute("""
-            SELECT id, nombre_unites, poids_total_kg, site_stockage, emplacement_stockage
-            FROM stock_emplacements
-            WHERE lot_id = %s 
-              AND (statut_lavage = 'BRUT' OR statut_lavage IS NULL)
-              AND is_active = TRUE
-            ORDER BY id
-            LIMIT 1
-        """, (job['lot_id'],))
-        stock_brut = cursor.fetchone()
-        if not stock_brut:
-            return False, "❌ Stock BRUT source introuvable"
+        # Récupérer l'emplacement source via emplacement_id du job (si disponible)
+        # Sinon fallback sur l'ancienne méthode
+        if job['emplacement_id']:
+            cursor.execute("""
+                SELECT id, nombre_unites, poids_total_kg, site_stockage, emplacement_stockage, statut_lavage
+                FROM stock_emplacements
+                WHERE id = %s AND is_active = TRUE
+            """, (job['emplacement_id'],))
+        else:
+            # Fallback pour anciens jobs sans emplacement_id
+            cursor.execute("""
+                SELECT id, nombre_unites, poids_total_kg, site_stockage, emplacement_stockage, statut_lavage
+                FROM stock_emplacements
+                WHERE lot_id = %s 
+                  AND statut_lavage IN ('BRUT', 'GRENAILLES_BRUTES')
+                  AND is_active = TRUE
+                ORDER BY id
+                LIMIT 1
+            """, (job['lot_id'],))
         
-        # S'assurer que le stock source a bien statut_lavage = 'BRUT'
-        cursor.execute("""
-            UPDATE stock_emplacements 
-            SET statut_lavage = 'BRUT', type_stock = 'PRINCIPAL'
-            WHERE id = %s AND statut_lavage IS NULL
-        """, (stock_brut['id'],))
+        stock_source = cursor.fetchone()
+        if not stock_source:
+            return False, "❌ Stock source introuvable"
+        
+        # Déterminer le type de source (BRUT ou GRENAILLES_BRUTES)
+        statut_source = job['statut_source'] or stock_source['statut_lavage'] or 'BRUT'
+        is_grenailles_source = (statut_source == 'GRENAILLES_BRUTES')
+        
+        # S'assurer que le stock source a bien un statut_lavage
+        if not stock_source['statut_lavage']:
+            cursor.execute("""
+                UPDATE stock_emplacements 
+                SET statut_lavage = 'BRUT', type_stock = 'PRINCIPAL'
+                WHERE id = %s AND statut_lavage IS NULL
+            """, (stock_source['id'],))
         
         # Calculs tares
         poids_brut = float(job['poids_brut_kg'])
-        poids_terre = poids_brut - poids_lave - poids_grenailles - poids_dechets
-        tare_reelle = ((poids_dechets + poids_terre) / poids_brut) * 100
-        rendement = ((poids_lave + poids_grenailles) / poids_brut) * 100
+        
+        if is_grenailles_source:
+            # Pour grenailles : pas de sous-grenailles, tout passe en lavé ou déchets
+            poids_terre = poids_brut - poids_lave - poids_dechets
+            poids_grenailles = 0  # Pas de sous-grenailles
+            tare_reelle = ((poids_dechets + poids_terre) / poids_brut) * 100
+            rendement = (poids_lave / poids_brut) * 100
+        else:
+            # Pour BRUT normal
+            poids_terre = poids_brut - poids_lave - poids_grenailles - poids_dechets
+            tare_reelle = ((poids_dechets + poids_terre) / poids_brut) * 100
+            rendement = ((poids_lave + poids_grenailles) / poids_brut) * 100
         
         # Validation cohérence
-        if abs(poids_brut - (poids_lave + poids_grenailles + poids_dechets + poids_terre)) > 1:
-            return False, f"❌ Poids incohérents ! Brut={poids_brut:.0f} vs Total={poids_lave+poids_grenailles+poids_dechets+poids_terre:.0f}"
+        total_sorties = poids_lave + poids_grenailles + poids_dechets + poids_terre
+        if abs(poids_brut - total_sorties) > 1:
+            return False, f"❌ Poids incohérents ! Brut={poids_brut:.0f} vs Total={total_sorties:.0f}"
         
         # Calcul temps réel (en minutes)
         temps_reel_minutes = None
@@ -495,40 +524,49 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
               terminated_by, notes, job_id))
         
         # ============================================================
-        # 2. CRÉER STOCK LAVÉ
+        # 2. CRÉER STOCK LAVÉ (ou GRENAILLES_LAVÉES si source = grenailles)
         # ============================================================
+        if is_grenailles_source:
+            # Source = GRENAILLES_BRUTES → créer GRENAILLES_LAVÉES
+            statut_sortie = 'GRENAILLES_LAVÉES'
+            type_stock_sortie = 'GRENAILLES_LAVÉES'
+        else:
+            # Source = BRUT → créer LAVÉ
+            statut_sortie = 'LAVÉ'
+            type_stock_sortie = 'LAVÉ'
+        
         cursor.execute("""
             INSERT INTO stock_emplacements 
             (lot_id, site_stockage, emplacement_stockage, nombre_unites, 
              type_conditionnement, poids_total_kg, type_stock, statut_lavage, lavage_job_id, is_active)
-            VALUES (%s, %s, %s, %s, 'Pallox', %s, 'LAVÉ', 'LAVÉ', %s, TRUE)
+            VALUES (%s, %s, %s, %s, 'Pallox', %s, %s, %s, %s, TRUE)
             RETURNING id
         """, (job['lot_id'], site_dest, emplacement_dest, quantite_pallox, 
-              poids_lave, job_id))
+              poids_lave, type_stock_sortie, statut_sortie, job_id))
         stock_lave_id = cursor.fetchone()['id']
         
         # ============================================================
-        # 3. CRÉER STOCK GRENAILLES (si > 0)
+        # 3. CRÉER STOCK GRENAILLES_BRUTES (seulement si source = BRUT et grenailles > 0)
         # ============================================================
         stock_grenailles_id = None
-        if poids_grenailles > 0:
+        if not is_grenailles_source and poids_grenailles > 0:
             # Calculer nb pallox grenailles (estimation : 1 pallox = 500kg grenailles)
             nb_pallox_gren = max(1, int(poids_grenailles / 500))
             cursor.execute("""
                 INSERT INTO stock_emplacements 
                 (lot_id, site_stockage, emplacement_stockage, nombre_unites, 
                  type_conditionnement, poids_total_kg, type_stock, statut_lavage, lavage_job_id, is_active)
-                VALUES (%s, %s, %s, %s, 'Pallox', %s, 'GRENAILLES', 'GRENAILLES', %s, TRUE)
+                VALUES (%s, %s, %s, %s, 'Pallox', %s, 'GRENAILLES', 'GRENAILLES_BRUTES', %s, TRUE)
                 RETURNING id
             """, (job['lot_id'], site_dest, emplacement_dest, nb_pallox_gren, 
                   poids_grenailles, job_id))
             stock_grenailles_id = cursor.fetchone()['id']
         
         # ============================================================
-        # 4. DÉDUIRE DU STOCK BRUT SOURCE
+        # 4. DÉDUIRE DU STOCK SOURCE
         # ============================================================
-        nouveau_nb_unites = int(stock_brut['nombre_unites']) - quantite_pallox
-        nouveau_poids = float(stock_brut['poids_total_kg']) - poids_brut
+        nouveau_nb_unites = int(stock_source['nombre_unites']) - quantite_pallox
+        nouveau_poids = float(stock_source['poids_total_kg']) - poids_brut
         
         if nouveau_nb_unites <= 0:
             # Stock épuisé - désactiver
@@ -536,52 +574,57 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
                 UPDATE stock_emplacements
                 SET nombre_unites = 0, poids_total_kg = 0, is_active = FALSE
                 WHERE id = %s
-            """, (stock_brut['id'],))
+            """, (stock_source['id'],))
         else:
             # Stock restant
             cursor.execute("""
                 UPDATE stock_emplacements
                 SET nombre_unites = %s, poids_total_kg = %s
                 WHERE id = %s
-            """, (nouveau_nb_unites, nouveau_poids, stock_brut['id']))
+            """, (nouveau_nb_unites, nouveau_poids, stock_source['id']))
         
         # ============================================================
         # 5. ENREGISTRER MOUVEMENTS DE STOCK
         # ============================================================
-        # Mouvement LAVAGE_BRUT_REDUIT (déduction brut)
+        # Mouvement réduction source
+        type_mvt_source = 'LAVAGE_GRENAILLES_REDUIT' if is_grenailles_source else 'LAVAGE_BRUT_REDUIT'
         cursor.execute("""
             INSERT INTO stock_mouvements 
             (lot_id, type_mouvement, site_origine, emplacement_origine,
              quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
-            VALUES (%s, 'LAVAGE_BRUT_REDUIT', %s, %s, %s, 'Pallox', %s, %s, %s, %s)
-        """, (job['lot_id'], stock_brut['site_stockage'], stock_brut['emplacement_stockage'], 
+            VALUES (%s, %s, %s, %s, %s, 'Pallox', %s, %s, %s, %s)
+        """, (job['lot_id'], type_mvt_source, stock_source['site_stockage'], stock_source['emplacement_stockage'], 
               quantite_pallox, poids_brut, terminated_by, f"Job #{job_id} - Sortie lavage", terminated_by))
         
-        # Mouvement LAVAGE_CREATION_LAVE
+        # Mouvement création sortie (LAVÉ ou GRENAILLES_LAVÉES)
+        type_mvt_sortie = 'LAVAGE_CREATION_GRENAILLES_LAVEES' if is_grenailles_source else 'LAVAGE_CREATION_LAVE'
         cursor.execute("""
             INSERT INTO stock_mouvements 
             (lot_id, type_mouvement, site_destination, emplacement_destination,
              quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
-            VALUES (%s, 'LAVAGE_CREATION_LAVE', %s, %s, %s, 'Pallox', %s, %s, %s, %s)
-        """, (job['lot_id'], site_dest, emplacement_dest, quantite_pallox, 
-              poids_lave, terminated_by, f"Job #{job_id} - Entrée lavé", terminated_by))
+            VALUES (%s, %s, %s, %s, %s, 'Pallox', %s, %s, %s, %s)
+        """, (job['lot_id'], type_mvt_sortie, site_dest, emplacement_dest, quantite_pallox, 
+              poids_lave, terminated_by, f"Job #{job_id} - Entrée {statut_sortie}", terminated_by))
         
-        # Mouvement LAVAGE_CREATION_GRENAILLES (si > 0)
-        if poids_grenailles > 0:
+        # Mouvement GRENAILLES_BRUTES (seulement si source = BRUT et grenailles > 0)
+        if not is_grenailles_source and poids_grenailles > 0:
             cursor.execute("""
                 INSERT INTO stock_mouvements 
                 (lot_id, type_mouvement, site_destination, emplacement_destination,
                  quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
                 VALUES (%s, 'LAVAGE_CREATION_GRENAILLES', %s, %s, %s, 'Pallox', %s, %s, %s, %s)
             """, (job['lot_id'], site_dest, emplacement_dest, nb_pallox_gren, 
-                  poids_grenailles, terminated_by, f"Job #{job_id} - Entrée grenailles", terminated_by))
+                  poids_grenailles, terminated_by, f"Job #{job_id} - Entrée grenailles brutes", terminated_by))
         
         conn.commit()
         cursor.close()
         conn.close()
         
         temps_str = f"{temps_reel_minutes // 60}h{temps_reel_minutes % 60:02d}" if temps_reel_minutes else "N/A"
-        return True, f"✅ Terminé ! Temps: {temps_str} - Rendement: {rendement:.1f}% - Stock LAVÉ créé"
+        if is_grenailles_source:
+            return True, f"✅ Terminé ! Temps: {temps_str} - Rendement: {rendement:.1f}% - Stock GRENAILLES_LAVÉES créé"
+        else:
+            return True, f"✅ Terminé ! Temps: {temps_str} - Rendement: {rendement:.1f}% - Stock LAVÉ créé"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
@@ -606,20 +649,28 @@ def get_emplacements_saint_flavy():
         return []
 
 def get_lots_bruts_disponibles():
-    """Récupère les lots bruts disponibles pour créer un job
+    """Récupère les emplacements disponibles pour créer un job
     
-    IMPORTANT: Soustrait les pallox déjà réservés par des jobs PRÉVU ou EN_COURS
-    pour éviter la sur-réservation du stock
+    IMPORTANT: 
+    - Filtre sur lots_bruts.is_active = TRUE
+    - Calcule les réservations PAR EMPLACEMENT (pas par lot)
+    - Inclut BRUT et GRENAILLES_BRUTES (peuvent être lavés)
     """
     try:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
             SELECT 
-                l.id as lot_id, l.code_lot_interne, l.nom_usage,
-                l.calibre_min, l.calibre_max,
+                l.id as lot_id, 
+                l.code_lot_interne, 
+                l.nom_usage,
+                l.calibre_min, 
+                l.calibre_max,
                 COALESCE(v.nom_variete, l.code_variete) as variete,
-                se.id as emplacement_id, se.site_stockage, se.emplacement_stockage,
+                se.id as emplacement_id, 
+                se.site_stockage, 
+                se.emplacement_stockage,
+                se.statut_lavage,
                 se.nombre_unites as stock_total,
                 COALESCE(jobs_reserves.pallox_reserves, 0) as pallox_reserves,
                 se.nombre_unites - COALESCE(jobs_reserves.pallox_reserves, 0) as nombre_unites,
@@ -629,17 +680,19 @@ def get_lots_bruts_disponibles():
             JOIN stock_emplacements se ON l.id = se.lot_id
             LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
             LEFT JOIN (
-                SELECT lot_id,
+                SELECT emplacement_id,
                        SUM(quantite_pallox) as pallox_reserves,
                        SUM(poids_brut_kg) as poids_reserve
                 FROM lavages_jobs
                 WHERE statut IN ('PRÉVU', 'EN_COURS')
-                GROUP BY lot_id
-            ) jobs_reserves ON l.id = jobs_reserves.lot_id
-            WHERE se.is_active = TRUE 
-              AND (se.statut_lavage = 'BRUT' OR se.statut_lavage IS NULL)
+                  AND emplacement_id IS NOT NULL
+                GROUP BY emplacement_id
+            ) jobs_reserves ON se.id = jobs_reserves.emplacement_id
+            WHERE l.is_active = TRUE
+              AND se.is_active = TRUE 
+              AND se.statut_lavage IN ('BRUT', 'GRENAILLES_BRUTES')
               AND (se.nombre_unites - COALESCE(jobs_reserves.pallox_reserves, 0)) > 0
-            ORDER BY l.code_lot_interne
+            ORDER BY l.code_lot_interne, se.site_stockage, se.emplacement_stockage
         """)
         rows = cursor.fetchall()
         cursor.close()
@@ -658,7 +711,8 @@ def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg,
                      date_prevue, ligne_lavage, capacite_th, notes=""):
     """Crée un nouveau job de lavage
     
-    Vérifie que le stock disponible est suffisant (stock - jobs réservés)
+    Vérifie que le stock disponible PAR EMPLACEMENT est suffisant
+    Enregistre emplacement_id et statut_source
     """
     try:
         conn = get_connection()
@@ -670,28 +724,35 @@ def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg,
         capacite_th = float(capacite_th)
         
         # ============================================================
-        # VÉRIFICATION : Stock disponible suffisant ?
+        # VÉRIFICATION : Stock disponible PAR EMPLACEMENT suffisant ?
         # ============================================================
         cursor.execute("""
             SELECT 
                 se.nombre_unites as stock_total,
+                se.statut_lavage,
                 COALESCE(jobs.pallox_reserves, 0) as pallox_reserves,
                 se.nombre_unites - COALESCE(jobs.pallox_reserves, 0) as stock_disponible
             FROM stock_emplacements se
             LEFT JOIN (
-                SELECT lot_id, SUM(quantite_pallox) as pallox_reserves
+                SELECT emplacement_id, SUM(quantite_pallox) as pallox_reserves
                 FROM lavages_jobs
                 WHERE statut IN ('PRÉVU', 'EN_COURS')
-                GROUP BY lot_id
-            ) jobs ON se.lot_id = jobs.lot_id
+                  AND emplacement_id IS NOT NULL
+                GROUP BY emplacement_id
+            ) jobs ON se.id = jobs.emplacement_id
             WHERE se.id = %s
         """, (emplacement_id,))
         stock_info = cursor.fetchone()
         
-        if stock_info:
-            stock_disponible = int(stock_info['stock_disponible']) if stock_info['stock_disponible'] else int(stock_info['stock_total'])
-            if quantite_pallox > stock_disponible:
-                return False, f"❌ Stock insuffisant : {quantite_pallox} demandés mais seulement {stock_disponible} disponibles (déjà {int(stock_info['pallox_reserves'])} réservés)"
+        if not stock_info:
+            return False, "❌ Emplacement introuvable"
+        
+        stock_disponible = int(stock_info['stock_disponible']) if stock_info['stock_disponible'] else int(stock_info['stock_total'])
+        if quantite_pallox > stock_disponible:
+            return False, f"❌ Stock insuffisant : {quantite_pallox} demandés mais seulement {stock_disponible} disponibles (déjà {int(stock_info['pallox_reserves'])} réservés)"
+        
+        # Récupérer le statut_source (BRUT ou GRENAILLES_BRUTES)
+        statut_source = stock_info['statut_lavage'] or 'BRUT'
         
         cursor.execute("""
             SELECT l.code_lot_interne, COALESCE(v.nom_variete, l.code_variete) as variete
@@ -705,14 +766,14 @@ def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg,
         
         cursor.execute("""
             INSERT INTO lavages_jobs (
-                lot_id, code_lot_interne, variete, quantite_pallox, poids_brut_kg,
+                lot_id, emplacement_id, code_lot_interne, variete, quantite_pallox, poids_brut_kg,
                 date_prevue, ligne_lavage, capacite_th, temps_estime_heures,
-                statut, created_by, notes
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'PRÉVU', %s, %s)
+                statut, statut_source, created_by, notes
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'PRÉVU', %s, %s, %s)
             RETURNING id
-        """, (lot_id, lot_info['code_lot_interne'], lot_info['variete'],
+        """, (lot_id, emplacement_id, lot_info['code_lot_interne'], lot_info['variete'],
               quantite_pallox, poids_brut_kg, date_prevue, ligne_lavage,
-              capacite_th, temps_estime, created_by, notes))
+              capacite_th, temps_estime, statut_source, created_by, notes))
         job_id = cursor.fetchone()['id']
         conn.commit()
         cursor.close()
@@ -780,14 +841,19 @@ def annuler_job_en_cours(job_id):
         return False, f"❌ Erreur : {str(e)}"
 
 def annuler_job_termine(job_id):
-    """Annule un job TERMINÉ : remet en PRÉVU, restaure le stock BRUT, supprime stocks LAVÉ/GRENAILLES"""
+    """Annule un job TERMINÉ : remet en PRÉVU, restaure le stock source, supprime stocks créés
+    
+    Gère les deux cas :
+    - Source BRUT → supprime LAVÉ + GRENAILLES_BRUTES
+    - Source GRENAILLES_BRUTES → supprime GRENAILLES_LAVÉES
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Vérifier que le job est TERMINÉ
+        # Vérifier que le job est TERMINÉ + récupérer emplacement_id et statut_source
         cursor.execute("""
-            SELECT statut, lot_id, quantite_pallox, poids_brut_kg
+            SELECT statut, lot_id, quantite_pallox, poids_brut_kg, emplacement_id, statut_source
             FROM lavages_jobs WHERE id = %s
         """, (job_id,))
         result = cursor.fetchone()
@@ -799,37 +865,49 @@ def annuler_job_termine(job_id):
         lot_id = result['lot_id']
         quantite_pallox = int(result['quantite_pallox'])
         poids_brut = float(result['poids_brut_kg'])
+        emplacement_id = result['emplacement_id']
+        statut_source = result['statut_source'] or 'BRUT'
         
         # ============================================================
-        # 1. SUPPRIMER LES STOCKS LAVÉ ET GRENAILLES CRÉÉS PAR CE JOB
+        # 1. SUPPRIMER LES STOCKS CRÉÉS PAR CE JOB
         # ============================================================
+        # Inclut tous les types possibles : LAVÉ, GRENAILLES_BRUTES, GRENAILLES_LAVÉES
         cursor.execute("""
             DELETE FROM stock_emplacements 
-            WHERE lavage_job_id = %s AND statut_lavage IN ('LAVÉ', 'GRENAILLES')
+            WHERE lavage_job_id = %s AND statut_lavage IN ('LAVÉ', 'GRENAILLES', 'GRENAILLES_BRUTES', 'GRENAILLES_LAVÉES')
         """, (job_id,))
         
         # ============================================================
-        # 2. RESTAURER LE STOCK BRUT SOURCE
+        # 2. RESTAURER LE STOCK SOURCE
         # ============================================================
-        # Chercher le stock BRUT du lot (actif ou non, incluant NULL pour anciens stocks)
-        cursor.execute("""
-            SELECT id, nombre_unites, poids_total_kg, is_active
-            FROM stock_emplacements
-            WHERE lot_id = %s AND (statut_lavage = 'BRUT' OR statut_lavage IS NULL)
-            ORDER BY id
-            LIMIT 1
-        """, (lot_id,))
-        stock_brut = cursor.fetchone()
+        # Utiliser emplacement_id du job si disponible, sinon chercher par lot_id
+        if emplacement_id:
+            cursor.execute("""
+                SELECT id, nombre_unites, poids_total_kg, is_active, statut_lavage
+                FROM stock_emplacements
+                WHERE id = %s
+            """, (emplacement_id,))
+        else:
+            # Fallback : chercher le stock source du lot (BRUT ou GRENAILLES_BRUTES selon statut_source)
+            cursor.execute("""
+                SELECT id, nombre_unites, poids_total_kg, is_active, statut_lavage
+                FROM stock_emplacements
+                WHERE lot_id = %s AND (statut_lavage = %s OR statut_lavage IS NULL)
+                ORDER BY id
+                LIMIT 1
+            """, (lot_id, statut_source))
         
-        if stock_brut:
+        stock_source = cursor.fetchone()
+        
+        if stock_source:
             # Restaurer les quantités
-            nouveau_nb = int(stock_brut['nombre_unites']) + quantite_pallox
-            nouveau_poids = float(stock_brut['poids_total_kg']) + poids_brut
+            nouveau_nb = int(stock_source['nombre_unites']) + quantite_pallox
+            nouveau_poids = float(stock_source['poids_total_kg']) + poids_brut
             cursor.execute("""
                 UPDATE stock_emplacements
                 SET nombre_unites = %s, poids_total_kg = %s, is_active = TRUE
                 WHERE id = %s
-            """, (nouveau_nb, nouveau_poids, stock_brut['id']))
+            """, (nouveau_nb, nouveau_poids, stock_source['id']))
         
         # ============================================================
         # 3. SUPPRIMER LES MOUVEMENTS DE STOCK LIÉS
@@ -863,7 +941,7 @@ def annuler_job_termine(job_id):
         conn.commit()
         cursor.close()
         conn.close()
-        return True, f"✅ Job annulé - Stock BRUT restauré (+{quantite_pallox} pallox)"
+        return True, f"✅ Job annulé - Stock {statut_source} restauré (+{quantite_pallox} pallox)"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
@@ -1333,14 +1411,21 @@ with tab3:
             lots_f = lots_f[lots_f['site_stockage'] == f_site]
         
         if not lots_f.empty:
-            st.markdown(f"**{len(lots_f)} lot(s) disponible(s)** - ⚠️ *Pallox Dispo = Stock - Jobs réservés (PRÉVU/EN_COURS)*")
+            st.markdown(f"**{len(lots_f)} emplacement(s) disponible(s)** - ⚠️ *Pallox Dispo = Stock - Jobs réservés (PRÉVU/EN_COURS)*")
+            st.caption("🔵 BRUT = Stock initial | 🟠 GRENAILLES_BRUTES = Grenailles à re-laver")
             
-            # Afficher Stock Total, Réservés et Disponible
-            df_display = lots_f[['lot_id', 'emplacement_id', 'code_lot_interne', 'variete', 'site_stockage', 'stock_total', 'pallox_reserves', 'nombre_unites', 'poids_total_kg']].copy()
+            # Afficher Stock Total, Réservés et Disponible avec Type et Emplacement
+            df_display = lots_f[['lot_id', 'emplacement_id', 'code_lot_interne', 'variete', 'statut_lavage', 'site_stockage', 'emplacement_stockage', 'stock_total', 'pallox_reserves', 'nombre_unites', 'poids_total_kg']].copy()
+            # Formater statut_lavage pour affichage
+            df_display['statut_lavage'] = df_display['statut_lavage'].apply(
+                lambda x: '🔵 BRUT' if x == 'BRUT' else ('🟠 GRENAILLES' if x == 'GRENAILLES_BRUTES' else x)
+            )
             df_display = df_display.rename(columns={
                 'code_lot_interne': 'Code Lot',
                 'variete': 'Variété',
+                'statut_lavage': 'Type',
                 'site_stockage': 'Site',
+                'emplacement_stockage': 'Emplacement',
                 'stock_total': 'Stock',
                 'pallox_reserves': 'Réservés',
                 'nombre_unites': 'Dispo',
@@ -1352,6 +1437,7 @@ with tab3:
             column_config = {
                 "lot_id": None,
                 "emplacement_id": None,
+                "Type": st.column_config.TextColumn("Type", help="BRUT ou GRENAILLES à re-laver"),
                 "Stock": st.column_config.NumberColumn("Stock", format="%d", help="Pallox en stock physique"),
                 "Réservés": st.column_config.NumberColumn("Réservés", format="%d", help="Pallox réservés par jobs PRÉVU/EN_COURS"),
                 "Dispo": st.column_config.NumberColumn("Dispo", format="%d", help="Pallox disponibles pour nouveau job"),
@@ -1364,17 +1450,19 @@ with tab3:
             
             if len(selected_rows) > 0:
                 row = df_display.iloc[selected_rows[0]]
-                lot_data = lots_dispo[lots_dispo['lot_id'] == row['lot_id']].iloc[0]
+                lot_data = lots_dispo[(lots_dispo['lot_id'] == row['lot_id']) & (lots_dispo['emplacement_id'] == row['emplacement_id'])].iloc[0]
                 
-                # Afficher info stock avec réservés
+                # Afficher info stock avec réservés + type
                 reserves = int(lot_data['pallox_reserves']) if pd.notna(lot_data['pallox_reserves']) else 0
                 dispo = int(lot_data['nombre_unites'])
                 total = int(lot_data['stock_total']) if pd.notna(lot_data['stock_total']) else dispo
+                type_source = lot_data['statut_lavage'] if pd.notna(lot_data['statut_lavage']) else 'BRUT'
+                type_emoji = '🔵' if type_source == 'BRUT' else '🟠'
                 
                 if reserves > 0:
-                    st.warning(f"⚠️ **{lot_data['code_lot_interne']}** - Stock: {total} pallox, Réservés: {reserves}, **Disponible: {dispo}**")
+                    st.warning(f"⚠️ {type_emoji} **{lot_data['code_lot_interne']}** ({type_source}) - {lot_data['emplacement_stockage']} - Stock: {total}, Réservés: {reserves}, **Disponible: {dispo}**")
                 else:
-                    st.success(f"✅ **{lot_data['code_lot_interne']}** - {lot_data['variete']} - **{dispo} pallox disponibles**")
+                    st.success(f"✅ {type_emoji} **{lot_data['code_lot_interne']}** ({type_source}) - {lot_data['variete']} - {lot_data['emplacement_stockage']} - **{dispo} pallox**")
                 
                 col1, col2 = st.columns(2)
                 with col1:
