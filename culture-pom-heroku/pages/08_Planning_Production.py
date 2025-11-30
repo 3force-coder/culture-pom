@@ -404,18 +404,41 @@ def get_emplacements_site(site_code):
     except:
         return []
 
-def terminer_job(job_id, quantite_sortie, numero_lot_sortie, site_dest, emplacement_dest, notes=""):
-    """Termine un job et crée le stock produit fini"""
+def get_sur_emballages_actifs():
+    """Récupère les sur-emballages actifs pour le dropdown"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, code_sur_emballage, libelle, nb_uvc, prix_unitaire, cout_tonne
+            FROM ref_sur_emballages
+            WHERE is_active = TRUE
+            ORDER BY libelle
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return rows if rows else []
+    except:
+        return []
+
+def terminer_job(job_id, quantite_sortie, numero_lot_sortie, site_dest, emplacement_dest, sur_emballage_id=None, quantite_sur_emballages=1, nb_uvc_par_suremb=0, notes=""):
+    """Termine un job et crée le stock produit fini avec traçabilité complète"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Récupérer job
+        # Récupérer job avec infos complètes
         cursor.execute("""
-            SELECT lot_id, quantite_entree_tonnes, code_lot_interne, 
-                   code_produit_commercial, ligne_production, date_activation
-            FROM production_jobs
-            WHERE id = %s AND statut = 'EN_COURS'
+            SELECT 
+                pj.lot_id, 
+                pj.quantite_entree_tonnes, 
+                pj.code_lot_interne, 
+                pj.code_produit_commercial, 
+                pj.ligne_production, 
+                pj.date_activation
+            FROM production_jobs pj
+            WHERE pj.id = %s AND pj.statut = 'EN_COURS'
         """, (job_id,))
         job = cursor.fetchone()
         if not job:
@@ -438,24 +461,60 @@ def terminer_job(job_id, quantite_sortie, numero_lot_sortie, site_dest, emplacem
         """, (quantite_sortie, numero_lot_sortie, site_dest, emplacement_dest,
               terminated_by, notes, job_id))
         
-        # Créer stock produit fini
-        cursor.execute("""
-            INSERT INTO stock_emplacements 
-            (lot_id, site_stockage, emplacement_stockage, nombre_unites,
-             type_conditionnement, poids_total_kg, type_stock, 
-             code_produit_commercial, numero_lot_produit, production_job_id, is_active)
-            VALUES (%s, %s, %s, 1, 'PRODUIT_FINI', %s, 'PRODUIT_FINI', %s, %s, %s, TRUE)
-        """, (job['lot_id'], site_dest, emplacement_dest, 
-              quantite_sortie * 1000,
-              job['code_produit_commercial'], numero_lot_sortie, job_id))
+        # Calculer nb_uvc_total
+        nb_uvc_total = nb_uvc_par_suremb * quantite_sur_emballages if sur_emballage_id else 0
+        poids_total_kg = quantite_sortie * 1000
         
-        # Mouvement stock
+        # ⭐ CRÉER STOCK PRODUIT FINI (structure existante)
+        cursor.execute("""
+            INSERT INTO stock_produits_finis (
+                production_job_id,
+                code_produit_commercial,
+                sur_emballage_id,
+                quantite_sur_emballages,
+                nb_uvc_total,
+                poids_total_kg,
+                statut,
+                date_production,
+                lot_origine,
+                site_stockage,
+                emplacement,
+                notes,
+                is_active,
+                created_by
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, 'EN_STOCK', CURRENT_DATE, %s, %s, %s, %s, TRUE, %s
+            )
+        """, (
+            job_id,
+            job['code_produit_commercial'],
+            sur_emballage_id if sur_emballage_id else None,
+            quantite_sur_emballages,
+            nb_uvc_total,
+            poids_total_kg,
+            job['code_lot_interne'],
+            site_dest,
+            emplacement_dest,
+            notes,
+            terminated_by
+        ))
+        
+        # Mouvement stock (pour historique)
         cursor.execute("""
             INSERT INTO stock_mouvements (lot_id, type_mouvement, site_destination, 
                                           emplacement_destination, poids_kg, user_action, notes, created_by)
             VALUES (%s, 'PRODUCTION_SORTIE', %s, %s, %s, %s, %s, %s)
-        """, (job['lot_id'], site_dest, emplacement_dest, quantite_sortie * 1000,
+        """, (job['lot_id'], site_dest, emplacement_dest, poids_total_kg,
               terminated_by, f"Job #{job_id} - Produit fini", terminated_by))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, f"✅ Job terminé - {quantite_sortie:.2f} T ({nb_uvc_total} UVC)"
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
         
         conn.commit()
         cursor.close()
@@ -523,10 +582,10 @@ def annuler_job_termine(job_id):
         if job['statut'] != 'TERMINÉ':
             return False, f"❌ Job n'est pas TERMINÉ (statut: {job['statut']})"
         
-        # Supprimer le stock produit fini créé
+        # ⭐ Supprimer le stock produit fini créé (nouvelle table)
         cursor.execute("""
-            DELETE FROM stock_emplacements 
-            WHERE production_job_id = %s AND type_stock = 'PRODUIT_FINI'
+            DELETE FROM stock_produits_finis 
+            WHERE production_job_id = %s
         """, (job_id,))
         
         # Supprimer le mouvement stock
@@ -893,6 +952,28 @@ with tab1:
                                             empls = get_emplacements_site(site_dest)
                                             empl = st.selectbox("Emplacement", [""] + [e[0] for e in empls], key=f"empl_{elem['id']}")
                                             
+                                            # ⭐ Sur-Emballage (ID + quantité)
+                                            sur_emballages = get_sur_emballages_actifs()
+                                            sur_emb_options = ["(Aucun)"] + [f"{se['id']} - {se['libelle']} ({se['nb_uvc']} UVC)" for se in sur_emballages]
+                                            sur_emb_selected = st.selectbox("📦 Sur-Emballage", sur_emb_options, key=f"suremb_{elem['id']}")
+                                            
+                                            # Extraire l'ID et nb_uvc
+                                            sur_emballage_id = None
+                                            nb_uvc_par_suremb = 0
+                                            qte_sur_emb = 1
+                                            
+                                            if sur_emb_selected and sur_emb_selected != "(Aucun)":
+                                                sur_emballage_id = int(sur_emb_selected.split(" - ")[0])
+                                                # Trouver le nb_uvc correspondant
+                                                for se in sur_emballages:
+                                                    if se['id'] == sur_emballage_id:
+                                                        nb_uvc_par_suremb = se['nb_uvc'] or 0
+                                                        break
+                                                
+                                                # Quantité de sur-emballages
+                                                qte_sur_emb = st.number_input("Qté sur-emballages", min_value=1, value=1, step=1, key=f"qte_suremb_{elem['id']}")
+                                                st.caption(f"📊 Total UVC : {qte_sur_emb * nb_uvc_par_suremb}")
+                                            
                                             notes_fin = st.text_area("Notes", key=f"notes_{elem['id']}")
                                             
                                             col_val, col_ann = st.columns(2)
@@ -901,7 +982,10 @@ with tab1:
                                                     if not empl:
                                                         st.warning("⚠️ Emplacement requis")
                                                     else:
-                                                        success, msg = terminer_job(int(elem['job_id']), qte_sortie, num_lot, site_dest, empl, notes_fin)
+                                                        success, msg = terminer_job(
+                                                            int(elem['job_id']), qte_sortie, num_lot, site_dest, empl,
+                                                            sur_emballage_id, qte_sur_emb, nb_uvc_par_suremb, notes_fin
+                                                        )
                                                         if success:
                                                             st.success(msg)
                                                             st.session_state.pop(f'show_finish_prod_{elem["job_id"]}', None)
