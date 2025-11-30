@@ -535,13 +535,16 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
             statut_sortie = 'LAVÉ'
             type_stock_sortie = 'LAVÉ'
         
+        # Calculer le nombre de pallox LAVÉ basé sur le poids réel (poids/1900 arrondi sup, min 1)
+        nb_pallox_lave = max(1, math.ceil(poids_lave / 1900))
+        
         cursor.execute("""
             INSERT INTO stock_emplacements 
             (lot_id, site_stockage, emplacement_stockage, nombre_unites, 
              type_conditionnement, poids_total_kg, type_stock, statut_lavage, lavage_job_id, is_active)
             VALUES (%s, %s, %s, %s, 'Pallox', %s, %s, %s, %s, TRUE)
             RETURNING id
-        """, (job['lot_id'], site_dest, emplacement_dest, quantite_pallox, 
+        """, (job['lot_id'], site_dest, emplacement_dest, nb_pallox_lave, 
               poids_lave, type_stock_sortie, statut_sortie, job_id))
         stock_lave_id = cursor.fetchone()['id']
         
@@ -550,8 +553,8 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
         # ============================================================
         stock_grenailles_id = None
         if not is_grenailles_source and poids_grenailles > 0:
-            # Calculer nb pallox grenailles (estimation : 1 pallox = 500kg grenailles)
-            nb_pallox_gren = max(1, int(poids_grenailles / 500))
+            # Calculer nb pallox grenailles (poids/1900 arrondi sup, min 1)
+            nb_pallox_gren = max(1, math.ceil(poids_grenailles / 1900))
             cursor.execute("""
                 INSERT INTO stock_emplacements 
                 (lot_id, site_stockage, emplacement_stockage, nombre_unites, 
@@ -603,7 +606,7 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
             (lot_id, type_mouvement, site_destination, emplacement_destination,
              quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
             VALUES (%s, %s, %s, %s, %s, 'Pallox', %s, %s, %s, %s)
-        """, (job['lot_id'], type_mvt_sortie, site_dest, emplacement_dest, quantite_pallox, 
+        """, (job['lot_id'], type_mvt_sortie, site_dest, emplacement_dest, nb_pallox_lave, 
               poids_lave, terminated_by, f"Job #{job_id} - Entrée {statut_sortie}", terminated_by))
         
         # Mouvement GRENAILLES_BRUTES (seulement si source = BRUT et grenailles > 0)
