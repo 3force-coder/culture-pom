@@ -2,14 +2,14 @@ import streamlit as st
 from auth import show_login, is_authenticated
 
 st.set_page_config(
-    page_title="Culture Pom",
+    page_title="POMI",
     page_icon="🥔",
     layout="wide",
     initial_sidebar_state="collapsed" if not is_authenticated() else "expanded"
 )
 
 # ============================================================
-# AUTHENTIFICATION - MASQUER SIDEBAR SI NON CONNECTÉ
+# AUTHENTIFICATION
 # ============================================================
 
 if not is_authenticated():
@@ -24,142 +24,6 @@ if not is_authenticated():
     
     show_login()
     st.stop()
-
-# ============================================================
-# FONCTION COMPTEUR TÂCHES
-# ============================================================
-
-def get_taches_sidebar_count():
-    """Récupère le nombre de tâches ouvertes pour la sidebar"""
-    try:
-        from database import get_connection
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT COUNT(*) as cnt FROM taches 
-            WHERE statut IN ('À faire', 'En cours') 
-            AND priorite = 'Urgente' 
-            AND is_active = TRUE
-        """)
-        urgentes = cursor.fetchone()['cnt']
-        
-        cursor.execute("""
-            SELECT COUNT(*) as cnt FROM taches 
-            WHERE statut IN ('À faire', 'En cours') 
-            AND is_active = TRUE
-        """)
-        ouvertes = cursor.fetchone()['cnt']
-        
-        cursor.close()
-        conn.close()
-        
-        return urgentes, ouvertes
-    except:
-        return 0, 0
-
-# ============================================================
-# ⭐ ALERTE TÂCHES - BANDEAU FIXE EN HAUT VIA CSS
-# ============================================================
-
-try:
-    urgentes, ouvertes = get_taches_sidebar_count()
-    
-    if urgentes > 0:
-        # Bandeau ROUGE urgent
-        st.markdown(f"""
-        <style>
-            [data-testid="stSidebar"] > div:first-child {{
-                padding-top: 70px !important;
-            }}
-            .taches-alert {{
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: var(--sidebar-width, 300px);
-                z-index: 999999;
-                background: #ffcdd2;
-                border-bottom: 2px solid #f44336;
-                padding: 12px 16px;
-                text-align: center;
-                font-weight: bold;
-                color: #b71c1c;
-            }}
-            .taches-alert a {{
-                color: #b71c1c;
-                text-decoration: none;
-            }}
-            .taches-alert a:hover {{
-                text-decoration: underline;
-            }}
-        </style>
-        <div class="taches-alert">
-            🔴 {urgentes} tâche(s) urgente(s)<br>
-            <a href="/Tâches" target="_self">📋 Voir les tâches</a>
-        </div>
-        """, unsafe_allow_html=True)
-        
-    elif ouvertes > 0:
-        # Bandeau ORANGE warning
-        st.markdown(f"""
-        <style>
-            [data-testid="stSidebar"] > div:first-child {{
-                padding-top: 70px !important;
-            }}
-            .taches-alert {{
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: var(--sidebar-width, 300px);
-                z-index: 999999;
-                background: #fff3e0;
-                border-bottom: 2px solid #ff9800;
-                padding: 12px 16px;
-                text-align: center;
-                font-weight: bold;
-                color: #e65100;
-            }}
-            .taches-alert a {{
-                color: #e65100;
-                text-decoration: none;
-            }}
-            .taches-alert a:hover {{
-                text-decoration: underline;
-            }}
-        </style>
-        <div class="taches-alert">
-            📋 {ouvertes} tâche(s) en attente<br>
-            <a href="/Tâches" target="_self">Voir les tâches</a>
-        </div>
-        """, unsafe_allow_html=True)
-        
-    else:
-        # Bandeau VERT ok
-        st.markdown("""
-        <style>
-            [data-testid="stSidebar"] > div:first-child {
-                padding-top: 55px !important;
-            }
-            .taches-alert {
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: var(--sidebar-width, 300px);
-                z-index: 999999;
-                background: #e8f5e9;
-                border-bottom: 2px solid #4caf50;
-                padding: 10px 16px;
-                text-align: center;
-                font-weight: bold;
-                color: #2e7d32;
-            }
-        </style>
-        <div class="taches-alert">
-            ✅ Aucune tâche en attente
-        </div>
-        """, unsafe_allow_html=True)
-except:
-    pass
 
 # ============================================================
 # LOGO
@@ -220,7 +84,7 @@ pages = {
 pg = st.navigation(pages)
 
 # ============================================================
-# SIDEBAR - INFOS UTILISATEUR (EN BAS)
+# SIDEBAR - INFOS UTILISATEUR
 # ============================================================
 
 with st.sidebar:
