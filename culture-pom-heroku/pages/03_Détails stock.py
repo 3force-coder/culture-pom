@@ -922,13 +922,14 @@ if len(lots_to_display) > 0:
                         st.info(f"💡 **Poids théorique** : {format_number_fr(poids_theorique)} kg\n\n({nombre} × {format_number_fr(poids_unit_theorique)} kg/unité)")
                     
                     with col_poids:
+                        # ⭐ Clé dynamique pour forcer mise à jour quand nombre/type change
                         poids_total_saisi = st.number_input(
                             "Poids Total Réel (kg) *",
                             min_value=0.0,
                             value=float(poids_theorique),
-                            step=10.0,
+                            step=100.0,
                             help="💡 Modifiez si pesée camion différente du théorique",
-                            key=f"add_poids_{lot_id}"
+                            key=f"add_poids_{lot_id}_{nombre}_{type_cond}"
                         )
                         
                         # Afficher différence si modifié
