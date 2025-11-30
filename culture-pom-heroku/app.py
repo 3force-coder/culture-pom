@@ -46,6 +46,7 @@ pages = {
         st.Page("pages/02_Lots.py", title="Lots", icon="📦"),
         st.Page("pages/03_Détails stock.py", title="Détails Stock", icon="🗃️"),
         st.Page("pages/04_Stock_Global.py", title="Stock Global", icon="📊"),
+        st.Page("pages/04b_Produits_Finis.py", title="Produits Finis", icon="📦"),
         st.Page("pages/10_Stock_Consommables.py", title="Consommables", icon="🏷️"),
     ],
     "🏭 Production": [
