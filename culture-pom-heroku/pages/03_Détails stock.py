@@ -145,7 +145,8 @@ def get_lot_info(lot_id):
                 l.calibre_max,
                 l.poids_total_brut_kg,
                 l.statut,
-                COALESCE((CURRENT_DATE - l.date_entree_stock::DATE), 0) as age_jours
+                COALESCE((CURRENT_DATE - l.date_entree_stock::DATE), 0) as age_jours,
+                COALESCE((SELECT SUM(se.poids_total_kg) FROM stock_emplacements se WHERE se.lot_id = l.id AND se.is_active = TRUE), 0) as poids_reel_stock_kg
             FROM lots_bruts l
             LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
             LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
@@ -743,11 +744,12 @@ if len(lots_to_display) > 0:
         lot_info = get_lot_info(lot_id)
         
         if lot_info:
-            # ⚠️ Préparer affichage poids (peut être NULL)
-            if lot_info['poids_total_brut_kg']:
-                poids_display = f"{format_number_fr(lot_info['poids_total_brut_kg'])} kg ({format_float_fr(lot_info['poids_total_brut_kg']/1000)} T)"
+            # ⭐ Utiliser le poids réel depuis stock_emplacements (pas lots_bruts.poids_total_brut_kg qui est NULL)
+            poids_reel = lot_info.get('poids_reel_stock_kg') or 0
+            if poids_reel > 0:
+                poids_display = f"{format_number_fr(poids_reel)} kg ({format_float_fr(poids_reel/1000)} T)"
             else:
-                poids_display = "<em style='color: orange;'>Non défini - À saisir dans Détails Stock</em>"
+                poids_display = "<em style='color: orange;'>Aucun emplacement - À créer ci-dessous</em>"
             
             # ⭐ CARTE INFO LOT
             st.markdown(f"""
@@ -758,7 +760,7 @@ if len(lots_to_display) > 0:
                 <strong>Producteur:</strong> {lot_info['nom_producteur']}<br>
                 <strong>Date entrée:</strong> {lot_info['date_entree_stock']}<br>
                 <strong>Âge:</strong> {lot_info['age_jours']} jours<br>
-                <strong>Poids total brut:</strong> {poids_display}
+                <strong>Poids total stock:</strong> {poids_display}
             </div>
             """, unsafe_allow_html=True)
             
@@ -1145,43 +1147,30 @@ if len(lots_to_display) > 0:
                             if not recap.get('is_lavage_done'):
                                 # Lot pas encore lavé : affichage neutre gris
                                 color_ecart = "#757575"
-                                symbole_ecart = "⏳"
                                 titre_ecart = "⏳ LOT PAS ENCORE LAVÉ"
-                                contenu_ecart = """
-                                <p style='margin: 0.3rem 0; color: #757575; font-style: italic;'>Les écarts vs standard 22% seront calculés après lavage</p>
-                                """
+                                contenu_ecart = "<p style='margin: 0.3rem 0; color: #757575; font-style: italic;'>Les écarts vs standard 22% seront calculés après lavage</p>"
                             elif recap['ecart_tare_vs_standard'] < 0:
                                 # Lot lavé avec bonne performance : vert
                                 color_ecart = "#2e7d32"
-                                symbole_ecart = "✅"
                                 titre_ecart = "✅ ÉCARTS vs Standard 22%"
-                                contenu_ecart = f"""
-                                <p style='margin: 0.3rem 0; color: {color_ecart};'><strong>Écart tare:</strong> {recap['ecart_tare_vs_standard']:+.1f} points</p>
-                                <p style='margin: 0.3rem 0; color: {color_ecart};'><strong>Poids gagné/perdu:</strong> {recap['poids_gagne']:+.2f} T</p>
-                                """
+                                contenu_ecart = f"<p style='margin: 0.3rem 0; color: {color_ecart};'><strong>Écart tare:</strong> {recap['ecart_tare_vs_standard']:+.1f} points</p><p style='margin: 0.3rem 0; color: {color_ecart};'><strong>Poids gagné/perdu:</strong> {recap['poids_gagne']:+.2f} T</p>"
                             else:
                                 # Lot lavé avec mauvaise performance : rouge
                                 color_ecart = "#d32f2f"
-                                symbole_ecart = "⚠️"
                                 titre_ecart = "⚠️ ÉCARTS vs Standard 22%"
-                                contenu_ecart = f"""
-                                <p style='margin: 0.3rem 0; color: {color_ecart};'><strong>Écart tare:</strong> {recap['ecart_tare_vs_standard']:+.1f} points</p>
-                                <p style='margin: 0.3rem 0; color: {color_ecart};'><strong>Poids gagné/perdu:</strong> {recap['poids_gagne']:+.2f} T</p>
-                                """
+                                contenu_ecart = f"<p style='margin: 0.3rem 0; color: {color_ecart};'><strong>Écart tare:</strong> {recap['ecart_tare_vs_standard']:+.1f} points</p><p style='margin: 0.3rem 0; color: {color_ecart};'><strong>Poids gagné/perdu:</strong> {recap['poids_gagne']:+.2f} T</p>"
                             
-                            st.markdown(f"""
-                            <div style='background-color: #fff3e0; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #ff9800; height: 300px;'>
-                                <h4 style='margin-top: 0; color: #f57c00;'>🏭 MATIÈRE PREMIÈRE PRODUCTION</h4>
-                                <p style='margin: 0.3rem 0;'><strong>Tare production:</strong> {recap['tare_production']:.1f}% <span style='font-size: 0.85rem;'>{recap['tare_prod_source']}</span></p>
-                                <p style='margin: 0.3rem 0;'><strong>Poids net production:</strong> {recap['poids_net_production']:.1f} T</p>
-                                <hr style='margin: 0.5rem 0;'>
-                                <h4 style='margin-top: 0.5rem; margin-bottom: 0.3rem; color: {color_ecart};'>{titre_ecart}</h4>
-                                {contenu_ecart}
-                                <hr style='margin: 0.5rem 0;'>
-                                <h4 style='margin-top: 0.5rem; margin-bottom: 0.3rem;'>vs Achat payé</h4>
-                                <p style='margin: 0.3rem 0;'><strong>Perte production:</strong> {recap['perte_vs_achat']:.2f} T</p>
-                            </div>
-                            """, unsafe_allow_html=True)
+                            st.markdown(f"""<div style='background-color: #fff3e0; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #ff9800; height: 300px;'>
+<h4 style='margin-top: 0; color: #f57c00;'>🏭 MATIÈRE PREMIÈRE PRODUCTION</h4>
+<p style='margin: 0.3rem 0;'><strong>Tare production:</strong> {recap['tare_production']:.1f}% <span style='font-size: 0.85rem;'>{recap['tare_prod_source']}</span></p>
+<p style='margin: 0.3rem 0;'><strong>Poids net production:</strong> {recap['poids_net_production']:.1f} T</p>
+<hr style='margin: 0.5rem 0;'>
+<h4 style='margin-top: 0.5rem; margin-bottom: 0.3rem; color: {color_ecart};'>{titre_ecart}</h4>
+{contenu_ecart}
+<hr style='margin: 0.5rem 0;'>
+<h4 style='margin-top: 0.5rem; margin-bottom: 0.3rem;'>vs Achat payé</h4>
+<p style='margin: 0.3rem 0;'><strong>Perte production:</strong> {recap['perte_vs_achat']:.2f} T</p>
+</div>""", unsafe_allow_html=True)
                         
                         st.caption("💡 **Tare achat** : Négociée avec producteur (valorisation financière) | **Tare production** : Réelle après lavage ou standard 22% (matière disponible)")
                     else:
@@ -1270,13 +1259,14 @@ if len(lots_to_display) > 0:
                         st.info(f"💡 **Poids théorique** : {format_number_fr(poids_theorique)} kg\n\n({nombre} × {format_number_fr(poids_unit_theorique)} kg/unité)")
                     
                     with col_poids:
+                        # ⭐ Clé dynamique pour forcer mise à jour quand nombre/type change
                         poids_total_saisi = st.number_input(
                             "Poids Total Réel (kg) *",
                             min_value=0.0,
                             value=float(poids_theorique),
-                            step=10.0,
+                            step=100.0,
                             help="💡 Modifiez si pesée camion différente du théorique",
-                            key=f"add_poids_first_{lot_id}"
+                            key=f"add_poids_first_{lot_id}_{nombre}_{type_cond}"
                         )
                         
                         # Afficher différence si modifié
