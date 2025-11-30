@@ -317,15 +317,15 @@ TABLES_CONFIG = {
         }
     },
     
-    # ⭐ NOUVELLE TABLE : Chaînes Production
+    # ⭐ TABLE : Sur-Emballages (conditionnement secondaire)
     "Sur-Emballages": {
         "table": "ref_sur_emballages",
-        "columns": ["code", "libelle", "volume_tonnes", "cout_tonne", "description"],
-        "hidden_columns": ["is_active"],
+        "columns": ["code_sur_emballage", "libelle", "nb_uvc", "prix_unitaire", "cout_tonne", "description"],
+        "hidden_columns": ["is_active", "created_by"],
         "primary_key": "id",
-        "editable": ["libelle", "volume_tonnes", "cout_tonne", "description"],
+        "editable": ["libelle", "nb_uvc", "prix_unitaire", "cout_tonne", "description"],
         "has_updated_at": True,
-        "required_fields": ["code", "libelle"]
+        "required_fields": ["code_sur_emballage", "libelle", "nb_uvc"]
     },
     
     "Chaînes Production": {
@@ -615,6 +615,8 @@ def add_record(table_name, data):
                 return False, "❌ Ce code emballage est déjà utilisé. Merci de choisir un autre code."
             elif "code_produit" in error_msg:
                 return False, "❌ Ce code produit est déjà utilisé. Merci de choisir un autre code."
+            elif "code_sur_emballage" in error_msg:
+                return False, "❌ Ce code sur-emballage est déjà utilisé. Merci de choisir un autre code."
             elif "code" in error_msg:
                 return False, "❌ Ce code est déjà utilisé. Merci de choisir un autre code."
             else:
