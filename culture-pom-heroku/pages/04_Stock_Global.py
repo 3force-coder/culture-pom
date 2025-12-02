@@ -262,19 +262,19 @@ def get_alertes():
         cursor = conn.cursor()
         alertes = []
         
-        # Sites critiques (>95%)
+        # Sites critiques (>95%) - Ne compte que les lots actifs
         cursor.execute("""
             SELECT 
                 rs.code_site,
                 rs.capacite_max_pallox,
-                COALESCE(SUM(se.nombre_unites), 0) as occupe
+                COALESCE(SUM(CASE WHEN l.is_active = TRUE THEN se.nombre_unites ELSE 0 END), 0) as occupe
             FROM ref_sites_stockage rs
             LEFT JOIN stock_emplacements se ON rs.code_site = se.site_stockage 
                 AND se.is_active = TRUE
-            LEFT JOIN lots_bruts l ON se.lot_id = l.id AND l.is_active = TRUE
+            LEFT JOIN lots_bruts l ON se.lot_id = l.id
             WHERE rs.is_active = TRUE AND rs.capacite_max_pallox > 0
             GROUP BY rs.code_site, rs.capacite_max_pallox
-            HAVING (COALESCE(SUM(se.nombre_unites), 0)::float / rs.capacite_max_pallox * 100) >= %s
+            HAVING (COALESCE(SUM(CASE WHEN l.is_active = TRUE THEN se.nombre_unites ELSE 0 END), 0)::float / rs.capacite_max_pallox * 100) >= %s
         """, (SEUIL_SITE_CRITIQUE,))
         
         for row in cursor.fetchall():
@@ -285,20 +285,20 @@ def get_alertes():
                 'message': f"Site {row['code_site']} CRITIQUE : {taux:.0f}% occupé ({row['occupe']}/{row['capacite_max_pallox']} pallox)"
             })
         
-        # Sites pleins (>85%)
+        # Sites pleins (>85%) - Ne compte que les lots actifs
         cursor.execute("""
             SELECT 
                 rs.code_site,
                 rs.capacite_max_pallox,
-                COALESCE(SUM(se.nombre_unites), 0) as occupe
+                COALESCE(SUM(CASE WHEN l.is_active = TRUE THEN se.nombre_unites ELSE 0 END), 0) as occupe
             FROM ref_sites_stockage rs
             LEFT JOIN stock_emplacements se ON rs.code_site = se.site_stockage 
                 AND se.is_active = TRUE
-            LEFT JOIN lots_bruts l ON se.lot_id = l.id AND l.is_active = TRUE
+            LEFT JOIN lots_bruts l ON se.lot_id = l.id
             WHERE rs.is_active = TRUE AND rs.capacite_max_pallox > 0
             GROUP BY rs.code_site, rs.capacite_max_pallox
-            HAVING (COALESCE(SUM(se.nombre_unites), 0)::float / rs.capacite_max_pallox * 100) >= %s
-                AND (COALESCE(SUM(se.nombre_unites), 0)::float / rs.capacite_max_pallox * 100) < %s
+            HAVING (COALESCE(SUM(CASE WHEN l.is_active = TRUE THEN se.nombre_unites ELSE 0 END), 0)::float / rs.capacite_max_pallox * 100) >= %s
+                AND (COALESCE(SUM(CASE WHEN l.is_active = TRUE THEN se.nombre_unites ELSE 0 END), 0)::float / rs.capacite_max_pallox * 100) < %s
         """, (SEUIL_SITE_PLEIN, SEUIL_SITE_CRITIQUE))
         
         for row in cursor.fetchall():
@@ -407,6 +407,7 @@ def get_capacites_sites():
         conn = get_connection()
         cursor = conn.cursor()
         
+        # Ne compte que les emplacements avec lots actifs
         cursor.execute("""
             SELECT 
                 rs.code_site,
@@ -414,14 +415,14 @@ def get_capacites_sites():
                 rs.nom_complet,
                 rs.capacite_max_pallox,
                 rs.capacite_max_tonnes,
-                COALESCE(SUM(se.nombre_unites), 0) as occupe_pallox,
-                COALESCE(SUM(se.poids_total_kg), 0) as occupe_kg,
-                COUNT(DISTINCT se.lot_id) as nb_lots
+                COALESCE(SUM(CASE WHEN l.is_active = TRUE THEN se.nombre_unites ELSE 0 END), 0) as occupe_pallox,
+                COALESCE(SUM(CASE WHEN l.is_active = TRUE THEN se.poids_total_kg ELSE 0 END), 0) as occupe_kg,
+                COUNT(DISTINCT CASE WHEN l.is_active = TRUE THEN se.lot_id ELSE NULL END) as nb_lots
             FROM ref_sites_stockage rs
             LEFT JOIN stock_emplacements se ON rs.code_site = se.site_stockage 
                 AND rs.code_emplacement = se.emplacement_stockage
                 AND se.is_active = TRUE
-            LEFT JOIN lots_bruts l ON se.lot_id = l.id AND l.is_active = TRUE
+            LEFT JOIN lots_bruts l ON se.lot_id = l.id
             WHERE rs.is_active = TRUE
             GROUP BY rs.code_site, rs.code_emplacement, rs.nom_complet, 
                      rs.capacite_max_pallox, rs.capacite_max_tonnes
