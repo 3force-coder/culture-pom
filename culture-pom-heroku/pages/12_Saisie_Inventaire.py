@@ -327,7 +327,7 @@ for atelier in sorted(ateliers):
             new_value = st.number_input(
                 "Compté",
                 min_value=0,
-                max_value=99999,
+                max_value=999999,
                 value=current_value if current_value is not None else 0,
                 step=1,
                 key=f"input_{ligne_id}",
