@@ -332,26 +332,35 @@ def reactivate_record(record_id):
         return False, f"❌ Erreur : {str(e)}"
 
 def update_taux_couverture(record_id, nouveau_taux):
-    """Met à jour le taux de couverture d'une ligne"""
+    """Met à jour le taux de couverture d'une ligne ET recalcule hectares_ajustes"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         username = get_current_username()
         
-        # Le trigger mettra automatiquement à jour hectares_ajustes
+        # Récupérer hectares_necessaires pour calculer hectares_ajustes
+        cursor.execute("SELECT hectares_necessaires FROM plans_recolte WHERE id = %s", (record_id,))
+        result = cursor.fetchone()
+        hectares_base = float(result['hectares_necessaires'] or 0)
+        
+        # Calculer hectares_ajustes = hectares_base * taux / 100
+        hectares_ajustes = hectares_base * nouveau_taux / 100
+        
+        # Mettre à jour taux ET hectares_ajustes
         cursor.execute("""
             UPDATE plans_recolte 
             SET taux_couverture_cible = %s,
+                hectares_ajustes = %s,
                 updated_by = %s, 
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
-        """, (nouveau_taux, username, record_id))
+        """, (nouveau_taux, hectares_ajustes, username, record_id))
         
         conn.commit()
         cursor.close()
         conn.close()
         
-        return True, f"✅ Taux mis à jour : {nouveau_taux}%"
+        return True, f"✅ Taux mis à jour : {nouveau_taux}% ({hectares_ajustes:.2f} ha)"
         
     except Exception as e:
         if 'conn' in locals():
@@ -747,7 +756,7 @@ with tab1:
                     st.error(message)
         
         with col2:
-            if st.button("🔄 Recalculer besoins", use_container_width=True):
+            if st.button("🔄 Recalculer besoins", use_container_width=True, key="btn_recalc_plan"):
                 success, message = recalculer_besoins()
                 if success:
                     st.success(message)
@@ -962,7 +971,7 @@ with tab2:
                             st.error(message)
                 
                 with col2:
-                    if st.button("🔄 Recalculer besoins", use_container_width=True):
+                    if st.button("🔄 Recalculer besoins", use_container_width=True, key="btn_recalc_taux"):
                         success, message = recalculer_besoins()
                         if success:
                             st.success(message)
