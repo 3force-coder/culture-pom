@@ -301,6 +301,29 @@ def supprimer_affectation(affectation_id):
         return False, f"❌ Erreur : {e}"
 
 
+def supprimer_affectations_masse(ids_list):
+    """Supprime plusieurs affectations en une seule transaction"""
+    try:
+        if not ids_list:
+            return False, "❌ Aucune affectation sélectionnée"
+        
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Suppression en masse avec IN
+        placeholders = ','.join(['%s'] * len(ids_list))
+        cursor.execute(f"DELETE FROM plans_recolte_affectations WHERE id IN ({placeholders})", tuple(ids_list))
+        
+        nb_deleted = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, f"✅ {nb_deleted} affectation(s) supprimée(s)"
+    except Exception as e:
+        return False, f"❌ Erreur : {e}"
+
+
 def modifier_affectation(affectation_id, hectares, notes):
     """Modifie une affectation"""
     try:
@@ -505,82 +528,132 @@ if 'selected_besoin_id' in st.session_state and st.session_state['selected_besoi
     df_affectations = get_affectations_besoin(besoin_id)
     
     if not df_affectations.empty:
-        for idx, row in df_affectations.iterrows():
-            col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-            
-            with col1:
-                st.markdown(f"**{row['Producteur']}** ({row['Code Producteur']})")
-                if row['Notes']:
-                    st.caption(f"📝 {row['Notes']}")
-            
-            with col2:
-                # ✅ MODIFIÉ : Format décimal
-                st.metric("Hectares", f"{row['Hectares']:.1f} ha", label_visibility="collapsed")
-            
-            with col3:
-                if CAN_EDIT:
-                    if st.button("✏️", key=f"edit_{row['id']}", help="Modifier"):
-                        st.session_state[f'editing_{row["id"]}'] = True
+        # Tableau avec sélection multiple
+        df_display = df_affectations[['id', 'Code Producteur', 'Producteur', 'Hectares', 'Notes', 'Créé par', 'Date']].copy()
+        
+        # Configuration colonnes
+        column_config = {
+            "id": None,  # Masquer l'ID
+            "Code Producteur": st.column_config.TextColumn("Code", width="small"),
+            "Producteur": st.column_config.TextColumn("Producteur", width="medium"),
+            "Hectares": st.column_config.NumberColumn("Hectares", format="%.1f ha"),
+            "Notes": st.column_config.TextColumn("Notes", width="medium"),
+            "Créé par": st.column_config.TextColumn("Créé par", width="small"),
+            "Date": st.column_config.DatetimeColumn("Date", format="DD/MM/YY HH:mm", width="small")
+        }
+        
+        # Tableau sélectionnable (multi-lignes)
+        event = st.dataframe(
+            df_display,
+            column_config=column_config,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="multi-row",
+            key="affectations_table"
+        )
+        
+        # Récupérer sélection
+        selected_rows = event.selection.rows if hasattr(event, 'selection') else []
+        
+        # Total
+        total_ha = df_affectations['Hectares'].sum()
+        st.markdown(f"**Total affecté :** {total_ha:.1f} ha sur {info.get('ha_besoin', 0):.1f} ha")
+        
+        st.markdown("---")
+        
+        # ACTIONS SUR SÉLECTION
+        if CAN_EDIT:
+            if len(selected_rows) > 0:
+                # Récupérer les IDs sélectionnés
+                selected_ids = [int(df_display.iloc[idx]['id']) for idx in selected_rows]
+                selected_producteurs = [df_display.iloc[idx]['Producteur'] for idx in selected_rows]
+                total_ha_selected = sum([float(df_display.iloc[idx]['Hectares']) for idx in selected_rows])
+                
+                st.success(f"✅ **{len(selected_rows)} ligne(s) sélectionnée(s)** ({total_ha_selected:.1f} ha)")
+                
+                col1, col2, col3 = st.columns([1, 1, 2])
+                
+                with col1:
+                    # Bouton suppression en masse
+                    if st.button("🗑️ Supprimer sélection", type="primary", use_container_width=True, key="btn_delete_masse"):
+                        st.session_state['confirm_delete_masse'] = selected_ids
                         st.rerun()
-            
-            with col4:
-                if CAN_EDIT:
-                    if st.button("🗑️", key=f"del_{row['id']}", help="Supprimer"):
-                        success, msg = supprimer_affectation(row['id'])
-                        if success:
-                            st.success(msg)
+                
+                with col2:
+                    # Bouton modifier (si une seule ligne)
+                    if len(selected_rows) == 1:
+                        if st.button("✏️ Modifier", use_container_width=True, key="btn_edit_single"):
+                            st.session_state['editing_affectation'] = selected_ids[0]
                             st.rerun()
-                        else:
-                            st.error(msg)
-            
-            # Formulaire modification si édition active
-            if st.session_state.get(f'editing_{row["id"]}', False):
-                with st.container():
+                    else:
+                        st.button("✏️ Modifier", use_container_width=True, disabled=True, key="btn_edit_disabled", help="Sélectionnez une seule ligne pour modifier")
+                
+                # Confirmation suppression masse
+                if 'confirm_delete_masse' in st.session_state and st.session_state['confirm_delete_masse']:
+                    ids_to_delete = st.session_state['confirm_delete_masse']
+                    st.warning(f"⚠️ Voulez-vous vraiment supprimer {len(ids_to_delete)} affectation(s) ?")
+                    
+                    col_confirm, col_cancel = st.columns(2)
+                    with col_confirm:
+                        if st.button("✅ Confirmer suppression", type="primary", use_container_width=True, key="btn_confirm_delete"):
+                            success, msg = supprimer_affectations_masse(ids_to_delete)
+                            if success:
+                                st.success(msg)
+                                st.session_state.pop('confirm_delete_masse', None)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                    with col_cancel:
+                        if st.button("❌ Annuler", use_container_width=True, key="btn_cancel_delete"):
+                            st.session_state.pop('confirm_delete_masse', None)
+                            st.rerun()
+                
+                # Formulaire modification si une ligne sélectionnée
+                if 'editing_affectation' in st.session_state and st.session_state['editing_affectation']:
+                    edit_id = st.session_state['editing_affectation']
+                    edit_row = df_affectations[df_affectations['id'] == edit_id].iloc[0]
+                    
                     st.markdown("---")
+                    st.markdown(f"##### ✏️ Modifier : {edit_row['Producteur']}")
+                    
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        # ✅ MODIFIÉ : Décimaux par pas de 0.5
                         new_ha = st.number_input(
                             "Hectares",
                             min_value=0.5,
-                            value=float(row['Hectares']),
+                            value=float(edit_row['Hectares']),
                             step=0.5,
                             format="%.1f",
-                            key=f"edit_ha_{row['id']}"
+                            key="edit_ha_modal"
                         )
                     
                     with col2:
                         new_notes = st.text_input(
                             "Notes",
-                            value=row['Notes'] or "",
-                            key=f"edit_notes_{row['id']}"
+                            value=edit_row['Notes'] or "",
+                            key="edit_notes_modal"
                         )
                     
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        if st.button("💾 Enregistrer", key=f"save_edit_{row['id']}", type="primary"):
-                            success, msg = modifier_affectation(row['id'], new_ha, new_notes)
+                        if st.button("💾 Enregistrer", type="primary", use_container_width=True, key="save_edit_modal"):
+                            success, msg = modifier_affectation(edit_id, new_ha, new_notes)
                             if success:
                                 st.success(msg)
-                                st.session_state.pop(f'editing_{row["id"]}', None)
+                                st.session_state.pop('editing_affectation', None)
                                 st.rerun()
                             else:
                                 st.error(msg)
                     
                     with col2:
-                        if st.button("❌ Annuler", key=f"cancel_edit_{row['id']}"):
-                            st.session_state.pop(f'editing_{row["id"]}', None)
+                        if st.button("❌ Annuler", use_container_width=True, key="cancel_edit_modal"):
+                            st.session_state.pop('editing_affectation', None)
                             st.rerun()
-                    
-                    st.markdown("---")
-            
-            st.markdown("<hr style='margin: 0.3rem 0; border: none; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
-        
-        # Total - ✅ MODIFIÉ : Format décimal
-        total_ha = df_affectations['Hectares'].sum()
-        st.markdown(f"**Total affecté :** {total_ha:.1f} ha sur {info.get('ha_besoin', 0):.1f} ha")
+            else:
+                st.info("👆 Sélectionnez une ou plusieurs lignes dans le tableau pour les supprimer ou modifier")
     else:
         st.info("Aucune affectation pour ce besoin")
     
