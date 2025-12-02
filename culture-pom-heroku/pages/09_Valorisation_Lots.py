@@ -61,7 +61,7 @@ st.markdown("""
 # ============================================================
 # 🔒 CONTRÔLE D'ACCÈS RBAC (Admin uniquement)
 # ============================================================
-require_access("ADMIN")
+require_access("FINANCE")
 # ============================================================
 
 st.title("💰 Valorisation des Lots")
