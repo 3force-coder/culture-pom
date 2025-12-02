@@ -1,7 +1,7 @@
 """
 Page 16 - Suivi Affectations
 Vue par producteur : qui a été affecté à quoi, récaps par producteur
-VERSION MODIFIÉE - Type contrat RÉCOLTE/HIVER + Police agrandie + Conservation onglet
+VERSION 2.0 - Ajout onglet Producteurs Prioritaires
 """
 import streamlit as st
 import pandas as pd
@@ -30,7 +30,6 @@ st.markdown("""
         margin: 0.5rem 0;
         border-left: 4px solid #4CAF50;
     }
-    /* ✅ NOUVEAU : Style pour les hectares agrandis */
     .big-hectares {
         font-size: 2rem !important;
         font-weight: bold !important;
@@ -41,7 +40,6 @@ st.markdown("""
         color: #555 !important;
         font-weight: 500 !important;
     }
-    /* Style pour les badges contrat */
     .badge-recolte {
         background-color: #4CAF50;
         color: white;
@@ -58,27 +56,36 @@ st.markdown("""
         font-size: 0.85rem;
         font-weight: bold;
     }
-    /* ✅ NOUVEAU : Style pour radio horizontal comme onglets */
-    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] > div > div > div > div[role="radiogroup"] {
-        gap: 0 !important;
-    }
-    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] > div > div > div > div[role="radiogroup"] > label {
-        background-color: #f0f2f6;
-        padding: 0.5rem 1rem;
-        border: 1px solid #ddd;
-        margin: 0 !important;
-        cursor: pointer;
-    }
-    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] > div > div > div > div[role="radiogroup"] > label:first-child {
-        border-radius: 0.5rem 0 0 0.5rem;
-    }
-    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] > div > div > div > div[role="radiogroup"] > label:last-child {
-        border-radius: 0 0.5rem 0.5rem 0;
-    }
-    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] > div > div > div > div[role="radiogroup"] > label[data-checked="true"] {
+    /* Style pour les indicateurs de couverture */
+    .couverture-ok {
         background-color: #4CAF50;
         color: white;
-        border-color: #4CAF50;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.3rem;
+        font-weight: bold;
+    }
+    .couverture-partiel {
+        background-color: #FF9800;
+        color: white;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.3rem;
+        font-weight: bold;
+    }
+    .couverture-faible {
+        background-color: #f44336;
+        color: white;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.3rem;
+        font-weight: bold;
+    }
+    /* Écart positif/négatif */
+    .ecart-positif {
+        color: #4CAF50;
+        font-weight: bold;
+    }
+    .ecart-negatif {
+        color: #f44336;
+        font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -95,7 +102,7 @@ st.markdown("*Vue par producteur et récapitulatifs des affectations*")
 st.markdown("---")
 
 # ==========================================
-# FONCTIONS - CORRIGÉES POUR RealDictCursor
+# FONCTIONS EXISTANTES - INCHANGÉES
 # ==========================================
 
 @st.cache_data(ttl=60)
@@ -154,7 +161,6 @@ def get_affectations_producteur(campagne, producteur_id):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ✅ MODIFIÉ : Ajout type_contrat
         cursor.execute("""
             SELECT 
                 a.id,
@@ -285,18 +291,16 @@ def get_recap_par_mois_producteur(campagne):
 
 @st.cache_data(ttl=60)
 def get_kpis_suivi(campagne):
-    """KPIs de suivi - ✅ MODIFIÉ : Ajout KPIs par type contrat"""
+    """KPIs de suivi"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Producteurs affectés
         cursor.execute("""
             SELECT COUNT(DISTINCT producteur_id) as nb FROM plans_recolte_affectations WHERE campagne = %s
         """, (campagne,))
         nb_producteurs = cursor.fetchone()['nb']
         
-        # Total affectations
         cursor.execute("""
             SELECT COUNT(*) as nb, SUM(hectares_affectes) as total FROM plans_recolte_affectations WHERE campagne = %s
         """, (campagne,))
@@ -304,13 +308,11 @@ def get_kpis_suivi(campagne):
         nb_affectations = row['nb']
         total_ha = row['total'] or 0
         
-        # Variétés couvertes
         cursor.execute("""
             SELECT COUNT(DISTINCT variete) as nb FROM plans_recolte_affectations WHERE campagne = %s
         """, (campagne,))
         nb_varietes = cursor.fetchone()['nb']
         
-        # ✅ NOUVEAU : Hectares par type de contrat
         cursor.execute("""
             SELECT 
                 COALESCE(type_contrat, 'RÉCOLTE') as type_contrat,
@@ -328,7 +330,6 @@ def get_kpis_suivi(campagne):
             elif row['type_contrat'] == 'HIVER':
                 ha_hiver = float(row['total_ha'] or 0)
         
-        # Moyenne par producteur
         moyenne = total_ha / nb_producteurs if nb_producteurs > 0 else 0
         
         cursor.close()
@@ -370,12 +371,8 @@ def get_producteurs_liste(campagne):
         return []
 
 
-# ==========================================
-# FONCTIONS D'ÉDITION - ✅ MODIFIÉ : Ajout type_contrat
-# ==========================================
-
 def modifier_affectation(affectation_id, hectares, type_contrat, notes):
-    """Modifie une affectation - ✅ MODIFIÉ : Ajout type_contrat"""
+    """Modifie une affectation"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -392,7 +389,6 @@ def modifier_affectation(affectation_id, hectares, type_contrat, notes):
         cursor.close()
         conn.close()
         
-        # Vider le cache pour rafraîchir les données
         st.cache_data.clear()
         
         return True, "✅ Affectation modifiée"
@@ -412,10 +408,238 @@ def supprimer_affectation(affectation_id):
         cursor.close()
         conn.close()
         
-        # Vider le cache pour rafraîchir les données
         st.cache_data.clear()
         
         return True, "✅ Affectation supprimée"
+    except Exception as e:
+        return False, f"❌ Erreur : {e}"
+
+
+# ==========================================
+# NOUVELLES FONCTIONS - PRODUCTEURS PRIORITAIRES
+# ==========================================
+
+def get_producteurs_prioritaires(campagne):
+    """Récupère les producteurs prioritaires avec leurs objectifs et affectations"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT 
+                po.id as objectif_id,
+                po.producteur_id,
+                p.code_producteur,
+                p.nom as producteur_nom,
+                p.ville,
+                p.departement,
+                po.hectares_souhaites,
+                po.notes as objectif_notes,
+                COALESCE(SUM(a.hectares_affectes), 0) as hectares_affectes
+            FROM producteurs_objectifs po
+            JOIN ref_producteurs p ON po.producteur_id = p.id
+            LEFT JOIN plans_recolte_affectations a ON a.producteur_id = p.id AND a.campagne = po.campagne
+            WHERE po.campagne = %s AND po.is_prioritaire = TRUE
+            GROUP BY po.id, po.producteur_id, p.code_producteur, p.nom, p.ville, p.departement, 
+                     po.hectares_souhaites, po.notes
+            ORDER BY po.hectares_souhaites DESC
+        """, (campagne,))
+        
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if rows:
+            df = pd.DataFrame(rows)
+            # Calculs dérivés
+            df['hectares_souhaites'] = pd.to_numeric(df['hectares_souhaites'], errors='coerce').fillna(0)
+            df['hectares_affectes'] = pd.to_numeric(df['hectares_affectes'], errors='coerce').fillna(0)
+            df['ecart'] = df['hectares_affectes'] - df['hectares_souhaites']
+            df['taux_couverture'] = (df['hectares_affectes'] / df['hectares_souhaites'] * 100).round(1)
+            df['taux_couverture'] = df['taux_couverture'].fillna(0)
+            return df
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Erreur chargement prioritaires : {e}")
+        return pd.DataFrame()
+
+
+def get_detail_varietes_producteur(campagne, producteur_id):
+    """Détail des hectares par variété pour un producteur"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT 
+                variete,
+                SUM(hectares_affectes) as hectares
+            FROM plans_recolte_affectations
+            WHERE campagne = %s AND producteur_id = %s
+            GROUP BY variete
+            ORDER BY SUM(hectares_affectes) DESC
+        """, (campagne, producteur_id))
+        
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if rows:
+            df = pd.DataFrame(rows)
+            df['hectares'] = pd.to_numeric(df['hectares'], errors='coerce')
+            return df
+        return pd.DataFrame()
+    except:
+        return pd.DataFrame()
+
+
+def get_kpis_prioritaires(campagne):
+    """KPIs spécifiques aux producteurs prioritaires"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT 
+                COUNT(po.id) as nb_prioritaires,
+                COALESCE(SUM(po.hectares_souhaites), 0) as total_souhaites,
+                COALESCE(SUM(aff.ha_affectes), 0) as total_affectes
+            FROM producteurs_objectifs po
+            LEFT JOIN (
+                SELECT producteur_id, SUM(hectares_affectes) as ha_affectes
+                FROM plans_recolte_affectations
+                WHERE campagne = %s
+                GROUP BY producteur_id
+            ) aff ON aff.producteur_id = po.producteur_id
+            WHERE po.campagne = %s AND po.is_prioritaire = TRUE
+        """, (campagne, campagne))
+        
+        row = cursor.fetchone()
+        
+        # Ha affectés aux NON prioritaires
+        cursor.execute("""
+            SELECT COALESCE(SUM(a.hectares_affectes), 0) as ha_autres
+            FROM plans_recolte_affectations a
+            WHERE a.campagne = %s
+              AND a.producteur_id NOT IN (
+                  SELECT producteur_id FROM producteurs_objectifs 
+                  WHERE campagne = %s AND is_prioritaire = TRUE
+              )
+        """, (campagne, campagne))
+        
+        ha_autres = cursor.fetchone()['ha_autres'] or 0
+        
+        cursor.close()
+        conn.close()
+        
+        total_souhaites = float(row['total_souhaites'] or 0)
+        total_affectes = float(row['total_affectes'] or 0)
+        taux = (total_affectes / total_souhaites * 100) if total_souhaites > 0 else 0
+        
+        return {
+            'nb_prioritaires': row['nb_prioritaires'] or 0,
+            'total_souhaites': total_souhaites,
+            'total_affectes': total_affectes,
+            'taux_global': taux,
+            'ecart_global': total_affectes - total_souhaites,
+            'ha_autres': float(ha_autres)
+        }
+    except Exception as e:
+        st.error(f"Erreur KPIs prioritaires : {e}")
+        return None
+
+
+def get_tous_producteurs():
+    """Liste tous les producteurs pour sélection"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, code_producteur, nom, ville
+            FROM ref_producteurs
+            WHERE is_active = TRUE
+            ORDER BY nom
+        """)
+        
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        return rows if rows else []
+    except:
+        return []
+
+
+def ajouter_producteur_prioritaire(producteur_id, campagne, hectares_souhaites, notes=""):
+    """Ajoute un producteur prioritaire"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        username = st.session_state.get('username', 'system')
+        
+        cursor.execute("""
+            INSERT INTO producteurs_objectifs 
+                (producteur_id, campagne, hectares_souhaites, is_prioritaire, notes, created_by)
+            VALUES (%s, %s, %s, TRUE, %s, %s)
+            ON CONFLICT (producteur_id, campagne) 
+            DO UPDATE SET 
+                hectares_souhaites = EXCLUDED.hectares_souhaites,
+                is_prioritaire = TRUE,
+                notes = EXCLUDED.notes,
+                updated_by = EXCLUDED.created_by,
+                updated_at = CURRENT_TIMESTAMP
+        """, (producteur_id, campagne, hectares_souhaites, notes, username))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        st.cache_data.clear()
+        return True, "✅ Producteur prioritaire ajouté"
+    except Exception as e:
+        return False, f"❌ Erreur : {e}"
+
+
+def modifier_objectif_prioritaire(objectif_id, hectares_souhaites, notes):
+    """Modifie les hectares souhaités d'un producteur prioritaire"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        username = st.session_state.get('username', 'system')
+        
+        cursor.execute("""
+            UPDATE producteurs_objectifs 
+            SET hectares_souhaites = %s, notes = %s, updated_by = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (hectares_souhaites, notes, username, objectif_id))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        st.cache_data.clear()
+        return True, "✅ Objectif modifié"
+    except Exception as e:
+        return False, f"❌ Erreur : {e}"
+
+
+def supprimer_producteur_prioritaire(objectif_id):
+    """Retire un producteur de la liste prioritaire"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM producteurs_objectifs WHERE id = %s", (objectif_id,))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        st.cache_data.clear()
+        return True, "✅ Producteur retiré des prioritaires"
     except Exception as e:
         return False, f"❌ Erreur : {e}"
 
@@ -429,15 +653,14 @@ with col1:
     campagne = st.selectbox("Campagne", [2026, 2025, 2027], index=0, key="campagne_suivi")
 
 with col2:
-    if st.button("🔄 Rafraîchir"):
+    if st.button("🔄 Rafraîchir", key="btn_refresh_16"):
         st.cache_data.clear()
         st.rerun()
 
-# KPIs - ✅ MODIFIÉ : Ajout KPIs par type contrat
+# KPIs généraux
 kpis = get_kpis_suivi(campagne)
 
 if kpis:
-    # Ligne 1 : KPIs généraux
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
@@ -454,73 +677,262 @@ if kpis:
     
     with col5:
         st.metric("📊 Moy./Prod.", f"{kpis['moyenne_ha']:.1f} ha")
-    
-    # ✅ NOUVEAU : Ligne 2 - KPIs par type de contrat
-    st.markdown("---")
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("🌾 Ha RÉCOLTE", f"{kpis['ha_recolte']:,.1f}", help="Récupération à la récolte")
-    
-    with col2:
-        st.metric("❄️ Ha HIVER", f"{kpis['ha_hiver']:,.1f}", help="Récupération en saison")
-    
-    with col3:
-        # Pourcentage récolte
-        pct_recolte = (kpis['ha_recolte'] / kpis['total_ha'] * 100) if kpis['total_ha'] > 0 else 0
-        st.metric("📊 % Récolte", f"{pct_recolte:.0f}%")
-    
-    with col4:
-        # Pourcentage hiver
-        pct_hiver = (kpis['ha_hiver'] / kpis['total_ha'] * 100) if kpis['total_ha'] > 0 else 0
-        st.metric("📊 % Hiver", f"{pct_hiver:.0f}%")
 
 st.markdown("---")
 
 # ==========================================
-# ONGLETS - ✅ CORRIGÉ : st.radio au lieu de st.tabs pour conserver l'état
+# ONGLETS - AJOUT PRIORITAIRES
 # ==========================================
 
-# Initialiser l'onglet actif dans session_state
 if 'onglet_actif_16' not in st.session_state:
-    st.session_state.onglet_actif_16 = "👨‍🌾 Par Producteur"
+    st.session_state.onglet_actif_16 = "⭐ Prioritaires"
 
-# Radio horizontal qui ressemble à des onglets
 onglet_selectionne = st.radio(
     "Navigation",
     options=[
+        "⭐ Prioritaires",
         "👨‍🌾 Par Producteur",
         "🌱 Producteur × Variété",
         "📅 Producteur × Mois",
         "📋 Détail Producteur"
     ],
     index=[
+        "⭐ Prioritaires",
         "👨‍🌾 Par Producteur",
         "🌱 Producteur × Variété",
         "📅 Producteur × Mois",
         "📋 Détail Producteur"
-    ].index(st.session_state.onglet_actif_16),
+    ].index(st.session_state.onglet_actif_16) if st.session_state.onglet_actif_16 in [
+        "⭐ Prioritaires",
+        "👨‍🌾 Par Producteur",
+        "🌱 Producteur × Variété",
+        "📅 Producteur × Mois",
+        "📋 Détail Producteur"
+    ] else 0,
     horizontal=True,
     key="nav_onglets_16",
     label_visibility="collapsed"
 )
 
-# Mémoriser l'onglet sélectionné
 st.session_state.onglet_actif_16 = onglet_selectionne
 
 st.markdown("---")
 
 # ==========================================
+# TAB 0 : PRODUCTEURS PRIORITAIRES (NOUVEAU)
+# ==========================================
+
+if onglet_selectionne == "⭐ Prioritaires":
+    st.subheader("⭐ Producteurs Prioritaires")
+    st.markdown("*Suivi des producteurs prioritaires et de leurs objectifs*")
+    
+    # KPIs Prioritaires
+    kpis_prio = get_kpis_prioritaires(campagne)
+    
+    if kpis_prio:
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            st.metric("⭐ Prioritaires", kpis_prio['nb_prioritaires'])
+        
+        with col2:
+            st.metric("🎯 Ha Souhaités", f"{kpis_prio['total_souhaites']:,.1f}")
+        
+        with col3:
+            st.metric("✅ Ha Affectés", f"{kpis_prio['total_affectes']:,.1f}")
+        
+        with col4:
+            # Couleur selon taux
+            taux = kpis_prio['taux_global']
+            if taux >= 80:
+                delta_color = "normal"
+            elif taux >= 50:
+                delta_color = "off"
+            else:
+                delta_color = "inverse"
+            st.metric("📊 Taux Couverture", f"{taux:.0f}%")
+        
+        with col5:
+            ecart = kpis_prio['ecart_global']
+            st.metric("📉 Écart Global", f"{ecart:+,.1f} ha")
+    
+    # Info autres producteurs
+    if kpis_prio and kpis_prio['ha_autres'] > 0:
+        st.info(f"📌 **Autres producteurs (non prioritaires)** : {kpis_prio['ha_autres']:,.1f} ha affectés")
+    
+    st.markdown("---")
+    
+    # Tableau producteurs prioritaires
+    df_prio = get_producteurs_prioritaires(campagne)
+    
+    if not df_prio.empty:
+        st.markdown(f"### 📋 {len(df_prio)} Producteur(s) Prioritaire(s)")
+        
+        for _, row in df_prio.iterrows():
+            # Calculer couleur badge
+            taux = row['taux_couverture']
+            if taux >= 80:
+                badge_class = "couverture-ok"
+                badge_text = f"✅ {taux:.0f}%"
+            elif taux >= 50:
+                badge_class = "couverture-partiel"
+                badge_text = f"⚠️ {taux:.0f}%"
+            else:
+                badge_class = "couverture-faible"
+                badge_text = f"❌ {taux:.0f}%"
+            
+            # Écart
+            ecart = row['ecart']
+            if ecart >= 0:
+                ecart_class = "ecart-positif"
+                ecart_text = f"+{ecart:.1f} ha"
+            else:
+                ecart_class = "ecart-negatif"
+                ecart_text = f"{ecart:.1f} ha"
+            
+            # Expander pour chaque producteur
+            with st.expander(
+                f"**{row['producteur_nom']}** ({row['code_producteur']}) — "
+                f"🎯 {row['hectares_souhaites']:.1f} ha souhaités | "
+                f"✅ {row['hectares_affectes']:.1f} ha affectés | "
+                f"{badge_text}"
+            ):
+                col1, col2, col3 = st.columns([2, 2, 1])
+                
+                with col1:
+                    st.markdown(f"**Localisation** : {row['ville'] or ''} ({row['departement'] or ''})")
+                    st.markdown(f"**Écart** : <span class='{ecart_class}'>{ecart_text}</span>", unsafe_allow_html=True)
+                    if row['objectif_notes']:
+                        st.markdown(f"**Notes** : {row['objectif_notes']}")
+                
+                with col2:
+                    # Détail par variété
+                    st.markdown("**Répartition par variété :**")
+                    df_var = get_detail_varietes_producteur(campagne, row['producteur_id'])
+                    if not df_var.empty:
+                        for _, var_row in df_var.iterrows():
+                            st.markdown(f"• {var_row['variete']} : **{var_row['hectares']:.1f} ha**")
+                    else:
+                        st.caption("Aucune affectation")
+                
+                with col3:
+                    if CAN_EDIT:
+                        if st.button("✏️ Modifier", key=f"edit_prio_{row['objectif_id']}"):
+                            st.session_state[f'editing_prio_{row["objectif_id"]}'] = True
+                            st.rerun()
+                    
+                    if CAN_DELETE:
+                        if st.button("🗑️ Retirer", key=f"del_prio_{row['objectif_id']}"):
+                            success, msg = supprimer_producteur_prioritaire(row['objectif_id'])
+                            if success:
+                                st.success(msg)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                
+                # Formulaire modification si actif
+                if st.session_state.get(f'editing_prio_{row["objectif_id"]}', False):
+                    st.markdown("---")
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        new_ha = st.number_input(
+                            "Hectares souhaités",
+                            min_value=0.5,
+                            value=float(row['hectares_souhaites']),
+                            step=0.5,
+                            key=f"edit_prio_ha_{row['objectif_id']}"
+                        )
+                    
+                    with col2:
+                        new_notes = st.text_input(
+                            "Notes",
+                            value=row['objectif_notes'] or "",
+                            key=f"edit_prio_notes_{row['objectif_id']}"
+                        )
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("💾 Enregistrer", key=f"save_prio_{row['objectif_id']}", type="primary"):
+                            success, msg = modifier_objectif_prioritaire(row['objectif_id'], new_ha, new_notes)
+                            if success:
+                                st.success(msg)
+                                st.session_state.pop(f'editing_prio_{row["objectif_id"]}', None)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                    
+                    with col2:
+                        if st.button("❌ Annuler", key=f"cancel_prio_{row['objectif_id']}"):
+                            st.session_state.pop(f'editing_prio_{row["objectif_id"]}', None)
+                            st.rerun()
+    else:
+        st.info("Aucun producteur prioritaire défini pour cette campagne.")
+    
+    # ==========================================
+    # SECTION AJOUT PRODUCTEUR PRIORITAIRE
+    # ==========================================
+    
+    st.markdown("---")
+    
+    with st.expander("➕ Ajouter un producteur prioritaire", expanded=False):
+        # Récupérer producteurs non encore prioritaires
+        tous_producteurs = get_tous_producteurs()
+        
+        # IDs déjà prioritaires
+        ids_prioritaires = set(df_prio['producteur_id'].tolist()) if not df_prio.empty else set()
+        
+        # Filtrer
+        producteurs_dispo = [p for p in tous_producteurs if p['id'] not in ids_prioritaires]
+        
+        if producteurs_dispo:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Dropdown producteur
+                options_prod = [""] + [f"{p['nom']} ({p['code_producteur']}) - {p['ville'] or ''}" for p in producteurs_dispo]
+                selected_prod = st.selectbox("Producteur", options_prod, key="add_prio_prod")
+            
+            with col2:
+                ha_souhaites = st.number_input(
+                    "Hectares souhaités *",
+                    min_value=0.5,
+                    value=10.0,
+                    step=0.5,
+                    key="add_prio_ha"
+                )
+            
+            notes_prio = st.text_input("Notes (optionnel)", key="add_prio_notes")
+            
+            if st.button("➕ Ajouter aux prioritaires", type="primary", key="btn_add_prio"):
+                if not selected_prod:
+                    st.error("❌ Veuillez sélectionner un producteur")
+                else:
+                    # Trouver l'ID
+                    idx = options_prod.index(selected_prod) - 1
+                    prod_id = producteurs_dispo[idx]['id']
+                    
+                    success, msg = ajouter_producteur_prioritaire(prod_id, campagne, ha_souhaites, notes_prio)
+                    if success:
+                        st.success(msg)
+                        st.balloons()
+                        st.rerun()
+                    else:
+                        st.error(msg)
+        else:
+            st.info("Tous les producteurs sont déjà dans la liste prioritaire.")
+
+
+# ==========================================
 # TAB 1 : RÉCAP PAR PRODUCTEUR
 # ==========================================
 
-if onglet_selectionne == "👨‍🌾 Par Producteur":
+elif onglet_selectionne == "👨‍🌾 Par Producteur":
     st.subheader("👨‍🌾 Récap par Producteur")
     
     df_prod = get_recap_par_producteur(campagne)
     
     if not df_prod.empty:
-        # Masquer colonne id
         df_display = df_prod.drop(columns=['id'])
         
         st.dataframe(
@@ -544,50 +956,50 @@ if onglet_selectionne == "👨‍🌾 Par Producteur":
         {df_prod['Total Ha'].sum():,.1f} ha
         """)
         
-        # Top 10
         st.markdown("#### 🏆 Top 10 Producteurs (hectares)")
         top10 = df_prod.head(10)[['Producteur', 'Total Ha']].set_index('Producteur')
         st.bar_chart(top10)
     else:
         st.info("Aucune affectation pour cette campagne")
 
+
 # ==========================================
 # TAB 2 : PRODUCTEUR × VARIÉTÉ
 # ==========================================
 
 elif onglet_selectionne == "🌱 Producteur × Variété":
-    st.subheader("🌱 Tableau Producteur × Variété")
+    st.subheader("🌱 Tableau Croisé Producteur × Variété")
     
     df_cross = get_recap_par_variete_producteur(campagne)
     
     if not df_cross.empty:
         pivot = df_cross.pivot_table(
-            index='Producteur',
-            columns='Variété',
+            index='Producteur', 
+            columns='Variété', 
             values='Hectares',
             aggfunc='sum',
             fill_value=0
         )
         
         pivot['TOTAL'] = pivot.sum(axis=1)
-        pivot.loc['TOTAL'] = pivot.sum()
         pivot = pivot.sort_values('TOTAL', ascending=False)
         
         st.dataframe(
-            pivot.style.format("{:.1f}").background_gradient(cmap='Greens', subset=pivot.columns[:-1]),
+            pivot.style.format("{:.1f}").background_gradient(cmap='Greens', axis=None),
             use_container_width=True
         )
         
-        st.info(f"💡 {len(pivot)-1} producteurs × {len(pivot.columns)-1} variétés")
+        st.markdown(f"**{len(pivot)} producteurs** | **{len(pivot.columns)-1} variétés**")
     else:
         st.info("Aucune donnée")
+
 
 # ==========================================
 # TAB 3 : PRODUCTEUR × MOIS
 # ==========================================
 
 elif onglet_selectionne == "📅 Producteur × Mois":
-    st.subheader("📅 Tableau Producteur × Mois")
+    st.subheader("📅 Tableau Croisé Producteur × Mois")
     
     df_mois = get_recap_par_mois_producteur(campagne)
     
@@ -600,22 +1012,19 @@ elif onglet_selectionne == "📅 Producteur × Mois":
             fill_value=0
         )
         
-        mois_order = df_mois.drop_duplicates('Mois').sort_values('mois_numero')['Mois'].tolist()
-        pivot = pivot.reindex(columns=[m for m in mois_order if m in pivot.columns])
-        
         pivot['TOTAL'] = pivot.sum(axis=1)
-        pivot.loc['TOTAL'] = pivot.sum()
         pivot = pivot.sort_values('TOTAL', ascending=False)
         
         st.dataframe(
-            pivot.style.format("{:.1f}").background_gradient(cmap='Blues', subset=pivot.columns[:-1]),
+            pivot.style.format("{:.1f}").background_gradient(cmap='Blues', axis=None),
             use_container_width=True
         )
     else:
         st.info("Aucune donnée")
 
+
 # ==========================================
-# TAB 4 : DÉTAIL PRODUCTEUR (AVEC ÉDITION)
+# TAB 4 : DÉTAIL PRODUCTEUR
 # ==========================================
 
 elif onglet_selectionne == "📋 Détail Producteur":
@@ -624,73 +1033,25 @@ elif onglet_selectionne == "📋 Détail Producteur":
     producteurs = get_producteurs_liste(campagne)
     
     if producteurs:
-        # ✅ MODIFIÉ : Mémoriser le producteur sélectionné
-        if 'selected_producteur_index' not in st.session_state:
-            st.session_state.selected_producteur_index = 0
+        options = [f"{nom} (ID:{id})" for id, nom in producteurs]
+        selected = st.selectbox("Sélectionner un producteur", options, key="select_prod_detail")
         
-        prod_options = ["-- Sélectionner --"] + [f"{p[1]}" for p in producteurs]
-        selected_prod = st.selectbox(
-            "Producteur", 
-            prod_options, 
-            index=st.session_state.selected_producteur_index,
-            key="detail_prod"
-        )
-        
-        # Mémoriser l'index sélectionné
-        if selected_prod != "-- Sélectionner --":
-            st.session_state.selected_producteur_index = prod_options.index(selected_prod)
-        
-        if selected_prod != "-- Sélectionner --":
-            prod_idx = prod_options.index(selected_prod) - 1
-            producteur_id = producteurs[prod_idx][0]
-            producteur_nom = producteurs[prod_idx][1]
+        if selected:
+            producteur_id = int(selected.split("ID:")[1].replace(")", ""))
+            producteur_nom = selected.split(" (ID:")[0]
             
-            # Charger affectations
             df_detail = get_affectations_producteur(campagne, producteur_id)
             
             if not df_detail.empty:
-                # KPIs producteur
                 total_ha = df_detail['Hectares'].sum()
-                nb_varietes = df_detail['Variété'].nunique()
-                nb_mois = df_detail['Mois'].nunique()
-                
-                # ✅ NOUVEAU : Comptage par type contrat
-                ha_recolte_prod = df_detail[df_detail['Type Contrat'] == 'RÉCOLTE']['Hectares'].sum()
-                ha_hiver_prod = df_detail[df_detail['Type Contrat'] == 'HIVER']['Hectares'].sum()
-                
-                col1, col2, col3, col4, col5 = st.columns(5)
-                
-                with col1:
-                    st.metric("🌾 Total Ha", f"{total_ha:,.1f}")
-                
-                with col2:
-                    st.metric("🌱 Variétés", nb_varietes)
-                
-                with col3:
-                    st.metric("📅 Mois", nb_mois)
-                
-                with col4:
-                    st.metric("🌾 Récolte", f"{ha_recolte_prod:,.1f} ha")
-                
-                with col5:
-                    st.metric("❄️ Hiver", f"{ha_hiver_prod:,.1f} ha")
-                
-                st.markdown("---")
-                
-                # ==========================================
-                # AFFICHAGE AVEC ÉDITION - ✅ MODIFIÉ
-                # ==========================================
+                st.markdown(f"### {producteur_nom}")
+                st.metric("Total Hectares", f"{total_ha:.1f} ha")
                 
                 st.markdown("#### 📝 Affectations")
                 
-                if CAN_EDIT:
-                    st.info("💡 Cliquez sur ✏️ pour modifier ou 🗑️ pour supprimer une affectation")
-                
                 for idx, row in df_detail.iterrows():
-                    # ✅ MODIFIÉ : Nouvelle disposition avec type contrat
                     col1, col2, col3, col4, col5, col6 = st.columns([1, 2.5, 1.2, 1.3, 0.5, 0.5])
                     
-                    # Badge type contrat
                     with col1:
                         if row['Type Contrat'] == 'HIVER':
                             st.markdown(f'<span class="badge-hiver">❄️ HIVER</span>', unsafe_allow_html=True)
@@ -702,11 +1063,9 @@ elif onglet_selectionne == "📋 Détail Producteur":
                         if row['Notes']:
                             st.caption(f"📝 {row['Notes']}")
                     
-                    # ✅ MODIFIÉ : Hectares plus gros
                     with col3:
                         st.markdown(f'<span class="big-hectares">{row["Hectares"]:.1f}</span>', unsafe_allow_html=True)
                     
-                    # ✅ MODIFIÉ : Besoin plus visible
                     with col4:
                         if row['Ha Besoin Total']:
                             st.markdown(f'<span class="besoin-label">Besoin: <b>{row["Ha Besoin Total"]:.1f}</b> ha</span>', unsafe_allow_html=True)
@@ -715,7 +1074,7 @@ elif onglet_selectionne == "📋 Détail Producteur":
                         if CAN_EDIT:
                             if st.button("✏️", key=f"edit16_{row['id']}", help="Modifier"):
                                 st.session_state[f'editing16_{row["id"]}'] = True
-                                st.session_state.onglet_actif_16 = "📋 Détail Producteur"  # ✅ FORCER ONGLET
+                                st.session_state.onglet_actif_16 = "📋 Détail Producteur"
                                 st.rerun()
                     
                     with col6:
@@ -724,12 +1083,12 @@ elif onglet_selectionne == "📋 Détail Producteur":
                                 success, msg = supprimer_affectation(row['id'])
                                 if success:
                                     st.success(msg)
-                                    st.session_state.onglet_actif_16 = "📋 Détail Producteur"  # ✅ FORCER ONGLET
+                                    st.session_state.onglet_actif_16 = "📋 Détail Producteur"
                                     st.rerun()
                                 else:
                                     st.error(msg)
                     
-                    # Formulaire modification si édition active
+                    # Formulaire modification
                     if st.session_state.get(f'editing16_{row["id"]}', False):
                         with st.container():
                             st.markdown("---")
@@ -746,7 +1105,6 @@ elif onglet_selectionne == "📋 Détail Producteur":
                                 )
                             
                             with col2:
-                                # ✅ NOUVEAU : Dropdown type contrat
                                 type_options = ['RÉCOLTE', 'HIVER']
                                 current_type = row['Type Contrat'] if row['Type Contrat'] in type_options else 'RÉCOLTE'
                                 new_type = st.selectbox(
@@ -767,12 +1125,11 @@ elif onglet_selectionne == "📋 Détail Producteur":
                             
                             with col1:
                                 if st.button("💾 Enregistrer", key=f"save16_edit_{row['id']}", type="primary"):
-                                    # ✅ MODIFIÉ : Passer type_contrat
                                     success, msg = modifier_affectation(row['id'], new_ha, new_type, new_notes)
                                     if success:
                                         st.success(msg)
                                         st.session_state.pop(f'editing16_{row["id"]}', None)
-                                        st.session_state.onglet_actif_16 = "📋 Détail Producteur"  # ✅ FORCER ONGLET
+                                        st.session_state.onglet_actif_16 = "📋 Détail Producteur"
                                         st.rerun()
                                     else:
                                         st.error(msg)
@@ -780,24 +1137,20 @@ elif onglet_selectionne == "📋 Détail Producteur":
                             with col2:
                                 if st.button("❌ Annuler", key=f"cancel16_edit_{row['id']}"):
                                     st.session_state.pop(f'editing16_{row["id"]}', None)
-                                    st.session_state.onglet_actif_16 = "📋 Détail Producteur"  # ✅ FORCER ONGLET
+                                    st.session_state.onglet_actif_16 = "📋 Détail Producteur"
                                     st.rerun()
                             
                             st.markdown("---")
                     
                     st.markdown("<hr style='margin: 0.3rem 0; border: none; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
                 
-                # ==========================================
-                # RÉCAP PAR VARIÉTÉ
-                # ==========================================
-                
+                # Récap par variété
                 st.markdown("#### 🌱 Récap par Variété")
                 recap_var = df_detail.groupby('Variété')['Hectares'].sum().reset_index()
                 recap_var = recap_var.sort_values('Hectares', ascending=False)
-                
                 st.bar_chart(recap_var.set_index('Variété'))
                 
-                # ✅ NOUVEAU : Récap par type contrat
+                # Récap par type contrat
                 st.markdown("#### 📊 Récap par Type Contrat")
                 recap_type = df_detail.groupby('Type Contrat')['Hectares'].sum().reset_index()
                 
@@ -806,11 +1159,11 @@ elif onglet_selectionne == "📋 Détail Producteur":
                     st.bar_chart(recap_type.set_index('Type Contrat'))
                 with col2:
                     st.dataframe(recap_type, hide_index=True)
-                
             else:
                 st.info(f"Aucune affectation pour {producteur_nom}")
     else:
         st.info("Aucun producteur avec affectations pour cette campagne")
+
 
 # ==========================================
 # EXPORTS
@@ -822,14 +1175,21 @@ st.subheader("📤 Exports")
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    if st.button("📥 Export Excel complet", use_container_width=True):
+    if st.button("📥 Export Excel complet", use_container_width=True, key="btn_export_excel"):
         try:
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                # Prioritaires
+                df_prio = get_producteurs_prioritaires(campagne)
+                if not df_prio.empty:
+                    df_prio.to_excel(writer, sheet_name='Prioritaires', index=False)
+                
+                # Par producteur
                 df_prod = get_recap_par_producteur(campagne)
                 if not df_prod.empty:
                     df_prod.to_excel(writer, sheet_name='Par Producteur', index=False)
                 
+                # Croisé
                 df_cross = get_recap_par_variete_producteur(campagne)
                 if not df_cross.empty:
                     pivot = df_cross.pivot_table(
@@ -837,21 +1197,14 @@ with col1:
                         aggfunc='sum', fill_value=0
                     )
                     pivot.to_excel(writer, sheet_name='Producteur x Variété')
-                
-                df_mois = get_recap_par_mois_producteur(campagne)
-                if not df_mois.empty:
-                    pivot_mois = df_mois.pivot_table(
-                        index='Producteur', columns='Mois', values='Hectares',
-                        aggfunc='sum', fill_value=0
-                    )
-                    pivot_mois.to_excel(writer, sheet_name='Producteur x Mois')
             
             st.download_button(
                 "💾 Télécharger Excel",
                 buffer.getvalue(),
                 f"suivi_affectations_{campagne}.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+                use_container_width=True,
+                key="dl_excel"
             )
         except Exception as e:
             st.error(f"Erreur export : {e}")
@@ -865,7 +1218,8 @@ with col2:
             csv,
             f"producteurs_affectations_{campagne}.csv",
             "text/csv",
-            use_container_width=True
+            use_container_width=True,
+            key="dl_csv"
         )
 
 with col3:
