@@ -59,7 +59,7 @@ pages = {
     ],
     "🛒 CRM": [
     st.Page("pages/20_CRM_Dashboard.py", title="Dashboard CRM", icon="📊"),
-    st.Page("pages/21_CRM_Magasins.py", title="Magasins", icon="🏪"),
+    st.Page("pages/21_CRM_Magasins.py", title="Clients", icon="🏪"),
     st.Page("pages/22_CRM_Contacts.py", title="Contacts", icon="👥"),
     st.Page("pages/23_CRM_Visites.py", title="Visites", icon="📅"),
     st.Page("pages/24_CRM_Animations.py", title="Animations", icon="🎉"),
