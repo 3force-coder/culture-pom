@@ -50,6 +50,13 @@ st.markdown("""
     }
     .perm-granted { color: #28a745; font-weight: bold; }
     .perm-denied { color: #dc3545; }
+    .group-card {
+        background-color: #e8f4ea;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 0.5rem 0;
+        border-left: 4px solid #28a745;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -187,10 +194,137 @@ def delete_permission(role_id, page_group_code):
         return False, f"❌ Erreur : {e}"
 
 # ==========================================
+# ⭐ FONCTIONS GROUPES DE PAGES
+# ==========================================
+
+def get_all_page_groups_full():
+    """Récupère tous les groupes de pages avec tous les détails"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, code, libelle, description, pages, ordre, is_active
+            FROM page_groups
+            ORDER BY ordre, code
+        """)
+        groups = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return groups if groups else []
+    except Exception as e:
+        st.error(f"Erreur : {e}")
+        return []
+
+def get_page_group_by_id(group_id):
+    """Récupère un groupe par son ID"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, code, libelle, description, pages, ordre, is_active
+            FROM page_groups
+            WHERE id = %s
+        """, (int(group_id),))
+        group = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return dict(group) if group else None
+    except Exception as e:
+        st.error(f"Erreur : {e}")
+        return None
+
+def create_page_group(code, libelle, description, pages, ordre):
+    """Crée un nouveau groupe de pages"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Vérifier si le code existe déjà
+        cursor.execute("SELECT id FROM page_groups WHERE code = %s", (code,))
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return False, f"❌ Le code '{code}' existe déjà"
+        
+        # Convertir pages en array PostgreSQL
+        pages_array = pages if pages else []
+        
+        cursor.execute("""
+            INSERT INTO page_groups (code, libelle, description, pages, ordre, is_active)
+            VALUES (%s, %s, %s, %s, %s, TRUE)
+            RETURNING id
+        """, (code, libelle, description, pages_array, ordre))
+        
+        new_id = cursor.fetchone()['id']
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, f"✅ Groupe '{libelle}' créé (ID: {new_id})"
+    except Exception as e:
+        return False, f"❌ Erreur : {e}"
+
+def update_page_group(group_id, code, libelle, description, pages, ordre, is_active):
+    """Met à jour un groupe de pages"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Vérifier si le nouveau code existe déjà (sauf pour ce groupe)
+        cursor.execute("SELECT id FROM page_groups WHERE code = %s AND id != %s", (code, int(group_id)))
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return False, f"❌ Le code '{code}' est déjà utilisé par un autre groupe"
+        
+        pages_array = pages if pages else []
+        
+        cursor.execute("""
+            UPDATE page_groups
+            SET code = %s, libelle = %s, description = %s, pages = %s, ordre = %s, is_active = %s
+            WHERE id = %s
+        """, (code, libelle, description, pages_array, ordre, is_active, int(group_id)))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, f"✅ Groupe '{libelle}' mis à jour"
+    except Exception as e:
+        return False, f"❌ Erreur : {e}"
+
+def delete_page_group(group_id):
+    """Supprime un groupe de pages (soft delete)"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Vérifier s'il y a des permissions liées
+        cursor.execute("SELECT COUNT(*) as cnt FROM permissions WHERE page_group_code = (SELECT code FROM page_groups WHERE id = %s)", (int(group_id),))
+        count = cursor.fetchone()['cnt']
+        
+        if count > 0:
+            # Soft delete seulement
+            cursor.execute("UPDATE page_groups SET is_active = FALSE WHERE id = %s", (int(group_id),))
+            msg = f"✅ Groupe désactivé ({count} permission(s) associée(s) conservées)"
+        else:
+            # Hard delete si pas de permissions
+            cursor.execute("DELETE FROM page_groups WHERE id = %s", (int(group_id),))
+            msg = "✅ Groupe supprimé"
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, msg
+    except Exception as e:
+        return False, f"❌ Erreur : {e}"
+
+# ==========================================
 # ONGLETS
 # ==========================================
 
-tab1, tab2, tab3 = st.tabs(["👥 Liste Utilisateurs", "➕ Créer Utilisateur", "🔑 Rôles & Permissions"])
+tab1, tab2, tab3, tab4 = st.tabs(["👥 Liste Utilisateurs", "➕ Créer Utilisateur", "🔑 Rôles & Permissions", "📁 Groupes de Pages"])
 
 # ==========================================
 # TAB 1 : LISTE UTILISATEURS
@@ -659,31 +793,321 @@ with tab3:
                 else:
                     st.info("Aucune permission définie")
         
-        # Groupes de pages
-        st.markdown("---")
-        st.markdown("### 📄 Groupes de pages")
-        
-        conn3 = get_connection()
-        cursor3 = conn3.cursor()
-        cursor3.execute("""
-            SELECT code, libelle, description, pages
-            FROM page_groups
-            WHERE is_active = TRUE
-            ORDER BY ordre
-        """)
-        page_groups_list = cursor3.fetchall()
-        cursor3.close()
-        conn3.close()
-        
-        for pg in page_groups_list:
-            pages_str = ', '.join(pg['pages']) if pg['pages'] else '-'
-            with st.expander(f"📁 {pg['libelle']} (`{pg['code']}`)"):
-                st.write(f"**Description** : {pg['description'] or '-'}")
-                st.write(f"**Pages** : {pages_str}")
-        
     except Exception as e:
         st.error(f"Erreur : {e}")
         import traceback
         st.code(traceback.format_exc())
+
+# ==========================================
+# ⭐ TAB 4 : GROUPES DE PAGES
+# ==========================================
+
+with tab4:
+    st.subheader("📁 Gestion des Groupes de Pages")
+    st.caption("Les groupes de pages servent à définir les permissions d'accès aux différentes sections de l'application.")
+    
+    if not is_super_admin():
+        st.warning("⚠️ Seul le Super Admin peut gérer les groupes de pages")
+        st.stop()
+    
+    # Bouton refresh
+    if st.button("🔄 Actualiser", key="refresh_groups"):
+        st.rerun()
+    
+    st.markdown("---")
+    
+    # ==========================================
+    # FORMULAIRE CRÉATION
+    # ==========================================
+    
+    with st.expander("➕ Créer un nouveau groupe", expanded=st.session_state.get('show_create_group', False)):
+        st.markdown("##### Nouveau groupe de pages")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            new_code = st.text_input(
+                "Code *", 
+                placeholder="Ex: CRM, FINANCE, PRODUCTION",
+                help="Code unique en MAJUSCULES, utilisé dans require_access()",
+                key="new_group_code"
+            ).upper().replace(" ", "_")
+            
+            new_libelle = st.text_input(
+                "Libellé *",
+                placeholder="Ex: CRM Commercial",
+                key="new_group_libelle"
+            )
+        
+        with col2:
+            new_ordre = st.number_input(
+                "Ordre d'affichage",
+                min_value=1,
+                max_value=100,
+                value=10,
+                key="new_group_ordre"
+            )
+            
+            new_description = st.text_input(
+                "Description",
+                placeholder="Ex: Gestion des clients et contacts",
+                key="new_group_desc"
+            )
+        
+        new_pages_str = st.text_area(
+            "Pages (noms des fichiers, séparés par des virgules)",
+            placeholder="Ex: 21_CRM_Magasins, 22_CRM_Contacts, 23_CRM_Visites",
+            help="Liste des noms de fichiers Python (sans .py) associés à ce groupe",
+            key="new_group_pages"
+        )
+        
+        col_create, col_cancel = st.columns([1, 3])
+        
+        with col_create:
+            if st.button("✅ Créer le groupe", type="primary", use_container_width=True, key="btn_create_group"):
+                if not new_code:
+                    st.error("❌ Le code est obligatoire")
+                elif not new_libelle:
+                    st.error("❌ Le libellé est obligatoire")
+                else:
+                    # Parser les pages
+                    pages_list = [p.strip() for p in new_pages_str.split(",") if p.strip()] if new_pages_str else []
+                    
+                    success, msg = create_page_group(
+                        code=new_code,
+                        libelle=new_libelle,
+                        description=new_description or None,
+                        pages=pages_list,
+                        ordre=new_ordre
+                    )
+                    
+                    if success:
+                        st.success(msg)
+                        st.balloons()
+                        st.info("💡 N'oubliez pas d'attribuer des permissions à ce groupe dans l'onglet 'Rôles & Permissions'")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+    
+    st.markdown("---")
+    
+    # ==========================================
+    # LISTE DES GROUPES
+    # ==========================================
+    
+    st.markdown("### 📋 Groupes existants")
+    
+    groups = get_all_page_groups_full()
+    
+    if groups:
+        # Stats
+        active_count = len([g for g in groups if g['is_active']])
+        inactive_count = len(groups) - active_count
+        
+        col1, col2 = st.columns(2)
+        col1.metric("✅ Actifs", active_count)
+        col2.metric("❌ Inactifs", inactive_count)
+        
+        st.markdown("---")
+        
+        for group in groups:
+            status_icon = "🟢" if group['is_active'] else "🔴"
+            pages_str = ", ".join(group['pages']) if group['pages'] else "Aucune page"
+            
+            with st.expander(f"{status_icon} {group['libelle']} (`{group['code']}`) - Ordre {group['ordre']}"):
+                
+                # Mode édition ?
+                edit_mode = st.session_state.get(f'edit_group_{group["id"]}', False)
+                
+                if edit_mode:
+                    # ==========================================
+                    # FORMULAIRE ÉDITION
+                    # ==========================================
+                    st.markdown("##### ✏️ Modifier le groupe")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        edit_code = st.text_input(
+                            "Code *",
+                            value=group['code'],
+                            key=f"edit_code_{group['id']}"
+                        ).upper().replace(" ", "_")
+                        
+                        edit_libelle = st.text_input(
+                            "Libellé *",
+                            value=group['libelle'],
+                            key=f"edit_libelle_{group['id']}"
+                        )
+                    
+                    with col2:
+                        edit_ordre = st.number_input(
+                            "Ordre",
+                            min_value=1,
+                            max_value=100,
+                            value=group['ordre'],
+                            key=f"edit_ordre_{group['id']}"
+                        )
+                        
+                        edit_description = st.text_input(
+                            "Description",
+                            value=group['description'] or "",
+                            key=f"edit_desc_{group['id']}"
+                        )
+                    
+                    edit_pages_str = st.text_area(
+                        "Pages",
+                        value=", ".join(group['pages']) if group['pages'] else "",
+                        key=f"edit_pages_{group['id']}"
+                    )
+                    
+                    edit_is_active = st.checkbox(
+                        "Actif",
+                        value=group['is_active'],
+                        key=f"edit_active_{group['id']}"
+                    )
+                    
+                    col_save, col_cancel = st.columns(2)
+                    
+                    with col_save:
+                        if st.button("💾 Enregistrer", type="primary", key=f"save_group_{group['id']}"):
+                            if not edit_code:
+                                st.error("❌ Le code est obligatoire")
+                            elif not edit_libelle:
+                                st.error("❌ Le libellé est obligatoire")
+                            else:
+                                pages_list = [p.strip() for p in edit_pages_str.split(",") if p.strip()] if edit_pages_str else []
+                                
+                                success, msg = update_page_group(
+                                    group_id=group['id'],
+                                    code=edit_code,
+                                    libelle=edit_libelle,
+                                    description=edit_description or None,
+                                    pages=pages_list,
+                                    ordre=edit_ordre,
+                                    is_active=edit_is_active
+                                )
+                                
+                                if success:
+                                    st.success(msg)
+                                    st.session_state.pop(f'edit_group_{group["id"]}', None)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+                    
+                    with col_cancel:
+                        if st.button("❌ Annuler", key=f"cancel_group_{group['id']}"):
+                            st.session_state.pop(f'edit_group_{group["id"]}', None)
+                            st.rerun()
+                
+                else:
+                    # ==========================================
+                    # AFFICHAGE LECTURE
+                    # ==========================================
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.write(f"**Code** : `{group['code']}`")
+                        st.write(f"**Libellé** : {group['libelle']}")
+                        st.write(f"**Ordre** : {group['ordre']}")
+                    
+                    with col2:
+                        st.write(f"**Description** : {group['description'] or '-'}")
+                        st.write(f"**Statut** : {'✅ Actif' if group['is_active'] else '❌ Inactif'}")
+                    
+                    st.write(f"**Pages** : {pages_str}")
+                    
+                    # Compter les permissions liées
+                    try:
+                        conn_count = get_connection()
+                        cursor_count = conn_count.cursor()
+                        cursor_count.execute(
+                            "SELECT COUNT(*) as cnt FROM permissions WHERE page_group_code = %s",
+                            (group['code'],)
+                        )
+                        perm_count = cursor_count.fetchone()['cnt']
+                        cursor_count.close()
+                        conn_count.close()
+                        st.caption(f"🔗 {perm_count} permission(s) liée(s)")
+                    except:
+                        pass
+                    
+                    st.markdown("---")
+                    
+                    # Boutons actions
+                    col_edit, col_delete = st.columns(2)
+                    
+                    with col_edit:
+                        if st.button("✏️ Modifier", key=f"btn_edit_group_{group['id']}", use_container_width=True):
+                            st.session_state[f'edit_group_{group["id"]}'] = True
+                            st.rerun()
+                    
+                    with col_delete:
+                        if st.button("🗑️ Supprimer", key=f"btn_del_group_{group['id']}", use_container_width=True):
+                            st.session_state[f'confirm_delete_{group["id"]}'] = True
+                            st.rerun()
+                    
+                    # Confirmation suppression
+                    if st.session_state.get(f'confirm_delete_{group["id"]}', False):
+                        st.warning(f"⚠️ Voulez-vous vraiment supprimer le groupe **{group['libelle']}** ?")
+                        
+                        col_yes, col_no = st.columns(2)
+                        
+                        with col_yes:
+                            if st.button("✅ Oui, supprimer", key=f"confirm_yes_{group['id']}", type="primary"):
+                                success, msg = delete_page_group(group['id'])
+                                if success:
+                                    st.success(msg)
+                                    st.session_state.pop(f'confirm_delete_{group["id"]}', None)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+                        
+                        with col_no:
+                            if st.button("❌ Non, annuler", key=f"confirm_no_{group['id']}"):
+                                st.session_state.pop(f'confirm_delete_{group["id"]}', None)
+                                st.rerun()
+    
+    else:
+        st.warning("Aucun groupe de pages trouvé")
+    
+    # ==========================================
+    # AIDE
+    # ==========================================
+    
+    st.markdown("---")
+    st.markdown("### 💡 Aide")
+    
+    with st.expander("Comment utiliser les groupes de pages ?"):
+        st.markdown("""
+        **1. Créer un groupe**
+        - Définissez un **code unique** en MAJUSCULES (ex: `CRM`, `FINANCE`)
+        - Ce code sera utilisé dans le code Python avec `require_access("CRM")`
+        
+        **2. Associer des pages**
+        - Listez les fichiers Python (sans .py) associés à ce groupe
+        - Ex: `21_CRM_Magasins, 22_CRM_Contacts`
+        
+        **3. Attribuer des permissions**
+        - Allez dans l'onglet "🔑 Rôles & Permissions"
+        - Sélectionnez un rôle et cochez les permissions pour le nouveau groupe
+        
+        **4. Utiliser dans le code**
+        ```python
+        from auth import require_access, can_edit, can_delete
+        
+        require_access("CRM")  # Bloque si pas accès
+        
+        if can_edit("CRM"):
+            # Afficher bouton éditer
+        
+        if can_delete("CRM"):
+            # Afficher bouton supprimer
+        ```
+        
+        **5. Reconnecter les utilisateurs**
+        - Les permissions sont chargées à la connexion
+        - Les utilisateurs doivent se **reconnecter** pour voir les changements
+        """)
 
 show_footer()
