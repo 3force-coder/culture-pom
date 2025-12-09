@@ -102,13 +102,14 @@ def get_animations(filtres=None):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # CORRECTION: prochaine_animation → prochaine_animation_date
         query = """
             SELECT 
                 a.id, a.date_animation, a.date_fin, a.statut,
                 m.id as magasin_id, m.enseigne, m.ville,
                 c.id as commercial_id, c.prenom || ' ' || c.nom as commercial,
                 ta.id as type_animation_id, ta.libelle as type_animation,
-                a.description, a.resultats, a.prochaine_animation
+                a.description, a.resultats, a.prochaine_animation_date
             FROM crm_animations a
             JOIN crm_magasins m ON a.magasin_id = m.id
             LEFT JOIN crm_commerciaux c ON a.commercial_id = c.id
@@ -150,16 +151,17 @@ def create_animation(data):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # CORRECTION: prochaine_animation → prochaine_animation_date
         cursor.execute("""
             INSERT INTO crm_animations (
                 magasin_id, commercial_id, type_animation_id, date_animation, date_fin,
-                statut, description, resultats, prochaine_animation, created_by
+                statut, description, resultats, prochaine_animation_date, created_by
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """, (
             data['magasin_id'], data.get('commercial_id'), data.get('type_animation_id'),
             data['date_animation'], data.get('date_fin'), data.get('statut', 'PLANIFIEE'),
-            data.get('description'), data.get('resultats'), data.get('prochaine_animation'),
+            data.get('description'), data.get('resultats'), data.get('prochaine_animation_date'),
             data.get('created_by')
         ))
         
@@ -177,17 +179,18 @@ def update_animation(anim_id, data):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # CORRECTION: prochaine_animation → prochaine_animation_date
         cursor.execute("""
             UPDATE crm_animations SET
                 magasin_id = %s, commercial_id = %s, type_animation_id = %s,
                 date_animation = %s, date_fin = %s, statut = %s,
-                description = %s, resultats = %s, prochaine_animation = %s,
+                description = %s, resultats = %s, prochaine_animation_date = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
         """, (
             data['magasin_id'], data.get('commercial_id'), data.get('type_animation_id'),
-            data['date_animation'], data.get('date_fin'), data.get('statut'),
-            data.get('description'), data.get('resultats'), data.get('prochaine_animation'),
+            data['date_animation'], data.get('date_fin'), data['statut'],
+            data.get('description'), data.get('resultats'), data.get('prochaine_animation_date'),
             anim_id
         ))
         
@@ -212,14 +215,13 @@ def delete_animation(anim_id):
         return False, f"❌ Erreur : {str(e)}"
 
 # ==========================================
-# KPIs
+# INTERFACE
 # ==========================================
 
+# KPIs
 kpis = get_kpis_animations()
-
 if kpis:
     col1, col2, col3, col4 = st.columns(4)
-    
     with col1:
         st.metric("📅 Planifiées", kpis['planifiees'])
     with col2:
@@ -227,17 +229,14 @@ if kpis:
     with col3:
         st.metric("✅ Terminées", kpis['terminees'])
     with col4:
-        st.metric("⚠️ Dans 14 jours", kpis['prochaines'])
+        st.metric("⏰ Dans 14 jours", kpis['prochaines'])
 
 st.markdown("---")
-
-# ==========================================
-# ONGLETS
-# ==========================================
 
 tab1, tab2 = st.tabs(["📋 Liste Animations", "➕ Nouvelle Animation"])
 
 with tab1:
+    # Filtres
     magasins = get_magasins_dropdown()
     commerciaux = get_commerciaux()
     types_animation = get_types_animation()
@@ -245,71 +244,75 @@ with tab1:
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        mag_options = [(0, 'Tous')] + magasins
-        filtre_magasin = st.selectbox("Magasin", mag_options, format_func=lambda x: x[1], key="f_mag_a")
+        mag_opts = [(0, 'Tous')] + magasins
+        filtre_mag = st.selectbox("Magasin", mag_opts, format_func=lambda x: x[1], key="f_mag")
     with col2:
-        comm_options = [(0, 'Tous')] + commerciaux
-        filtre_commercial = st.selectbox("Commercial", comm_options, format_func=lambda x: x[1], key="f_comm_a")
+        comm_opts = [(0, 'Tous')] + commerciaux
+        filtre_comm = st.selectbox("Commercial", comm_opts, format_func=lambda x: x[1], key="f_comm")
     with col3:
-        type_options = [(0, 'Tous')] + types_animation
-        filtre_type = st.selectbox("Type animation", type_options, format_func=lambda x: x[1], key="f_type_a")
+        type_opts = [(0, 'Tous')] + types_animation
+        filtre_type = st.selectbox("Type animation", type_opts, format_func=lambda x: x[1], key="f_type")
     with col4:
-        filtre_statut = st.selectbox("Statut", ['Tous', 'PLANIFIEE', 'EN_COURS', 'TERMINEE', 'ANNULEE'], key="f_stat_a")
+        filtre_statut = st.selectbox("Statut", ['Tous', 'PLANIFIEE', 'EN_COURS', 'TERMINEE', 'ANNULEE'], key="f_stat")
     
+    st.markdown("---")
+    
+    # Charger animations
     filtres = {
-        'magasin_id': filtre_magasin[0],
-        'commercial_id': filtre_commercial[0],
+        'magasin_id': filtre_mag[0],
+        'commercial_id': filtre_comm[0],
         'type_animation_id': filtre_type[0],
         'statut': filtre_statut
     }
     
-    st.markdown("---")
-    
     df = get_animations(filtres)
     
     if not df.empty:
-        st.markdown(f"**{len(df)} animation(s) trouvée(s)**")
+        st.info(f"📊 {len(df)} animation(s) trouvée(s)")
         
-        display_df = df[['date_animation', 'enseigne', 'ville', 'commercial', 'type_animation', 'statut']].copy()
-        display_df['date_animation'] = pd.to_datetime(display_df['date_animation']).dt.strftime('%d/%m/%Y')
-        display_df.columns = ['Date', 'Enseigne', 'Ville', 'Commercial', 'Type', 'Statut']
-        display_df = display_df.fillna('')
+        # Tableau sélection
+        df_display = df[['id', 'date_animation', 'enseigne', 'ville', 'commercial', 'type_animation', 'statut']].copy()
+        df_display['date_animation'] = pd.to_datetime(df_display['date_animation']).dt.strftime('%d/%m/%Y')
+        df_display.columns = ['ID', 'Date', 'Enseigne', 'Ville', 'Commercial', 'Type', 'Statut']
         
         event = st.dataframe(
-            display_df,
+            df_display,
             use_container_width=True,
             hide_index=True,
             on_select="rerun",
             selection_mode="single-row",
-            key="animations_table"
+            key="table_animations"
         )
         
+        # Détail animation sélectionnée
         selected_rows = event.selection.rows if hasattr(event, 'selection') else []
         
-        if len(selected_rows) > 0:
+        if selected_rows:
             idx = selected_rows[0]
             anim = df.iloc[idx]
             
             st.markdown("---")
             
-            statut = anim['statut']
-            if statut == 'PLANIFIEE':
-                card_class = "anim-planifiee"
-            elif statut == 'EN_COURS':
-                card_class = "anim-encours"
-            elif statut == 'TERMINEE':
-                card_class = "anim-terminee"
+            # Card colorée selon statut
+            if anim['statut'] == 'PLANIFIEE':
+                statut_class, statut_label = "anim-planifiee", "📅 Planifiée"
+            elif anim['statut'] == 'EN_COURS':
+                statut_class, statut_label = "anim-encours", "▶️ En cours"
+            elif anim['statut'] == 'TERMINEE':
+                statut_class, statut_label = "anim-terminee", "✅ Terminée"
             else:
-                card_class = "anim-annulee"
+                statut_class, statut_label = "anim-annulee", "❌ Annulée"
             
             date_str = anim['date_animation'].strftime('%d/%m/%Y') if anim['date_animation'] else ''
             date_fin_str = anim['date_fin'].strftime('%d/%m/%Y') if anim['date_fin'] else ''
             
             st.markdown(f"""
-            <div class="{card_class}">
+            <div class="{statut_class}">
                 <h4>🎉 {anim['enseigne']} - {anim['ville']}</h4>
-                <p><strong>Commercial :</strong> {anim['commercial'] or 'N/A'} | <strong>Type :</strong> {anim['type_animation'] or 'N/A'}</p>
-                <p><strong>Dates :</strong> {date_str} {' au ' + date_fin_str if date_fin_str else ''} | <strong>Statut :</strong> {statut}</p>
+                <p><strong>Date :</strong> {date_str} {f"→ {date_fin_str}" if date_fin_str else ""} | 
+                <strong>Commercial :</strong> {anim['commercial'] or 'N/A'} | 
+                <strong>Type :</strong> {anim['type_animation'] or 'N/A'} | 
+                <strong>Statut :</strong> {statut_label}</p>
             </div>
             """, unsafe_allow_html=True)
             
@@ -317,23 +320,26 @@ with tab1:
                 st.markdown(f"**📝 Description :** {anim['description']}")
             if anim['resultats']:
                 st.success(f"📊 Résultats : {anim['resultats']}")
-            if anim['prochaine_animation']:
-                proch_str = anim['prochaine_animation'].strftime('%d/%m/%Y') if anim['prochaine_animation'] else ''
-                st.info(f"📅 Prochaine animation prévue : {proch_str}")
+            if anim['prochaine_animation_date']:
+                proch_str = anim['prochaine_animation_date'].strftime('%d/%m/%Y') if anim['prochaine_animation_date'] else ''
+                st.info(f"📅 Prochaine animation : {proch_str}")
             
-            # Actions selon statut
-            col_actions = st.columns(4)
+            # Boutons actions
+            col_actions = st.columns([1, 1, 1, 1])
             
             with col_actions[0]:
-                if statut == 'PLANIFIEE' and can_edit("CRM"):
+                if anim['statut'] == 'PLANIFIEE' and can_edit("CRM"):
                     if st.button("▶️ Démarrer", key="btn_start_a"):
-                        success, msg = update_animation(anim['id'], {**anim.to_dict(), 'statut': 'EN_COURS'})
+                        update_data = {**anim.to_dict(), 'statut': 'EN_COURS'}
+                        success, msg = update_animation(anim['id'], update_data)
                         if success:
                             st.success("✅ Animation démarrée")
                             st.rerun()
+                        else:
+                            st.error(msg)
             
             with col_actions[1]:
-                if statut == 'EN_COURS' and can_edit("CRM"):
+                if anim['statut'] == 'EN_COURS' and can_edit("CRM"):
                     if st.button("✅ Terminer", key="btn_finish_a"):
                         st.session_state['finish_animation_id'] = anim['id']
                         st.session_state['finish_animation_data'] = anim.to_dict()
@@ -387,7 +393,7 @@ with tab1:
                         else:
                             update_data = {**anim.to_dict(), 'statut': 'TERMINEE', 'resultats': finish_resultats}
                             if finish_prochaine:
-                                update_data['prochaine_animation'] = finish_prochaine
+                                update_data['prochaine_animation_date'] = finish_prochaine
                             success, msg = update_animation(anim['id'], update_data)
                             if success:
                                 st.success("✅ Animation terminée")
@@ -433,7 +439,7 @@ with tab1:
             
             edit_desc = st.text_area("Description", value=data.get('description', '') or '', key="edit_desc_a")
             edit_resultats = st.text_area("Résultats", value=data.get('resultats', '') or '', key="edit_res_a")
-            edit_prochaine = st.date_input("Prochaine animation", value=data.get('prochaine_animation'), key="edit_proch_a")
+            edit_prochaine = st.date_input("Prochaine animation", value=data.get('prochaine_animation_date'), key="edit_proch_a")
             
             col_save, col_cancel = st.columns(2)
             
@@ -446,7 +452,7 @@ with tab1:
                         'date_animation': edit_date, 'date_fin': edit_date_fin if edit_date_fin else None,
                         'statut': edit_statut, 'description': edit_desc or None,
                         'resultats': edit_resultats or None,
-                        'prochaine_animation': edit_prochaine if edit_prochaine else None
+                        'prochaine_animation_date': edit_prochaine if edit_prochaine else None
                     }
                     success, msg = update_animation(st.session_state['edit_animation_id'], update_data)
                     if success:
