@@ -319,6 +319,7 @@ PAGE_GROUP_ICONS = {
     'CONSOMMABLES': '🧴',
     'PRODUCTION': '🏭',
     'COMMERCIAL': '📈',
+    'CRM': '🛒',
     'FINANCE': '💰',
     'INVENTAIRE': '📊',
     'INVENTAIRE_SAISIE': '✏️',
