@@ -310,10 +310,11 @@ with tab1:
         chart_data = df_comm[['Commercial', 'Visites Mois']].copy()
         st.bar_chart(chart_data.set_index('Commercial'))
         
-        # Commercial du mois
-        if len(df_comm) > 0:
-            best = df_comm.loc[df_comm['Visites Mois'].idxmax()]
-            if best['Visites Mois'] > 0:
+        # Commercial du mois (avec vérification des données valides)
+        if len(df_comm) > 0 and df_comm['Visites Mois'].notna().any():
+            max_visites = df_comm['Visites Mois'].max()
+            if pd.notna(max_visites) and max_visites > 0:
+                best = df_comm.loc[df_comm['Visites Mois'].idxmax()]
                 st.success(f"🏆 **Commercial du mois** : {best['Commercial']} avec {int(best['Visites Mois'])} visites")
         
         # Export
