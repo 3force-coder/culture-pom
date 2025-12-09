@@ -72,12 +72,13 @@ def get_magasins(filtres=None):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # CORRECTION: Colonnes qui existent vraiment dans le schéma
         query = """
             SELECT 
                 m.id, m.code_magasin, m.enseigne, m.ville, m.departement,
                 m.adresse, m.code_postal, m.centrale_achat, m.type_magasin, m.type_reseau,
-                m.surface_m2, m.potentiel, m.presence_produit, m.ca_annuel, m.note_magasin,
-                m.statut, m.points_amelioration, m.commentaires,
+                m.surface_m2, m.potentiel, m.presence_produit, m.ca_annuel,
+                m.statut, m.points_amelioration, m.commentaires, m.notes,
                 m.date_derniere_visite, m.date_prochaine_visite,
                 m.commercial_id, c.prenom || ' ' || c.nom as commercial
             FROM crm_magasins m
@@ -168,18 +169,16 @@ def create_magasin(data):
                 enseigne, ville, departement, adresse, code_postal,
                 commercial_id, centrale_achat, type_magasin, type_reseau,
                 surface_m2, potentiel, statut, presence_produit,
-                points_amelioration, commentaires, created_by
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                points_amelioration, commentaires, notes, created_by
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, code_magasin
         """, (
             data['enseigne'], data['ville'], data.get('departement'),
-            data.get('adresse'), data.get('code_postal'),
-            data.get('commercial_id'), data.get('centrale_achat'),
-            data.get('type_magasin'), data.get('type_reseau'),
-            data.get('surface_m2'), data.get('potentiel'),
-            data.get('statut', 'PROSPECT'), data.get('presence_produit'),
-            data.get('points_amelioration'), data.get('commentaires'),
-            data.get('created_by')
+            data.get('adresse'), data.get('code_postal'), data.get('commercial_id'),
+            data.get('centrale_achat'), data.get('type_magasin'), data.get('type_reseau'),
+            data.get('surface_m2'), data.get('potentiel'), data.get('statut', 'PROSPECT'),
+            data.get('presence_produit'), data.get('points_amelioration'),
+            data.get('commentaires'), data.get('notes'), data.get('created_by')
         ))
         
         result = cursor.fetchone()
@@ -187,7 +186,7 @@ def create_magasin(data):
         cursor.close()
         conn.close()
         
-        return True, f"✅ Magasin créé : {result['code_magasin']}"
+        return True, f"✅ Magasin {result['code_magasin']} créé"
     except Exception as e:
         return False, f"❌ Erreur : {str(e)}"
 
@@ -199,12 +198,11 @@ def update_magasin(magasin_id, data):
         
         cursor.execute("""
             UPDATE crm_magasins SET
-                enseigne = %s, ville = %s, departement = %s,
-                adresse = %s, code_postal = %s, commercial_id = %s,
-                centrale_achat = %s, type_magasin = %s, type_reseau = %s,
-                surface_m2 = %s, potentiel = %s, statut = %s,
-                presence_produit = %s, points_amelioration = %s,
-                commentaires = %s, updated_at = CURRENT_TIMESTAMP
+                enseigne = %s, ville = %s, departement = %s, adresse = %s, code_postal = %s,
+                commercial_id = %s, centrale_achat = %s, type_magasin = %s, type_reseau = %s,
+                surface_m2 = %s, potentiel = %s, statut = %s, presence_produit = %s,
+                points_amelioration = %s, commentaires = %s, notes = %s,
+                updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
         """, (
             data['enseigne'], data['ville'], data.get('departement'),
@@ -212,7 +210,7 @@ def update_magasin(magasin_id, data):
             data.get('centrale_achat'), data.get('type_magasin'), data.get('type_reseau'),
             data.get('surface_m2'), data.get('potentiel'), data.get('statut'),
             data.get('presence_produit'), data.get('points_amelioration'),
-            data.get('commentaires'), magasin_id
+            data.get('commentaires'), data.get('notes'), magasin_id
         ))
         
         conn.commit()
@@ -224,7 +222,7 @@ def update_magasin(magasin_id, data):
         return False, f"❌ Erreur : {str(e)}"
 
 def delete_magasin(magasin_id):
-    """Supprime (désactive) un magasin"""
+    """Supprime (soft delete) un magasin"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -237,14 +235,10 @@ def delete_magasin(magasin_id):
         return False, f"❌ Erreur : {str(e)}"
 
 # ==========================================
-# ONGLETS
+# INTERFACE
 # ==========================================
 
 tab1, tab2 = st.tabs(["📋 Liste Magasins", "➕ Nouveau Magasin"])
-
-# ==========================================
-# TAB 1 : LISTE
-# ==========================================
 
 with tab1:
     # Filtres
@@ -258,86 +252,79 @@ with tab1:
     with col2:
         filtre_dept = st.selectbox("Département", ['Tous'] + options['departements'], key="f_dept")
     with col3:
-        comm_options = [(0, 'Tous')] + commerciaux
-        filtre_comm = st.selectbox("Commercial", comm_options, format_func=lambda x: x[1], key="f_comm")
+        comm_opts = [(0, 'Tous')] + commerciaux
+        filtre_comm = st.selectbox("Commercial", comm_opts, format_func=lambda x: x[1], key="f_comm")
     with col4:
         filtre_statut = st.selectbox("Statut", ['Tous', 'ACTIF', 'PROSPECT', 'INACTIF', 'EN_PAUSE', 'PERDU'], key="f_stat")
     with col5:
         filtre_ville = st.selectbox("Ville", ['Tous'] + options['villes'], key="f_ville")
     
+    st.markdown("---")
+    
+    # Charger magasins
     filtres = {
         'enseigne': filtre_enseigne,
         'departement': filtre_dept,
-        'commercial_id': filtre_comm[0] if filtre_comm else 0,
+        'commercial_id': filtre_comm[0],
         'statut': filtre_statut,
         'ville': filtre_ville
     }
     
-    st.markdown("---")
-    
     df = get_magasins(filtres)
     
     if not df.empty:
-        st.markdown(f"**{len(df)} magasin(s) trouvé(s)**")
+        st.info(f"📊 {len(df)} magasin(s) trouvé(s)")
         
-        # Tableau simplifié
-        display_df = df[['code_magasin', 'enseigne', 'ville', 'departement', 'commercial', 'statut', 'date_derniere_visite']].copy()
-        display_df['date_derniere_visite'] = pd.to_datetime(display_df['date_derniere_visite']).dt.strftime('%d/%m/%Y')
-        display_df.columns = ['Code', 'Enseigne', 'Ville', 'Dépt', 'Commercial', 'Statut', 'Dernière visite']
-        display_df = display_df.fillna('')
+        # Tableau sélection
+        df_display = df[['id', 'enseigne', 'ville', 'departement', 'commercial', 'statut']].copy()
+        df_display.columns = ['ID', 'Enseigne', 'Ville', 'Département', 'Commercial', 'Statut']
         
         event = st.dataframe(
-            display_df,
+            df_display,
             use_container_width=True,
             hide_index=True,
             on_select="rerun",
             selection_mode="single-row",
-            key="magasins_table"
+            key="table_magasins"
         )
         
+        # Détail magasin sélectionné
         selected_rows = event.selection.rows if hasattr(event, 'selection') else []
         
-        if len(selected_rows) > 0:
+        if selected_rows:
             idx = selected_rows[0]
             mag = df.iloc[idx]
             
             st.markdown("---")
             st.subheader(f"🏪 {mag['enseigne']} - {mag['ville']}")
             
-            # 3 sous-onglets
-            sub1, sub2, sub3 = st.tabs(["📋 Informations", "👥 Contacts", "📅 Visites"])
+            sub1, sub2, sub3 = st.tabs(["📋 Fiche", "👥 Contacts", "📅 Visites"])
             
             with sub1:
-                col1, col2, col3 = st.columns(3)
+                col1, col2 = st.columns(2)
                 
                 with col1:
-                    st.markdown("**Identification**")
-                    st.write(f"Code : {mag['code_magasin']}")
-                    st.write(f"Enseigne : {mag['enseigne']}")
-                    st.write(f"Adresse : {mag['adresse'] or 'N/A'}")
-                    st.write(f"CP/Ville : {mag['code_postal'] or ''} {mag['ville']}")
-                    st.write(f"Département : {mag['departement'] or 'N/A'}")
+                    st.markdown(f"**Code** : {mag['code_magasin'] or 'N/A'}")
+                    st.markdown(f"**Adresse** : {mag['adresse'] or 'N/A'}")
+                    st.markdown(f"**CP / Ville** : {mag['code_postal'] or ''} {mag['ville'] or ''}")
+                    st.markdown(f"**Département** : {mag['departement'] or 'N/A'}")
+                    st.markdown(f"**Commercial** : {mag['commercial'] or 'Non assigné'}")
+                    st.markdown(f"**Statut** : {mag['statut'] or 'N/A'}")
                 
                 with col2:
-                    st.markdown("**Commercial**")
-                    st.write(f"Commercial : {mag['commercial'] or 'Non assigné'}")
-                    st.write(f"Centrale : {mag['centrale_achat'] or 'N/A'}")
-                    st.write(f"Type magasin : {mag['type_magasin'] or 'N/A'}")
-                    st.write(f"Type réseau : {mag['type_reseau'] or 'N/A'}")
-                    st.write(f"Statut : {mag['statut']}")
-                
-                with col3:
-                    st.markdown("**Performance**")
-                    st.write(f"Surface : {mag['surface_m2'] or 'N/A'} m²")
-                    st.write(f"Potentiel : {mag['potentiel'] or 'N/A'}")
-                    st.write(f"Présence produit : {mag['presence_produit'] or 'N/A'}")
-                    st.write(f"CA annuel : {mag['ca_annuel'] or 'N/A'} €")
-                    st.write(f"Note : {mag['note_magasin'] or 'N/A'}/10")
+                    st.markdown(f"**Centrale** : {mag['centrale_achat'] or 'N/A'}")
+                    st.markdown(f"**Type magasin** : {mag['type_magasin'] or 'N/A'}")
+                    st.markdown(f"**Type réseau** : {mag['type_reseau'] or 'N/A'}")
+                    st.markdown(f"**Surface** : {mag['surface_m2'] or 'N/A'} m²")
+                    st.markdown(f"**Potentiel** : {mag['potentiel'] or 'N/A'}")
+                    st.markdown(f"**Présence produit** : {mag['presence_produit'] or 'N/A'}")
                 
                 if mag['points_amelioration']:
-                    st.warning(f"📝 Points amélioration : {mag['points_amelioration']}")
+                    st.warning(f"📌 Points amélioration : {mag['points_amelioration']}")
                 if mag['commentaires']:
                     st.info(f"💬 Commentaires : {mag['commentaires']}")
+                if mag['notes']:
+                    st.caption(f"📝 Notes : {mag['notes']}")
                 
                 # Boutons actions
                 col_a, col_b, col_c = st.columns([1, 1, 2])
@@ -355,7 +342,6 @@ with tab1:
                             st.session_state['confirm_delete_magasin'] = mag['id']
                             st.rerun()
                 
-                # Confirmation suppression
                 if st.session_state.get('confirm_delete_magasin') == mag['id']:
                     st.warning("⚠️ Confirmer la suppression ?")
                     col_yes, col_no = st.columns(2)
@@ -432,6 +418,7 @@ with tab1:
             edit_presence = st.text_input("Présence produit", value=data.get('presence_produit', '') or '', key="edit_pres")
             edit_points = st.text_area("Points amélioration", value=data.get('points_amelioration', '') or '', key="edit_pts")
             edit_comments = st.text_area("Commentaires", value=data.get('commentaires', '') or '', key="edit_com")
+            edit_notes = st.text_area("Notes", value=data.get('notes', '') or '', key="edit_notes")
             
             col_save, col_cancel = st.columns(2)
             
@@ -448,7 +435,7 @@ with tab1:
                             'type_reseau': edit_type_res or None, 'surface_m2': edit_surface if edit_surface > 0 else None,
                             'potentiel': edit_potentiel or None, 'statut': edit_statut,
                             'presence_produit': edit_presence or None, 'points_amelioration': edit_points or None,
-                            'commentaires': edit_comments or None
+                            'commentaires': edit_comments or None, 'notes': edit_notes or None
                         }
                         success, msg = update_magasin(st.session_state['edit_magasin_id'], update_data)
                         if success:
@@ -502,6 +489,7 @@ with tab2:
         new_presence = st.text_input("Présence produit", key="new_pres")
         new_points = st.text_area("Points amélioration", key="new_pts")
         new_comments = st.text_area("Commentaires", key="new_com")
+        new_notes = st.text_area("Notes", key="new_notes")
         
         if st.button("✅ Créer le magasin", type="primary", key="btn_create_m"):
             if not new_enseigne or not new_ville:
@@ -515,7 +503,7 @@ with tab2:
                     'type_reseau': new_type_res or None, 'surface_m2': new_surface if new_surface > 0 else None,
                     'potentiel': new_potentiel or None, 'statut': new_statut,
                     'presence_produit': new_presence or None, 'points_amelioration': new_points or None,
-                    'commentaires': new_comments or None,
+                    'commentaires': new_comments or None, 'notes': new_notes or None,
                     'created_by': st.session_state.get('username', 'system')
                 }
                 success, msg = create_magasin(data)
