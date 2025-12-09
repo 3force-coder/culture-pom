@@ -59,7 +59,18 @@ def get_kpis():
         
         cursor.close()
         conn.close()
-        return {'dernier': dernier['date_inventaire'] if dernier else None, 'en_cours': en_cours, 'total': total}
+        
+        # ✅ CORRECTION: Convertir date en string
+        dernier_date = dernier['date_inventaire'] if dernier else None
+        if dernier_date:
+            if isinstance(dernier_date, date):
+                dernier_str = dernier_date.strftime('%d/%m/%Y')
+            else:
+                dernier_str = str(dernier_date)
+        else:
+            dernier_str = None
+        
+        return {'dernier': dernier_str, 'en_cours': en_cours, 'total': total}
     except:
         return None
 
@@ -210,38 +221,54 @@ def valider_inventaire(inventaire_id, validateur):
         valeur_totale = 0
         
         for ligne in lignes:
-            # Mettre à jour stock_consommables avec le stock compté
+            ecart = ligne['ecart'] if ligne['ecart'] else 0
+            if ecart != 0:
+                nb_ecarts += 1
+            
+            # Calculer valeur écart
+            cursor.execute("SELECT prix_unitaire FROM ref_consommables WHERE id = %s", (ligne['consommable_id'],))
+            prix_row = cursor.fetchone()
+            prix = float(prix_row['prix_unitaire']) if prix_row and prix_row['prix_unitaire'] else 0
+            coef = float(ligne['coefficient_conversion']) if ligne['coefficient_conversion'] else 1.0
+            
+            ecart_valeur = abs(float(ecart)) * coef * prix
+            valeur_totale += ecart_valeur
+            
+            # Mettre à jour ecart_valeur dans ligne
+            cursor.execute("""
+                UPDATE inventaires_consommables_lignes SET ecart_valeur = %s WHERE inventaire_id = %s AND consommable_id = %s
+            """, (ecart_valeur, inventaire_id, ligne['consommable_id']))
+            
+            # Mettre à jour stock (le nouveau stock = stock_compte)
             cursor.execute("""
                 UPDATE stock_consommables 
                 SET quantite = %s, updated_at = CURRENT_TIMESTAMP
-                WHERE consommable_id = %s AND site = %s AND atelier = %s
-            """, (ligne['stock_compte'], ligne['consommable_id'], 
-                  ligne['site'], ligne['atelier']))
-            
-            if ligne['ecart'] and ligne['ecart'] != 0:
-                nb_ecarts += 1
-                if ligne['ecart_valeur']:
-                    valeur_totale += abs(float(ligne['ecart_valeur']))
+                WHERE consommable_id = %s AND site = %s AND is_active = TRUE
+            """, (ligne['stock_compte'], ligne['consommable_id'], ligne['site']))
         
         # Mettre à jour inventaire
         cursor.execute("""
             UPDATE inventaires 
-            SET statut = 'VALIDE', validateur = %s, validated_at = CURRENT_TIMESTAMP,
-                nb_ecarts = %s, valeur_ecart_total = %s
+            SET statut = 'VALIDE', 
+                validateur = %s,
+                nb_ecarts = %s,
+                valeur_ecart_total = %s,
+                validated_at = CURRENT_TIMESTAMP
             WHERE id = %s
         """, (validateur, nb_ecarts, valeur_totale, inventaire_id))
         
         conn.commit()
         cursor.close()
         conn.close()
-        return True, f"✅ Inventaire validé - {nb_ecarts} écart(s), valeur: {valeur_totale:,.2f} €"
+        
+        return True, f"✅ Inventaire validé - {nb_ecarts} écart(s), valeur {valeur_totale:,.2f} €"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
 def supprimer_inventaire(inventaire_id):
-    """Supprime définitivement un inventaire et ses lignes"""
+    """Supprime un inventaire et ses lignes"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -255,7 +282,8 @@ def supprimer_inventaire(inventaire_id):
         conn.commit()
         cursor.close()
         conn.close()
-        return True, "✅ Inventaire supprimé"
+        
+        return True, f"✅ Inventaire #{inventaire_id} supprimé"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
@@ -270,6 +298,7 @@ kpis = get_kpis()
 if kpis:
     col1, col2, col3 = st.columns(3)
     with col1:
+        # ✅ CORRIGÉ: dernier est maintenant une string
         st.metric("📅 Dernier inventaire", kpis['dernier'] or "Aucun")
     with col2:
         st.metric("🔄 En cours", kpis['en_cours'])
@@ -335,8 +364,14 @@ with tab2:
     df_en_cours = get_inventaires_liste('EN_COURS')
     
     if not df_en_cours.empty:
-        options = [f"#{row['id']} - {row['date_inventaire']} - {row['site']} ({row['nb_lignes']} lignes)" 
-                   for _, row in df_en_cours.iterrows()]
+        # ✅ CORRIGÉ: Formater les dates pour l'affichage
+        options = []
+        for _, row in df_en_cours.iterrows():
+            date_str = row['date_inventaire']
+            if isinstance(date_str, date):
+                date_str = date_str.strftime('%d/%m/%Y')
+            options.append(f"#{row['id']} - {date_str} - {row['site']} ({row['nb_lignes']} lignes)")
+        
         selected = st.selectbox("Sélectionner l'inventaire", options)
         inv_id = int(selected.split('#')[1].split(' ')[0])
         
@@ -416,8 +451,16 @@ with tab3:
     df_hist = get_inventaires_liste()
     
     if not df_hist.empty:
+        # ✅ CORRIGÉ: Formater les dates
         df_display = df_hist[['id', 'date_inventaire', 'site', 'statut', 'compteur_1', 
                               'validateur', 'nb_lignes', 'nb_ecarts', 'valeur_ecart_total']].copy()
+        
+        # Convertir dates en string pour affichage
+        if 'date_inventaire' in df_display.columns:
+            df_display['date_inventaire'] = df_display['date_inventaire'].apply(
+                lambda x: x.strftime('%d/%m/%Y') if isinstance(x, date) else str(x) if x else ''
+            )
+        
         df_display.columns = ['ID', 'Date', 'Site', 'Statut', 'Compteur', 'Validateur', 
                               'Lignes', 'Écarts', 'Valeur €']
         st.dataframe(df_display, use_container_width=True, hide_index=True)
@@ -443,8 +486,14 @@ with tab4:
     if not df_en_cours.empty:
         st.warning("⚠️ La suppression est définitive et irréversible")
         
-        options = [f"#{row['id']} - {row['date_inventaire']} - {row['site']}" 
-                   for _, row in df_en_cours.iterrows()]
+        # ✅ CORRIGÉ: Formater les dates
+        options = []
+        for _, row in df_en_cours.iterrows():
+            date_str = row['date_inventaire']
+            if isinstance(date_str, date):
+                date_str = date_str.strftime('%d/%m/%Y')
+            options.append(f"#{row['id']} - {date_str} - {row['site']}")
+        
         selected = st.selectbox("Inventaire à supprimer", options, key="sup_select")
         inv_id = int(selected.split('#')[1].split(' ')[0])
         
