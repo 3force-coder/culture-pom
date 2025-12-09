@@ -38,29 +38,29 @@ def get_stats_globales():
         
         stats = {}
         
-        cursor.execute("SELECT COUNT(*) FROM crm_magasins")
-        stats['total_magasins'] = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) as nb FROM crm_magasins")
+        stats['total_magasins'] = cursor.fetchone()['nb']
         
-        cursor.execute("SELECT COUNT(*) FROM crm_magasins WHERE statut = 'ACTIF'")
-        stats['magasins_actifs'] = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) as nb FROM crm_magasins WHERE statut = 'ACTIF'")
+        stats['magasins_actifs'] = cursor.fetchone()['nb']
         
         cursor.execute("""
-            SELECT COUNT(*) FROM crm_visites 
+            SELECT COUNT(*) as nb FROM crm_visites 
             WHERE statut = 'EFFECTUEE'
             AND date_visite >= DATE_TRUNC('month', CURRENT_DATE)
         """)
-        stats['visites_mois'] = cursor.fetchone()[0]
+        stats['visites_mois'] = cursor.fetchone()['nb']
         
         cursor.execute("""
-            SELECT COUNT(*) FROM crm_magasins 
+            SELECT COUNT(*) as nb FROM crm_magasins 
             WHERE statut = 'ACTIF'
             AND date_derniere_visite >= CURRENT_DATE - INTERVAL '30 days'
         """)
-        couverts = cursor.fetchone()[0]
+        couverts = cursor.fetchone()['nb']
         stats['taux_couverture'] = round((couverts / stats['magasins_actifs'] * 100), 1) if stats['magasins_actifs'] > 0 else 0
         
-        cursor.execute("SELECT COUNT(*) FROM crm_animations WHERE statut = 'TERMINEE'")
-        stats['animations_terminees'] = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) as nb FROM crm_animations WHERE statut = 'TERMINEE'")
+        stats['animations_terminees'] = cursor.fetchone()['nb']
         
         cursor.close()
         conn.close()
@@ -97,7 +97,10 @@ def get_stats_par_commercial():
         conn.close()
         
         if rows:
-            return pd.DataFrame(rows, columns=['id', 'Commercial', 'Magasins', 'Actifs', 'Visites Mois', 'Visites 30j', 'Animations'])
+            # Créer DataFrame depuis liste de dicts
+            df = pd.DataFrame(rows)
+            df.columns = ['id', 'Commercial', 'Magasins', 'Actifs', 'Visites Mois', 'Visites 30j', 'Animations']
+            return df
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Erreur stats commerciaux: {e}")
@@ -126,7 +129,9 @@ def get_stats_par_enseigne():
         conn.close()
         
         if rows:
-            return pd.DataFrame(rows, columns=['Enseigne', 'Magasins', 'Actifs', 'Visites'])
+            df = pd.DataFrame(rows)
+            df.columns = ['Enseigne', 'Magasins', 'Actifs', 'Visites']
+            return df
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Erreur stats enseignes: {e}")
@@ -155,7 +160,9 @@ def get_stats_par_departement():
         conn.close()
         
         if rows:
-            return pd.DataFrame(rows, columns=['Département', 'Magasins', 'Actifs', 'Visites 30j'])
+            df = pd.DataFrame(rows)
+            df.columns = ['Département', 'Magasins', 'Actifs', 'Visites 30j']
+            return df
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Erreur stats départements: {e}")
@@ -182,7 +189,9 @@ def get_evolution_visites():
         conn.close()
         
         if rows:
-            return pd.DataFrame(rows, columns=['Mois', 'Visites'])
+            df = pd.DataFrame(rows)
+            df.columns = ['Mois', 'Visites']
+            return df
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Erreur évolution visites: {e}")
@@ -205,7 +214,9 @@ def get_repartition_statuts():
         conn.close()
         
         if rows:
-            return pd.DataFrame(rows, columns=['Statut', 'Nombre'])
+            df = pd.DataFrame(rows)
+            df.columns = ['Statut', 'Nombre']
+            return df
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Erreur répartition statuts: {e}")
@@ -233,7 +244,9 @@ def get_top_magasins():
         conn.close()
         
         if rows:
-            return pd.DataFrame(rows, columns=['Magasin', 'Visites'])
+            df = pd.DataFrame(rows)
+            df.columns = ['Magasin', 'Visites']
+            return df
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Erreur top magasins: {e}")
@@ -287,6 +300,8 @@ if stats:
             <p>🎉 Animations terminées</p>
         </div>
         """, unsafe_allow_html=True)
+else:
+    st.warning("⚠️ Impossible de charger les statistiques globales")
 
 st.markdown("---")
 
