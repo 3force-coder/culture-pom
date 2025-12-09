@@ -11,7 +11,7 @@ if not is_authenticated():
     st.warning("⚠️ Veuillez vous connecter")
     st.stop()
 
-require_access("CRM")
+require_access("COMMERCIAL")
 
 st.markdown("""
 <style>
