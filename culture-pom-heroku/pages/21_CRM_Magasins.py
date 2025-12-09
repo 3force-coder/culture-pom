@@ -633,68 +633,163 @@ with tab1:
                             else:
                                 st.error(msg)
                 
-                # Détails avec carte
-                col_info, col_map = st.columns([1, 1])
-                
-                with col_info:
-                    st.markdown("##### 📝 Informations")
-                    st.markdown(f"**Adresse** : {safe_str(mag.get('adresse'), 'N/A')}")
-                    st.markdown(f"**Code postal** : {safe_str(mag.get('code_postal'), 'N/A')}")
-                    st.markdown(f"**Ville** : {mag['ville']}")
-                    st.markdown(f"**Département** : {safe_str(mag.get('departement'), 'N/A')}")
+                # ==========================================
+                # FORMULAIRE D'ÉDITION
+                # ==========================================
+                if st.session_state.get('edit_mode') == selected_id:
+                    st.markdown("---")
+                    st.subheader("✏️ Modifier le client")
                     
-                    statut = mag.get('statut', 'N/A')
-                    statut_icon = "🟢" if statut == 'ACTIF' else ("🔵" if statut == 'PROSPECT' else "🔴")
-                    st.markdown(f"**Statut** : {statut_icon} {statut}")
-                    st.markdown(f"**Commercial** : {safe_str(mag.get('commercial'), 'Non assigné')}")
+                    commerciaux_edit = get_commerciaux()
+                    centrales_edit = get_centrales_achat()
+                    types_client_edit = get_types_client()
+                    types_reseau_edit = get_types_reseau()
                     
-                    if mag.get('latitude') and mag.get('longitude'):
-                        st.markdown(f"**GPS** : {mag['latitude']:.6f}, {mag['longitude']:.6f}")
-                
-                with col_map:
-                    # Afficher carte si coordonnées disponibles
-                    if mag.get('latitude') and mag.get('longitude'):
-                        st.markdown("##### 🗺️ Localisation")
-                        map_data = pd.DataFrame({
-                            'lat': [float(mag['latitude'])],
-                            'lon': [float(mag['longitude'])]
-                        })
-                        st.map(map_data, zoom=13)
-                    else:
-                        st.info("📍 Coordonnées GPS non disponibles")
+                    col_edit1, col_edit2 = st.columns(2)
+                    
+                    with col_edit1:
+                        st.markdown("#### 🏪 Informations client")
+                        edit_enseigne = st.text_input("Enseigne *", value=safe_str(mag.get('enseigne')), key="edit_ens")
                         
-                        # Bouton pour géocoder
-                        if st.button("🔍 Rechercher coordonnées GPS"):
-                            adresse_complete = f"{safe_str(mag.get('adresse'))} {safe_str(mag.get('code_postal'))} {mag['ville']}"
-                            lat, lng = geocode_adresse(adresse_complete)
-                            
-                            if lat and lng:
-                                # Mettre à jour en base
+                        # Commercial
+                        comm_edit_list = [(None, 'Non assigné')] + commerciaux_edit
+                        current_comm_idx = 0
+                        if mag.get('commercial_id'):
+                            for i, (cid, cname) in enumerate(comm_edit_list):
+                                if cid == mag.get('commercial_id'):
+                                    current_comm_idx = i
+                                    break
+                        edit_commercial = st.selectbox("Commercial", comm_edit_list, index=current_comm_idx, format_func=lambda x: x[1], key="edit_comm")
+                        
+                        edit_centrale = dropdown_dynamique("Centrale d'achat", centrales_edit, safe_str(mag.get('centrale_achat')), "edit_centrale")
+                        edit_type_client = dropdown_dynamique("Type client", types_client_edit, safe_str(mag.get('type_magasin')), "edit_type_client")
+                        edit_type_reseau = dropdown_dynamique("Type réseau", types_reseau_edit, safe_str(mag.get('type_reseau')), "edit_type_reseau")
+                        
+                        edit_surface = st.number_input("Surface m²", min_value=0, value=safe_int(mag.get('surface_m2')), key="edit_surf")
+                        edit_potentiel = st.text_input("Potentiel", value=safe_str(mag.get('potentiel')), key="edit_pot")
+                        edit_statut = st.selectbox("Statut", ['PROSPECT', 'ACTIF', 'INACTIF', 'EN_PAUSE', 'PERDU'], 
+                                                   index=['PROSPECT', 'ACTIF', 'INACTIF', 'EN_PAUSE', 'PERDU'].index(mag.get('statut', 'PROSPECT')) if mag.get('statut') in ['PROSPECT', 'ACTIF', 'INACTIF', 'EN_PAUSE', 'PERDU'] else 0,
+                                                   key="edit_stat")
+                    
+                    with col_edit2:
+                        # ⭐ Composant adresse avec autocomplétion
+                        adresse_data_edit = adresse_autocomplete("edit", {
+                            'adresse': mag.get('adresse'),
+                            'code_postal': mag.get('code_postal'),
+                            'ville': mag.get('ville'),
+                            'departement': mag.get('departement'),
+                            'latitude': mag.get('latitude'),
+                            'longitude': mag.get('longitude')
+                        })
+                    
+                    edit_presence = st.text_input("Présence produit", value=safe_str(mag.get('presence_produit')), key="edit_pres")
+                    edit_notes = st.text_area("Notes", value=safe_str(mag.get('notes')), key="edit_notes", height=80)
+                    
+                    col_save, col_cancel = st.columns(2)
+                    
+                    with col_save:
+                        if st.button("💾 Enregistrer", type="primary", use_container_width=True, key="btn_save_edit"):
+                            if not edit_enseigne:
+                                st.error("❌ L'enseigne est obligatoire")
+                            elif not adresse_data_edit['ville']:
+                                st.error("❌ La ville est obligatoire")
+                            else:
                                 update_data = {
-                                    'enseigne': mag['enseigne'],
-                                    'ville': mag['ville'],
-                                    'departement': mag.get('departement'),
-                                    'adresse': mag.get('adresse'),
-                                    'code_postal': mag.get('code_postal'),
-                                    'commercial_id': mag.get('commercial_id'),
-                                    'centrale_achat': mag.get('centrale_achat'),
-                                    'type_magasin': mag.get('type_magasin'),
-                                    'type_reseau': mag.get('type_reseau'),
-                                    'surface_m2': mag.get('surface_m2'),
-                                    'potentiel': mag.get('potentiel'),
-                                    'statut': mag.get('statut'),
-                                    'presence_produit': mag.get('presence_produit'),
-                                    'points_amelioration': mag.get('points_amelioration'),
-                                    'notes': mag.get('notes'),
-                                    'latitude': lat,
-                                    'longitude': lng
+                                    'enseigne': edit_enseigne,
+                                    'ville': adresse_data_edit['ville'],
+                                    'departement': adresse_data_edit['departement'] or None,
+                                    'adresse': adresse_data_edit['adresse'] or None,
+                                    'code_postal': adresse_data_edit['code_postal'] or None,
+                                    'latitude': adresse_data_edit['latitude'],
+                                    'longitude': adresse_data_edit['longitude'],
+                                    'commercial_id': edit_commercial[0],
+                                    'centrale_achat': edit_centrale or None,
+                                    'type_magasin': edit_type_client or None,
+                                    'type_reseau': edit_type_reseau or None,
+                                    'surface_m2': edit_surface if edit_surface > 0 else None,
+                                    'potentiel': edit_potentiel or None,
+                                    'statut': edit_statut,
+                                    'presence_produit': edit_presence or None,
+                                    'notes': edit_notes or None
                                 }
                                 success, msg = update_magasin(selected_id, update_data)
                                 if success:
-                                    st.success(f"✅ GPS trouvé : {lat:.6f}, {lng:.6f}")
+                                    st.success(msg)
+                                    st.session_state.pop('edit_mode', None)
                                     st.rerun()
-                            else:
-                                st.warning("⚠️ Impossible de trouver les coordonnées")
+                                else:
+                                    st.error(msg)
+                    
+                    with col_cancel:
+                        if st.button("❌ Annuler", use_container_width=True, key="btn_cancel_edit"):
+                            st.session_state.pop('edit_mode', None)
+                            st.rerun()
+                    
+                    st.markdown("---")
+                
+                # Détails avec carte (seulement si pas en mode édition)
+                if st.session_state.get('edit_mode') != selected_id:
+                    col_info, col_map = st.columns([1, 1])
+                    
+                    with col_info:
+                        st.markdown("##### 📝 Informations")
+                        st.markdown(f"**Adresse** : {safe_str(mag.get('adresse'), 'N/A')}")
+                        st.markdown(f"**Code postal** : {safe_str(mag.get('code_postal'), 'N/A')}")
+                        st.markdown(f"**Ville** : {mag['ville']}")
+                        st.markdown(f"**Département** : {safe_str(mag.get('departement'), 'N/A')}")
+                        
+                        statut = mag.get('statut', 'N/A')
+                        statut_icon = "🟢" if statut == 'ACTIF' else ("🔵" if statut == 'PROSPECT' else "🔴")
+                        st.markdown(f"**Statut** : {statut_icon} {statut}")
+                        st.markdown(f"**Commercial** : {safe_str(mag.get('commercial'), 'Non assigné')}")
+                        
+                        if mag.get('latitude') and mag.get('longitude'):
+                            st.markdown(f"**GPS** : {mag['latitude']:.6f}, {mag['longitude']:.6f}")
+                    
+                    with col_map:
+                        # Afficher carte si coordonnées disponibles
+                        if mag.get('latitude') and mag.get('longitude'):
+                            st.markdown("##### 🗺️ Localisation")
+                            map_data = pd.DataFrame({
+                                'lat': [float(mag['latitude'])],
+                                'lon': [float(mag['longitude'])]
+                            })
+                            st.map(map_data, zoom=13)
+                        else:
+                            st.info("📍 Coordonnées GPS non disponibles")
+                            
+                            # Bouton pour géocoder
+                            if st.button("🔍 Rechercher coordonnées GPS"):
+                                adresse_complete = f"{safe_str(mag.get('adresse'))} {safe_str(mag.get('code_postal'))} {mag['ville']}"
+                                lat, lng = geocode_adresse(adresse_complete)
+                                
+                                if lat and lng:
+                                    # Mettre à jour en base
+                                    update_data = {
+                                        'enseigne': mag['enseigne'],
+                                        'ville': mag['ville'],
+                                        'departement': mag.get('departement'),
+                                        'adresse': mag.get('adresse'),
+                                        'code_postal': mag.get('code_postal'),
+                                        'commercial_id': mag.get('commercial_id'),
+                                        'centrale_achat': mag.get('centrale_achat'),
+                                        'type_magasin': mag.get('type_magasin'),
+                                        'type_reseau': mag.get('type_reseau'),
+                                        'surface_m2': mag.get('surface_m2'),
+                                        'potentiel': mag.get('potentiel'),
+                                        'statut': mag.get('statut'),
+                                        'presence_produit': mag.get('presence_produit'),
+                                        'points_amelioration': mag.get('points_amelioration'),
+                                        'notes': mag.get('notes'),
+                                        'latitude': lat,
+                                        'longitude': lng
+                                    }
+                                    success, msg = update_magasin(selected_id, update_data)
+                                    if success:
+                                        st.success(f"✅ GPS trouvé : {lat:.6f}, {lng:.6f}")
+                                        st.rerun()
+                                else:
+                                    st.warning("⚠️ Impossible de trouver les coordonnées")
         else:
             st.info("👆 Sélectionnez un client dans le tableau pour voir les détails")
     else:
