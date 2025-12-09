@@ -1,7 +1,7 @@
 """
 Page 11 - Inventaire Manager
 Accès : ADMIN, USER (pas COMPTEUR)
-Onglets : Créer, Valider, Historique, Gérer
+Onglets : Créer, Valider, Historique (avec détails), Gérer
 """
 
 import streamlit as st
@@ -60,15 +60,14 @@ def get_kpis():
         cursor.close()
         conn.close()
         
-        # ✅ CORRECTION: Convertir date en string
-        dernier_date = dernier['date_inventaire'] if dernier else None
-        if dernier_date:
+        # ⭐ CORRECTION : Convertir datetime.date en string pour st.metric
+        dernier_str = None
+        if dernier and dernier['date_inventaire']:
+            dernier_date = dernier['date_inventaire']
             if isinstance(dernier_date, date):
                 dernier_str = dernier_date.strftime('%d/%m/%Y')
             else:
                 dernier_str = str(dernier_date)
-        else:
-            dernier_str = None
         
         return {'dernier': dernier_str, 'en_cours': en_cours, 'total': total}
     except:
@@ -174,14 +173,18 @@ def creer_inventaire(date_inv, site, compteur_1, compteur_2, mois, annee):
         return False, f"❌ Erreur : {str(e)}"
 
 def get_lignes_inventaire(inventaire_id):
-    """Récupère lignes avec détails pour validation"""
+    """Récupère lignes avec détails pour validation/consultation"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        
+        # ⭐ Conversion int pour éviter numpy.int64
+        inventaire_id = int(inventaire_id)
+        
         cursor.execute("""
             SELECT 
                 il.id, rc.code_consommable, rc.libelle, rc.unite_inventaire,
-                il.site, il.atelier, il.stock_theorique, il.stock_compte,
+                il.site, il.atelier, il.emplacement, il.stock_theorique, il.stock_compte,
                 il.ecart, rc.prix_unitaire, il.coefficient_conversion, il.ecart_valeur
             FROM inventaires_consommables_lignes il
             JOIN ref_consommables rc ON il.consommable_id = rc.id
@@ -208,6 +211,9 @@ def valider_inventaire(inventaire_id, validateur):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ⭐ Conversion int
+        inventaire_id = int(inventaire_id)
+        
         # Récupérer lignes comptées
         cursor.execute("""
             SELECT consommable_id, site, atelier, emplacement, stock_compte, 
@@ -221,57 +227,44 @@ def valider_inventaire(inventaire_id, validateur):
         valeur_totale = 0
         
         for ligne in lignes:
-            ecart = ligne['ecart'] if ligne['ecart'] else 0
-            if ecart != 0:
-                nb_ecarts += 1
-            
-            # Calculer valeur écart
-            cursor.execute("SELECT prix_unitaire FROM ref_consommables WHERE id = %s", (ligne['consommable_id'],))
-            prix_row = cursor.fetchone()
-            prix = float(prix_row['prix_unitaire']) if prix_row and prix_row['prix_unitaire'] else 0
-            coef = float(ligne['coefficient_conversion']) if ligne['coefficient_conversion'] else 1.0
-            
-            ecart_valeur = abs(float(ecart)) * coef * prix
-            valeur_totale += ecart_valeur
-            
-            # Mettre à jour ecart_valeur dans ligne
-            cursor.execute("""
-                UPDATE inventaires_consommables_lignes SET ecart_valeur = %s WHERE inventaire_id = %s AND consommable_id = %s
-            """, (ecart_valeur, inventaire_id, ligne['consommable_id']))
-            
-            # Mettre à jour stock (le nouveau stock = stock_compte)
+            # Mettre à jour stock_consommables avec le stock compté
             cursor.execute("""
                 UPDATE stock_consommables 
                 SET quantite = %s, updated_at = CURRENT_TIMESTAMP
-                WHERE consommable_id = %s AND site = %s AND is_active = TRUE
-            """, (ligne['stock_compte'], ligne['consommable_id'], ligne['site']))
+                WHERE consommable_id = %s AND site = %s AND atelier = %s
+            """, (ligne['stock_compte'], ligne['consommable_id'], 
+                  ligne['site'], ligne['atelier']))
+            
+            if ligne['ecart'] and ligne['ecart'] != 0:
+                nb_ecarts += 1
+                if ligne['ecart_valeur']:
+                    valeur_totale += abs(float(ligne['ecart_valeur']))
         
         # Mettre à jour inventaire
         cursor.execute("""
             UPDATE inventaires 
-            SET statut = 'VALIDE', 
-                validateur = %s,
-                nb_ecarts = %s,
-                valeur_ecart_total = %s,
-                validated_at = CURRENT_TIMESTAMP
+            SET statut = 'VALIDE', validateur = %s, validated_at = CURRENT_TIMESTAMP,
+                nb_ecarts = %s, valeur_ecart_total = %s
             WHERE id = %s
         """, (validateur, nb_ecarts, valeur_totale, inventaire_id))
         
         conn.commit()
         cursor.close()
         conn.close()
-        
-        return True, f"✅ Inventaire validé - {nb_ecarts} écart(s), valeur {valeur_totale:,.2f} €"
+        return True, f"✅ Inventaire validé - {nb_ecarts} écart(s), valeur: {valeur_totale:,.2f} €"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
 def supprimer_inventaire(inventaire_id):
-    """Supprime un inventaire et ses lignes"""
+    """Supprime définitivement un inventaire et ses lignes"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        
+        # ⭐ Conversion int
+        inventaire_id = int(inventaire_id)
         
         # Supprimer lignes
         cursor.execute("DELETE FROM inventaires_consommables_lignes WHERE inventaire_id = %s", (inventaire_id,))
@@ -282,8 +275,7 @@ def supprimer_inventaire(inventaire_id):
         conn.commit()
         cursor.close()
         conn.close()
-        
-        return True, f"✅ Inventaire #{inventaire_id} supprimé"
+        return True, "✅ Inventaire supprimé"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
@@ -298,7 +290,6 @@ kpis = get_kpis()
 if kpis:
     col1, col2, col3 = st.columns(3)
     with col1:
-        # ✅ CORRIGÉ: dernier est maintenant une string
         st.metric("📅 Dernier inventaire", kpis['dernier'] or "Aucun")
     with col2:
         st.metric("🔄 En cours", kpis['en_cours'])
@@ -364,7 +355,7 @@ with tab2:
     df_en_cours = get_inventaires_liste('EN_COURS')
     
     if not df_en_cours.empty:
-        # ✅ CORRIGÉ: Formater les dates pour l'affichage
+        # ⭐ Formater les dates pour le dropdown
         options = []
         for _, row in df_en_cours.iterrows():
             date_str = row['date_inventaire']
@@ -430,7 +421,7 @@ with tab2:
                     try:
                         conn = get_connection()
                         cursor = conn.cursor()
-                        cursor.execute("UPDATE inventaires SET statut = 'ANNULE' WHERE id = %s", (inv_id,))
+                        cursor.execute("UPDATE inventaires SET statut = 'ANNULE' WHERE id = %s", (int(inv_id),))
                         conn.commit()
                         cursor.close()
                         conn.close()
@@ -442,7 +433,7 @@ with tab2:
         st.info("📭 Aucun inventaire en cours à valider")
 
 # ==========================================
-# ONGLET HISTORIQUE
+# ONGLET HISTORIQUE - ⭐ AVEC DÉTAILS
 # ==========================================
 
 with tab3:
@@ -451,26 +442,156 @@ with tab3:
     df_hist = get_inventaires_liste()
     
     if not df_hist.empty:
-        # ✅ CORRIGÉ: Formater les dates
+        # Préparer le DataFrame pour affichage
         df_display = df_hist[['id', 'date_inventaire', 'site', 'statut', 'compteur_1', 
                               'validateur', 'nb_lignes', 'nb_ecarts', 'valeur_ecart_total']].copy()
         
-        # Convertir dates en string pour affichage
-        if 'date_inventaire' in df_display.columns:
-            df_display['date_inventaire'] = df_display['date_inventaire'].apply(
-                lambda x: x.strftime('%d/%m/%Y') if isinstance(x, date) else str(x) if x else ''
-            )
+        # ⭐ Formater les dates
+        df_display['date_inventaire'] = df_display['date_inventaire'].apply(
+            lambda x: x.strftime('%d/%m/%Y') if isinstance(x, date) else str(x) if x else ''
+        )
         
         df_display.columns = ['ID', 'Date', 'Site', 'Statut', 'Compteur', 'Validateur', 
                               'Lignes', 'Écarts', 'Valeur €']
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
         
-        # Export
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        # ⭐ Tableau SÉLECTIONNABLE
+        st.markdown("**👇 Sélectionnez un inventaire pour voir les détails**")
+        
+        event = st.dataframe(
+            df_display,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="hist_table"
+        )
+        
+        selected_rows = event.selection.rows if hasattr(event, 'selection') else []
+        
+        # ⭐ AFFICHER DÉTAILS SI SÉLECTION
+        if len(selected_rows) > 0:
+            idx = selected_rows[0]
+            inv_selected = df_hist.iloc[idx]
+            inv_id = int(inv_selected['id'])
+            
+            st.markdown("---")
+            
+            # Infos inventaire sélectionné
+            date_str = inv_selected['date_inventaire']
+            if isinstance(date_str, date):
+                date_str = date_str.strftime('%d/%m/%Y')
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("🔢 Inventaire", f"#{inv_id}")
+            with col2:
+                st.metric("📅 Date", date_str)
+            with col3:
+                st.metric("📍 Site", inv_selected['site'])
+            with col4:
+                st.metric("📊 Statut", inv_selected['statut'])
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("👤 Compteur", inv_selected['compteur_1'] or "N/A")
+            with col2:
+                st.metric("✅ Validateur", inv_selected['validateur'] or "N/A")
+            with col3:
+                ecarts = inv_selected['nb_ecarts'] or 0
+                valeur = inv_selected['valeur_ecart_total'] or 0
+                st.metric("⚠️ Écarts", f"{ecarts} ({valeur:,.2f} €)")
+            
+            st.markdown("---")
+            
+            # ⭐ CHARGER ET AFFICHER LES LIGNES DÉTAILLÉES
+            st.markdown(f"### 📋 Détail des {inv_selected['nb_lignes']} lignes")
+            
+            df_lignes = get_lignes_inventaire(inv_id)
+            
+            if not df_lignes.empty:
+                # Calculer la valeur écart si pas présente
+                if 'ecart_valeur' not in df_lignes.columns or df_lignes['ecart_valeur'].isna().all():
+                    df_lignes['ecart_valeur'] = df_lignes['ecart'].fillna(0) * df_lignes['coefficient_conversion'].fillna(1) * df_lignes['prix_unitaire'].fillna(0)
+                
+                # Préparer pour affichage
+                df_detail = df_lignes[[
+                    'code_consommable', 'libelle', 'unite_inventaire', 'atelier', 
+                    'stock_theorique', 'stock_compte', 'ecart', 'ecart_valeur'
+                ]].copy()
+                
+                df_detail.columns = ['Code', 'Consommable', 'Unité', 'Atelier', 
+                                     'Théorique', 'Compté', 'Écart', 'Valeur €']
+                
+                # Fillna pour affichage
+                df_detail = df_detail.fillna('')
+                
+                # Afficher le tableau
+                st.dataframe(df_detail, use_container_width=True, hide_index=True, height=400)
+                
+                # Résumé
+                nb_comptees = df_lignes['stock_compte'].notna().sum()
+                nb_ecarts = len(df_lignes[df_lignes['ecart'].notna() & (df_lignes['ecart'] != 0)])
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.info(f"📦 **{len(df_lignes)}** références")
+                with col2:
+                    st.info(f"✅ **{nb_comptees}** comptées")
+                with col3:
+                    if nb_ecarts > 0:
+                        st.warning(f"⚠️ **{nb_ecarts}** écart(s)")
+                    else:
+                        st.success("✅ Aucun écart")
+                
+                # ⭐ EXPORT EXCEL DES DÉTAILS
+                st.markdown("---")
+                
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    # Onglet récap
+                    recap_data = {
+                        'Info': ['Inventaire ID', 'Date', 'Site', 'Statut', 'Compteur 1', 'Compteur 2', 
+                                 'Validateur', 'Nb Lignes', 'Nb Écarts', 'Valeur Écarts'],
+                        'Valeur': [inv_id, date_str, inv_selected['site'], inv_selected['statut'],
+                                   inv_selected['compteur_1'], inv_selected['compteur_2'],
+                                   inv_selected['validateur'], inv_selected['nb_lignes'],
+                                   inv_selected['nb_ecarts'], inv_selected['valeur_ecart_total']]
+                    }
+                    pd.DataFrame(recap_data).to_excel(writer, sheet_name='Récapitulatif', index=False)
+                    
+                    # Onglet détails
+                    df_detail.to_excel(writer, sheet_name='Détails', index=False)
+                    
+                    # Onglet écarts uniquement
+                    df_ecarts_only = df_lignes[df_lignes['ecart'].notna() & (df_lignes['ecart'] != 0)].copy()
+                    if not df_ecarts_only.empty:
+                        df_ecarts_export = df_ecarts_only[[
+                            'code_consommable', 'libelle', 'atelier', 
+                            'stock_theorique', 'stock_compte', 'ecart', 'ecart_valeur'
+                        ]].copy()
+                        df_ecarts_export.columns = ['Code', 'Consommable', 'Atelier', 
+                                                    'Théorique', 'Compté', 'Écart', 'Valeur €']
+                        df_ecarts_export.to_excel(writer, sheet_name='Écarts', index=False)
+                
+                st.download_button(
+                    "📥 Exporter détails Excel",
+                    buffer.getvalue(),
+                    f"inventaire_{inv_id}_details_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            else:
+                st.warning("⚠️ Aucune ligne trouvée pour cet inventaire")
+        
+        st.markdown("---")
+        
+        # Export historique global
+        buffer_global = io.BytesIO()
+        with pd.ExcelWriter(buffer_global, engine='openpyxl') as writer:
             df_display.to_excel(writer, index=False)
-        st.download_button("📥 Exporter historique", buffer.getvalue(), 
-                          f"historique_inventaires_{datetime.now().strftime('%Y%m%d')}.xlsx")
+        st.download_button("📥 Exporter historique global", buffer_global.getvalue(), 
+                          f"historique_inventaires_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                          key="export_global")
     else:
         st.info("📭 Aucun historique")
 
@@ -486,7 +607,7 @@ with tab4:
     if not df_en_cours.empty:
         st.warning("⚠️ La suppression est définitive et irréversible")
         
-        # ✅ CORRIGÉ: Formater les dates
+        # ⭐ Formater les dates
         options = []
         for _, row in df_en_cours.iterrows():
             date_str = row['date_inventaire']
