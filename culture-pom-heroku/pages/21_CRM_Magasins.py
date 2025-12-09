@@ -5,7 +5,7 @@ from database import get_connection
 from components import show_footer
 from auth import is_authenticated, require_access, can_edit, can_delete
 
-st.set_page_config(page_title="CRM Magasins - Culture Pom", page_icon="🏪", layout="wide")
+st.set_page_config(page_title="CRM Clients - Culture Pom", page_icon="🏪", layout="wide")
 
 if not is_authenticated():
     st.warning("⚠️ Veuillez vous connecter")
@@ -20,7 +20,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🏪 CRM - Gestion des Magasins")
+st.title("🏪 CRM - Gestion des Clients")
 st.markdown("---")
 
 # ==========================================
@@ -76,6 +76,61 @@ def get_filtres_options():
     except:
         return {'enseignes': [], 'departements': []}
 
+# ⭐ FONCTIONS POUR DROPDOWNS DYNAMIQUES
+def get_centrales_achat():
+    """Récupère les valeurs uniques de centrale_achat"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT centrale_achat 
+            FROM crm_magasins 
+            WHERE is_active = TRUE AND centrale_achat IS NOT NULL AND centrale_achat != ''
+            ORDER BY centrale_achat
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [r['centrale_achat'] for r in rows]
+    except:
+        return []
+
+def get_types_client():
+    """Récupère les valeurs uniques de type_magasin (renommé type_client)"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT type_magasin 
+            FROM crm_magasins 
+            WHERE is_active = TRUE AND type_magasin IS NOT NULL AND type_magasin != ''
+            ORDER BY type_magasin
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [r['type_magasin'] for r in rows]
+    except:
+        return []
+
+def get_types_reseau():
+    """Récupère les valeurs uniques de type_reseau"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT type_reseau 
+            FROM crm_magasins 
+            WHERE is_active = TRUE AND type_reseau IS NOT NULL AND type_reseau != ''
+            ORDER BY type_reseau
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [r['type_reseau'] for r in rows]
+    except:
+        return []
+
 def get_magasins(filtres=None):
     try:
         conn = get_connection()
@@ -104,7 +159,7 @@ def get_magasins(filtres=None):
                 params.append(filtres['departement'])
             if filtres.get('commercial_id') and filtres['commercial_id'] != 0:
                 query += " AND m.commercial_id = %s"
-                params.append(filtres['commercial_id'])
+                params.append(int(filtres['commercial_id']))
             if filtres.get('statut') and filtres['statut'] != 'Tous':
                 query += " AND m.statut = %s"
                 params.append(filtres['statut'])
@@ -183,6 +238,9 @@ def create_magasin(data):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ⭐ Conversion int pour commercial_id
+        commercial_id = int(data['commercial_id']) if data.get('commercial_id') else None
+        
         cursor.execute("""
             INSERT INTO crm_magasins (
                 enseigne, ville, departement, adresse, code_postal,
@@ -193,7 +251,7 @@ def create_magasin(data):
             RETURNING id
         """, (
             data['enseigne'], data['ville'], data.get('departement'),
-            data.get('adresse'), data.get('code_postal'), data.get('commercial_id'),
+            data.get('adresse'), data.get('code_postal'), commercial_id,
             data.get('centrale_achat'), data.get('type_magasin'), data.get('type_reseau'),
             data.get('surface_m2'), data.get('potentiel'), data.get('statut', 'PROSPECT'),
             data.get('presence_produit'), data.get('points_amelioration'),
@@ -205,7 +263,7 @@ def create_magasin(data):
         cursor.close()
         conn.close()
         
-        return True, f"✅ Magasin créé (ID: {new_id})"
+        return True, f"✅ Client créé (ID: {new_id})"
     except Exception as e:
         return False, f"❌ Erreur : {str(e)}"
 
@@ -213,6 +271,10 @@ def update_magasin(magasin_id, data):
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        
+        # ⭐ Conversion int
+        magasin_id = int(magasin_id)
+        commercial_id = int(data['commercial_id']) if data.get('commercial_id') else None
         
         cursor.execute("""
             UPDATE crm_magasins SET
@@ -225,18 +287,18 @@ def update_magasin(magasin_id, data):
             WHERE id = %s
         """, (
             data['enseigne'], data['ville'], data.get('departement'),
-            data.get('adresse'), data.get('code_postal'), data.get('commercial_id'),
+            data.get('adresse'), data.get('code_postal'), commercial_id,
             data.get('centrale_achat'), data.get('type_magasin'), data.get('type_reseau'),
             data.get('surface_m2'), data.get('potentiel'), data.get('statut'),
             data.get('presence_produit'), data.get('points_amelioration'),
-            data.get('commentaires'), data.get('notes'), int(magasin_id)
+            data.get('commentaires'), data.get('notes'), magasin_id
         ))
         
         conn.commit()
         cursor.close()
         conn.close()
         
-        return True, "✅ Magasin mis à jour"
+        return True, "✅ Client mis à jour"
     except Exception as e:
         return False, f"❌ Erreur : {str(e)}"
 
@@ -248,15 +310,46 @@ def delete_magasin(magasin_id):
         conn.commit()
         cursor.close()
         conn.close()
-        return True, "✅ Magasin supprimé"
+        return True, "✅ Client supprimé"
     except Exception as e:
         return False, f"❌ Erreur : {str(e)}"
+
+# ==========================================
+# ⭐ FONCTION HELPER DROPDOWN DYNAMIQUE
+# ==========================================
+
+def dropdown_dynamique(label, valeurs_existantes, valeur_actuelle, key_prefix):
+    """
+    Crée un dropdown avec les valeurs existantes + option nouvelle valeur
+    Retourne la valeur sélectionnée ou saisie
+    """
+    options = [""] + valeurs_existantes + ["➕ Saisir nouvelle valeur"]
+    
+    # Trouver l'index de la valeur actuelle
+    if valeur_actuelle and valeur_actuelle in valeurs_existantes:
+        default_idx = valeurs_existantes.index(valeur_actuelle) + 1  # +1 car "" en premier
+    elif valeur_actuelle:
+        # Valeur actuelle non dans la liste -> la montrer quand même
+        options = [""] + [valeur_actuelle] + [v for v in valeurs_existantes if v != valeur_actuelle] + ["➕ Saisir nouvelle valeur"]
+        default_idx = 1
+    else:
+        default_idx = 0
+    
+    selected = st.selectbox(label, options, index=default_idx, key=f"{key_prefix}_select")
+    
+    if selected == "➕ Saisir nouvelle valeur":
+        nouvelle_valeur = st.text_input(f"Nouvelle valeur pour {label}", key=f"{key_prefix}_new")
+        return nouvelle_valeur if nouvelle_valeur else None
+    elif selected == "":
+        return None
+    else:
+        return selected
 
 # ==========================================
 # INTERFACE
 # ==========================================
 
-tab1, tab2 = st.tabs(["📋 Liste des magasins", "➕ Nouveau magasin"])
+tab1, tab2 = st.tabs(["📋 Liste des clients", "➕ Nouveau client"])
 
 # ==========================================
 # TAB 1 : LISTE + DÉTAILS
@@ -265,10 +358,15 @@ tab1, tab2 = st.tabs(["📋 Liste des magasins", "➕ Nouveau magasin"])
 with tab1:
     # ========== FORMULAIRE MODIFICATION (EN HAUT) ==========
     if 'edit_magasin_id' in st.session_state and can_edit("CRM"):
-        st.subheader("✏️ Modifier le magasin")
+        st.subheader("✏️ Modifier le client")
         
         data = st.session_state.get('edit_magasin_data', {})
         commerciaux = get_commerciaux()
+        
+        # ⭐ Charger les listes pour dropdowns dynamiques
+        centrales_list = get_centrales_achat()
+        types_client_list = get_types_client()
+        types_reseau_list = get_types_reseau()
         
         col1, col2 = st.columns(2)
         
@@ -284,9 +382,28 @@ with tab1:
             edit_commercial = st.selectbox("Commercial", comm_list, index=current_comm, format_func=lambda x: x[1], key="edit_comm")
         
         with col2:
-            edit_centrale = st.text_input("Centrale achat", value=safe_str(data.get('centrale_achat')), key="edit_centr")
-            edit_type_mag = st.text_input("Type magasin", value=safe_str(data.get('type_magasin')), key="edit_tmag")
-            edit_type_res = st.text_input("Type réseau", value=safe_str(data.get('type_reseau')), key="edit_tres")
+            # ⭐ DROPDOWNS DYNAMIQUES
+            edit_centrale = dropdown_dynamique(
+                "Centrale d'achat", 
+                centrales_list, 
+                safe_str(data.get('centrale_achat')), 
+                "edit_centrale"
+            )
+            
+            edit_type_client = dropdown_dynamique(
+                "Type client", 
+                types_client_list, 
+                safe_str(data.get('type_magasin')), 
+                "edit_type_client"
+            )
+            
+            edit_type_reseau = dropdown_dynamique(
+                "Type réseau", 
+                types_reseau_list, 
+                safe_str(data.get('type_reseau')), 
+                "edit_type_reseau"
+            )
+            
             edit_surface = st.number_input("Surface m²", value=safe_int(data.get('surface_m2'), 0), key="edit_surf")
             edit_potentiel = st.text_input("Potentiel", value=safe_str(data.get('potentiel')), key="edit_pot")
             
@@ -311,8 +428,10 @@ with tab1:
                         'enseigne': edit_enseigne, 'ville': edit_ville,
                         'departement': edit_dept or None, 'adresse': edit_adresse or None,
                         'code_postal': edit_cp or None, 'commercial_id': edit_commercial[0],
-                        'centrale_achat': edit_centrale or None, 'type_magasin': edit_type_mag or None,
-                        'type_reseau': edit_type_res or None, 'surface_m2': edit_surface if edit_surface > 0 else None,
+                        'centrale_achat': edit_centrale or None, 
+                        'type_magasin': edit_type_client or None,  # ⭐ Mappé sur type_magasin en DB
+                        'type_reseau': edit_type_reseau or None, 
+                        'surface_m2': edit_surface if edit_surface > 0 else None,
                         'potentiel': edit_potentiel or None, 'statut': edit_statut,
                         'presence_produit': edit_presence or None, 'points_amelioration': edit_points or None,
                         'notes': edit_notes or None
@@ -366,7 +485,7 @@ with tab1:
     df = get_magasins(filtres)
     
     if not df.empty:
-        st.info(f"📊 **{len(df)} magasin(s)** - Cliquez sur une ligne pour voir les détails")
+        st.info(f"📊 **{len(df)} client(s)** - Cliquez sur une ligne pour voir les détails")
         
         # Préparer DataFrame pour affichage
         df_display = df[['id', 'enseigne', 'ville', 'departement', 'statut', 'commercial']].copy()
@@ -402,7 +521,7 @@ with tab1:
             selected_idx = selected_rows[0]
             selected_id = int(df_display.iloc[selected_idx]['ID'])
             
-            # Charger données complètes du magasin
+            # Charger données complètes du client
             mag = get_magasin_by_id(selected_id)
             
             if mag:
@@ -470,8 +589,8 @@ with tab1:
                         statut = mag.get('statut', 'N/A')
                         statut_icon = "🟢" if statut == 'ACTIF' else ("🔵" if statut == 'PROSPECT' else ("🟡" if statut == 'EN_PAUSE' else "🔴"))
                         st.markdown(f"**Statut** : {statut_icon} {statut}")
-                        st.markdown(f"**Centrale** : {safe_str(mag.get('centrale_achat'), 'N/A')}")
-                        st.markdown(f"**Type magasin** : {safe_str(mag.get('type_magasin'), 'N/A')}")
+                        st.markdown(f"**Centrale d'achat** : {safe_str(mag.get('centrale_achat'), 'N/A')}")
+                        st.markdown(f"**Type client** : {safe_str(mag.get('type_magasin'), 'N/A')}")
                         st.markdown(f"**Type réseau** : {safe_str(mag.get('type_reseau'), 'N/A')}")
                         surface = safe_int(mag.get('surface_m2'), 0)
                         st.markdown(f"**Surface** : {surface} m²" if surface > 0 else "**Surface** : N/A")
@@ -512,21 +631,26 @@ with tab1:
                     
                     st.page_link("pages/23_CRM_Visites.py", label="➕ Gérer les visites", icon="📅")
         else:
-            st.info("👆 Sélectionnez un magasin dans le tableau pour voir ses détails")
+            st.info("👆 Sélectionnez un client dans le tableau pour voir ses détails")
     else:
-        st.warning("Aucun magasin trouvé avec ces filtres")
+        st.warning("Aucun client trouvé avec ces filtres")
 
 # ==========================================
-# TAB 2 : NOUVEAU MAGASIN
+# TAB 2 : NOUVEAU CLIENT
 # ==========================================
 
 with tab2:
     if not can_edit("CRM"):
-        st.warning("⚠️ Vous n'avez pas les droits pour créer un magasin")
+        st.warning("⚠️ Vous n'avez pas les droits pour créer un client")
     else:
-        st.subheader("➕ Créer un magasin")
+        st.subheader("➕ Créer un client")
         
         commerciaux = get_commerciaux()
+        
+        # ⭐ Charger les listes pour dropdowns dynamiques
+        centrales_list = get_centrales_achat()
+        types_client_list = get_types_client()
+        types_reseau_list = get_types_reseau()
         
         col1, col2 = st.columns(2)
         
@@ -541,9 +665,28 @@ with tab2:
             new_commercial = st.selectbox("Commercial", comm_list, format_func=lambda x: x[1], key="new_comm")
         
         with col2:
-            new_centrale = st.text_input("Centrale achat", key="new_centr")
-            new_type_mag = st.text_input("Type magasin", key="new_tmag")
-            new_type_res = st.text_input("Type réseau", key="new_tres")
+            # ⭐ DROPDOWNS DYNAMIQUES
+            new_centrale = dropdown_dynamique(
+                "Centrale d'achat", 
+                centrales_list, 
+                "", 
+                "new_centrale"
+            )
+            
+            new_type_client = dropdown_dynamique(
+                "Type client", 
+                types_client_list, 
+                "", 
+                "new_type_client"
+            )
+            
+            new_type_reseau = dropdown_dynamique(
+                "Type réseau", 
+                types_reseau_list, 
+                "", 
+                "new_type_reseau"
+            )
+            
             new_surface = st.number_input("Surface m²", min_value=0, value=0, key="new_surf")
             new_potentiel = st.text_input("Potentiel", key="new_pot")
             new_statut = st.selectbox("Statut", ['PROSPECT', 'ACTIF', 'INACTIF', 'EN_PAUSE', 'PERDU'], key="new_stat")
@@ -552,7 +695,7 @@ with tab2:
         new_points = st.text_area("Points amélioration", key="new_pts", height=80)
         new_notes = st.text_area("Notes", key="new_notes", height=80)
         
-        if st.button("✅ Créer le magasin", type="primary", key="btn_create_m"):
+        if st.button("✅ Créer le client", type="primary", key="btn_create_m"):
             if not new_enseigne or not new_ville:
                 st.error("❌ Enseigne et ville obligatoires")
             else:
@@ -560,8 +703,10 @@ with tab2:
                     'enseigne': new_enseigne, 'ville': new_ville,
                     'departement': new_dept or None, 'adresse': new_adresse or None,
                     'code_postal': new_cp or None, 'commercial_id': new_commercial[0],
-                    'centrale_achat': new_centrale or None, 'type_magasin': new_type_mag or None,
-                    'type_reseau': new_type_res or None, 'surface_m2': new_surface if new_surface > 0 else None,
+                    'centrale_achat': new_centrale or None, 
+                    'type_magasin': new_type_client or None,  # ⭐ Mappé sur type_magasin en DB
+                    'type_reseau': new_type_reseau or None, 
+                    'surface_m2': new_surface if new_surface > 0 else None,
                     'potentiel': new_potentiel or None, 'statut': new_statut,
                     'presence_produit': new_presence or None, 'points_amelioration': new_points or None,
                     'notes': new_notes or None,
