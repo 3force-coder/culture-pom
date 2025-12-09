@@ -14,13 +14,41 @@ if not is_authenticated():
 
 require_access("CRM")
 
+# ✅ CSS CORRIGÉ - Cartes KPI uniformes avec hauteur fixe
 st.markdown("""
 <style>
     .block-container { padding-top: 1.5rem !important; padding-bottom: 0.5rem !important; }
     h1, h2, h3, h4 { margin-top: 0.3rem !important; margin-bottom: 0.3rem !important; }
-    .kpi-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 1.2rem; border-radius: 10px; text-align: center; margin: 0.3rem; }
-    .kpi-card h2 { color: white !important; margin: 0 !important; font-size: 2rem; }
-    .kpi-card p { color: rgba(255,255,255,0.9) !important; margin: 0.3rem 0 0 0 !important; }
+    
+    /* Cartes KPI uniformes */
+    .kpi-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 1rem 0.8rem;
+        border-radius: 10px;
+        text-align: center;
+        margin: 0.3rem;
+        min-height: 100px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+    }
+    .kpi-card h2 {
+        color: white !important;
+        margin: 0 !important;
+        font-size: 1.8rem;
+        line-height: 1.2;
+    }
+    .kpi-card p {
+        color: rgba(255,255,255,0.9) !important;
+        margin: 0.3rem 0 0 0 !important;
+        font-size: 0.85rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 100%;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -97,7 +125,6 @@ def get_stats_par_commercial():
         conn.close()
         
         if rows:
-            # Créer DataFrame depuis liste de dicts
             df = pd.DataFrame(rows)
             df.columns = ['id', 'Commercial', 'Magasins', 'Actifs', 'Visites Mois', 'Visites 30j', 'Animations']
             return df
@@ -261,6 +288,7 @@ stats = get_stats_globales()
 if stats:
     col1, col2, col3, col4, col5 = st.columns(5)
     
+    # ✅ Labels raccourcis pour tenir sur 1 ligne
     with col1:
         st.markdown(f"""
         <div class="kpi-card">
@@ -289,7 +317,7 @@ if stats:
         st.markdown(f"""
         <div class="kpi-card">
             <h2>{stats['taux_couverture']}%</h2>
-            <p>📊 Taux Couverture</p>
+            <p>📊 Couverture 30j</p>
         </div>
         """, unsafe_allow_html=True)
     
@@ -297,7 +325,7 @@ if stats:
         st.markdown(f"""
         <div class="kpi-card">
             <h2>{stats['animations_terminees']}</h2>
-            <p>🎉 Animations terminées</p>
+            <p>🎉 Animations</p>
         </div>
         """, unsafe_allow_html=True)
 else:
@@ -325,7 +353,7 @@ with tab1:
         chart_data = df_comm[['Commercial', 'Visites Mois']].copy()
         st.bar_chart(chart_data.set_index('Commercial'))
         
-        # Commercial du mois (avec vérification des données valides)
+        # Commercial du mois
         if len(df_comm) > 0 and df_comm['Visites Mois'].notna().any():
             max_visites = df_comm['Visites Mois'].max()
             if pd.notna(max_visites) and max_visites > 0:
