@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 from database import get_connection
 from components import show_footer
@@ -26,6 +27,39 @@ st.markdown("""
 
 st.title("🎉 CRM - Gestion des Animations")
 st.markdown("---")
+
+# ==========================================
+# FONCTIONS HELPER - Conversion types
+# ==========================================
+
+def convert_to_native(value):
+    """Convertit numpy/pandas types en types Python natifs pour psycopg2"""
+    if value is None:
+        return None
+    if pd.isna(value):
+        return None
+    if isinstance(value, (np.integer, np.int64, np.int32)):
+        return int(value)
+    if isinstance(value, (np.floating, np.float64, np.float32)):
+        return float(value)
+    if isinstance(value, np.bool_):
+        return bool(value)
+    return value
+
+def safe_int(value, default=0):
+    """Convertit une valeur en int, gère None et NaN"""
+    if value is None or pd.isna(value):
+        return default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+def safe_str(value, default=''):
+    """Convertit une valeur en str, gère None et NaN"""
+    if value is None or pd.isna(value):
+        return default
+    return str(value)
 
 # ==========================================
 # FONCTIONS
@@ -74,27 +108,29 @@ def get_kpis_animations():
         
         kpis = {}
         
-        cursor.execute("SELECT COUNT(*) FROM crm_animations WHERE is_active = TRUE AND statut = 'PLANIFIEE'")
-        kpis['planifiees'] = cursor.fetchone()[0]
+        # ✅ CORRECTION: Utiliser alias 'as nb' et accès dict
+        cursor.execute("SELECT COUNT(*) as nb FROM crm_animations WHERE is_active = TRUE AND statut = 'PLANIFIEE'")
+        kpis['planifiees'] = cursor.fetchone()['nb']
         
-        cursor.execute("SELECT COUNT(*) FROM crm_animations WHERE is_active = TRUE AND statut = 'EN_COURS'")
-        kpis['en_cours'] = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) as nb FROM crm_animations WHERE is_active = TRUE AND statut = 'EN_COURS'")
+        kpis['en_cours'] = cursor.fetchone()['nb']
         
-        cursor.execute("SELECT COUNT(*) FROM crm_animations WHERE is_active = TRUE AND statut = 'TERMINEE'")
-        kpis['terminees'] = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) as nb FROM crm_animations WHERE is_active = TRUE AND statut = 'TERMINEE'")
+        kpis['terminees'] = cursor.fetchone()['nb']
         
         cursor.execute("""
-            SELECT COUNT(*) FROM crm_animations 
+            SELECT COUNT(*) as nb FROM crm_animations 
             WHERE is_active = TRUE AND statut = 'PLANIFIEE'
             AND date_animation BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '14 days'
         """)
-        kpis['prochaines'] = cursor.fetchone()[0]
+        kpis['prochaines'] = cursor.fetchone()['nb']
         
         cursor.close()
         conn.close()
         
         return kpis
-    except:
+    except Exception as e:
+        st.error(f"Erreur KPIs: {e}")
         return None
 
 def get_animations(filtres=None):
@@ -102,7 +138,6 @@ def get_animations(filtres=None):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # CORRECTION: prochaine_animation → prochaine_animation_date
         query = """
             SELECT 
                 a.id, a.date_animation, a.date_fin, a.statut,
@@ -151,7 +186,7 @@ def create_animation(data):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # CORRECTION: prochaine_animation → prochaine_animation_date
+        # ✅ CORRECTION: Convertir tous les types numpy
         cursor.execute("""
             INSERT INTO crm_animations (
                 magasin_id, commercial_id, type_animation_id, date_animation, date_fin,
@@ -159,9 +194,15 @@ def create_animation(data):
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """, (
-            data['magasin_id'], data.get('commercial_id'), data.get('type_animation_id'),
-            data['date_animation'], data.get('date_fin'), data.get('statut', 'PLANIFIEE'),
-            data.get('description'), data.get('resultats'), data.get('prochaine_animation_date'),
+            convert_to_native(data['magasin_id']),
+            convert_to_native(data.get('commercial_id')),
+            convert_to_native(data.get('type_animation_id')),
+            data['date_animation'],
+            data.get('date_fin'),
+            data.get('statut', 'PLANIFIEE'),
+            data.get('description'),
+            data.get('resultats'),
+            data.get('prochaine_animation_date'),
             data.get('created_by')
         ))
         
@@ -179,7 +220,7 @@ def update_animation(anim_id, data):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # CORRECTION: prochaine_animation → prochaine_animation_date
+        # ✅ CORRECTION: Convertir tous les types numpy avant UPDATE
         cursor.execute("""
             UPDATE crm_animations SET
                 magasin_id = %s, commercial_id = %s, type_animation_id = %s,
@@ -188,10 +229,16 @@ def update_animation(anim_id, data):
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
         """, (
-            data['magasin_id'], data.get('commercial_id'), data.get('type_animation_id'),
-            data['date_animation'], data.get('date_fin'), data['statut'],
-            data.get('description'), data.get('resultats'), data.get('prochaine_animation_date'),
-            anim_id
+            convert_to_native(data['magasin_id']),
+            convert_to_native(data.get('commercial_id')),
+            convert_to_native(data.get('type_animation_id')),
+            data.get('date_animation'),
+            data.get('date_fin'),
+            data.get('statut'),
+            data.get('description'),
+            data.get('resultats'),
+            data.get('prochaine_animation_date'),
+            convert_to_native(anim_id)
         ))
         
         conn.commit()
@@ -206,7 +253,8 @@ def delete_animation(anim_id):
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("UPDATE crm_animations SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s", (anim_id,))
+        # ✅ CORRECTION: Convertir anim_id
+        cursor.execute("UPDATE crm_animations SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s", (convert_to_native(anim_id),))
         conn.commit()
         cursor.close()
         conn.close()
@@ -230,6 +278,8 @@ if kpis:
         st.metric("✅ Terminées", kpis['terminees'])
     with col4:
         st.metric("⏰ Dans 14 jours", kpis['prochaines'])
+else:
+    st.warning("⚠️ Impossible de charger les KPIs")
 
 st.markdown("---")
 
@@ -270,145 +320,129 @@ with tab1:
     if not df.empty:
         st.info(f"📊 {len(df)} animation(s) trouvée(s)")
         
-        # Tableau sélection
-        df_display = df[['id', 'date_animation', 'enseigne', 'ville', 'commercial', 'type_animation', 'statut']].copy()
-        df_display['date_animation'] = pd.to_datetime(df_display['date_animation']).dt.strftime('%d/%m/%Y')
-        df_display.columns = ['ID', 'Date', 'Enseigne', 'Ville', 'Commercial', 'Type', 'Statut']
-        
-        event = st.dataframe(
-            df_display,
-            use_container_width=True,
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="single-row",
-            key="table_animations"
-        )
-        
-        # Détail animation sélectionnée
-        selected_rows = event.selection.rows if hasattr(event, 'selection') else []
-        
-        if selected_rows:
-            idx = selected_rows[0]
-            anim = df.iloc[idx]
-            
-            st.markdown("---")
-            
-            # Card colorée selon statut
-            if anim['statut'] == 'PLANIFIEE':
-                statut_class, statut_label = "anim-planifiee", "📅 Planifiée"
-            elif anim['statut'] == 'EN_COURS':
-                statut_class, statut_label = "anim-encours", "▶️ En cours"
-            elif anim['statut'] == 'TERMINEE':
-                statut_class, statut_label = "anim-terminee", "✅ Terminée"
+        for _, anim in df.iterrows():
+            statut = safe_str(anim.get('statut'), 'PLANIFIEE')
+            if statut == 'PLANIFIEE':
+                statut_class = "anim-planifiee"
+                statut_icon = "📅"
+            elif statut == 'EN_COURS':
+                statut_class = "anim-encours"
+                statut_icon = "▶️"
+            elif statut == 'TERMINEE':
+                statut_class = "anim-terminee"
+                statut_icon = "✅"
             else:
-                statut_class, statut_label = "anim-annulee", "❌ Annulée"
+                statut_class = "anim-annulee"
+                statut_icon = "❌"
             
-            date_str = anim['date_animation'].strftime('%d/%m/%Y') if anim['date_animation'] else ''
-            date_fin_str = anim['date_fin'].strftime('%d/%m/%Y') if anim['date_fin'] else ''
+            date_str = anim['date_animation'].strftime('%d/%m/%Y') if anim.get('date_animation') else 'N/A'
             
-            st.markdown(f"""
-            <div class="{statut_class}">
-                <h4>🎉 {anim['enseigne']} - {anim['ville']}</h4>
-                <p><strong>Date :</strong> {date_str} {f"→ {date_fin_str}" if date_fin_str else ""} | 
-                <strong>Commercial :</strong> {anim['commercial'] or 'N/A'} | 
-                <strong>Type :</strong> {anim['type_animation'] or 'N/A'} | 
-                <strong>Statut :</strong> {statut_label}</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            if anim['description']:
-                st.markdown(f"**📝 Description :** {anim['description']}")
-            if anim['resultats']:
-                st.success(f"📊 Résultats : {anim['resultats']}")
-            if anim['prochaine_animation_date']:
-                proch_str = anim['prochaine_animation_date'].strftime('%d/%m/%Y') if anim['prochaine_animation_date'] else ''
-                st.info(f"📅 Prochaine animation : {proch_str}")
-            
-            # Boutons actions
-            col_actions = st.columns([1, 1, 1, 1])
-            
-            with col_actions[0]:
-                if anim['statut'] == 'PLANIFIEE' and can_edit("CRM"):
-                    if st.button("▶️ Démarrer", key="btn_start_a"):
-                        update_data = {**anim.to_dict(), 'statut': 'EN_COURS'}
-                        success, msg = update_animation(anim['id'], update_data)
-                        if success:
-                            st.success("✅ Animation démarrée")
-                            st.rerun()
-                        else:
-                            st.error(msg)
-            
-            with col_actions[1]:
-                if anim['statut'] == 'EN_COURS' and can_edit("CRM"):
-                    if st.button("✅ Terminer", key="btn_finish_a"):
-                        st.session_state['finish_animation_id'] = anim['id']
-                        st.session_state['finish_animation_data'] = anim.to_dict()
-                        st.rerun()
-            
-            with col_actions[2]:
-                if can_edit("CRM"):
-                    if st.button("✏️ Modifier", key="btn_edit_a"):
-                        st.session_state['edit_animation_id'] = anim['id']
-                        st.session_state['edit_animation_data'] = anim.to_dict()
-                        st.rerun()
-            
-            with col_actions[3]:
-                if can_delete("CRM"):
-                    if st.button("🗑️ Supprimer", key="btn_del_a", type="secondary"):
-                        st.session_state['confirm_delete_animation'] = anim['id']
-                        st.rerun()
-            
-            # Confirmation suppression
-            if st.session_state.get('confirm_delete_animation') == anim['id']:
-                st.warning("⚠️ Confirmer la suppression ?")
-                col_yes, col_no = st.columns(2)
-                with col_yes:
-                    if st.button("✅ Confirmer", key="confirm_yes_a"):
-                        success, msg = delete_animation(anim['id'])
-                        if success:
-                            st.success(msg)
-                            st.session_state.pop('confirm_delete_animation', None)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-                with col_no:
-                    if st.button("❌ Annuler", key="confirm_no_a"):
-                        st.session_state.pop('confirm_delete_animation', None)
-                        st.rerun()
-            
-            # Formulaire terminaison
-            if st.session_state.get('finish_animation_id') == anim['id'] and can_edit("CRM"):
-                st.markdown("---")
-                st.subheader("✅ Terminer l'animation")
+            with st.expander(f"{statut_icon} {date_str} - {safe_str(anim.get('enseigne'))} {safe_str(anim.get('ville'))} - {safe_str(anim.get('type_animation'), 'N/A')}"):
+                st.markdown(f"""<div class="{statut_class}">
+                    <strong>Magasin</strong> : {safe_str(anim.get('enseigne'))} - {safe_str(anim.get('ville'))}<br>
+                    <strong>Commercial</strong> : {safe_str(anim.get('commercial'), 'Non assigné')}<br>
+                    <strong>Type</strong> : {safe_str(anim.get('type_animation'), 'Non défini')}<br>
+                    <strong>Date</strong> : {date_str}{' au ' + anim['date_fin'].strftime('%d/%m/%Y') if anim.get('date_fin') else ''}<br>
+                    <strong>Statut</strong> : {statut}
+                </div>""", unsafe_allow_html=True)
                 
-                finish_resultats = st.text_area("Résultats de l'animation *", key="finish_res_a")
-                finish_prochaine = st.date_input("Date prochaine animation", value=None, key="finish_proch_a")
+                if anim.get('description'):
+                    st.markdown(f"**Description** : {anim['description']}")
+                if anim.get('resultats'):
+                    st.markdown(f"**Résultats** : {anim['resultats']}")
+                if anim.get('prochaine_animation_date'):
+                    proch_date = anim['prochaine_animation_date']
+                    if hasattr(proch_date, 'strftime'):
+                        st.markdown(f"**Prochaine animation** : {proch_date.strftime('%d/%m/%Y')}")
                 
-                col_save, col_cancel = st.columns(2)
+                # Actions
+                col_actions = st.columns(4)
                 
-                with col_save:
-                    if st.button("💾 Enregistrer", type="primary", key="btn_save_finish_a"):
-                        if not finish_resultats:
-                            st.error("❌ Résultats obligatoires")
-                        else:
-                            update_data = {**anim.to_dict(), 'statut': 'TERMINEE', 'resultats': finish_resultats}
-                            if finish_prochaine:
-                                update_data['prochaine_animation_date'] = finish_prochaine
+                with col_actions[0]:
+                    if can_edit("CRM") and statut == 'PLANIFIEE':
+                        if st.button("▶️ Démarrer", key=f"start_{anim['id']}"):
+                            update_data = anim.to_dict()
+                            update_data['statut'] = 'EN_COURS'
                             success, msg = update_animation(anim['id'], update_data)
                             if success:
-                                st.success("✅ Animation terminée")
-                                st.session_state.pop('finish_animation_id', None)
-                                st.session_state.pop('finish_animation_data', None)
-                                st.balloons()
+                                st.success("✅ Animation démarrée")
                                 st.rerun()
                             else:
                                 st.error(msg)
                 
-                with col_cancel:
-                    if st.button("❌ Annuler", key="btn_cancel_finish_a"):
-                        st.session_state.pop('finish_animation_id', None)
-                        st.session_state.pop('finish_animation_data', None)
-                        st.rerun()
+                with col_actions[1]:
+                    if can_edit("CRM") and statut == 'EN_COURS':
+                        if st.button("✅ Terminer", key=f"finish_{anim['id']}"):
+                            st.session_state['finish_animation_id'] = anim['id']
+                            st.session_state['finish_animation_data'] = anim.to_dict()
+                            st.rerun()
+                
+                with col_actions[2]:
+                    if can_edit("CRM"):
+                        if st.button("✏️ Modifier", key=f"edit_{anim['id']}"):
+                            st.session_state['edit_animation_id'] = anim['id']
+                            st.session_state['edit_animation_data'] = anim.to_dict()
+                            st.rerun()
+                
+                with col_actions[3]:
+                    if can_delete("CRM"):
+                        if st.button("🗑️ Supprimer", key=f"del_{anim['id']}", type="secondary"):
+                            st.session_state['confirm_delete_animation'] = anim['id']
+                            st.rerun()
+                
+                # Confirmation suppression
+                if st.session_state.get('confirm_delete_animation') == anim['id']:
+                    st.warning("⚠️ Confirmer la suppression ?")
+                    col_yes, col_no = st.columns(2)
+                    with col_yes:
+                        if st.button("✅ Confirmer", key="confirm_yes_a"):
+                            success, msg = delete_animation(anim['id'])
+                            if success:
+                                st.success(msg)
+                                st.session_state.pop('confirm_delete_animation', None)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                    with col_no:
+                        if st.button("❌ Annuler", key="confirm_no_a"):
+                            st.session_state.pop('confirm_delete_animation', None)
+                            st.rerun()
+                
+                # Formulaire terminaison
+                if st.session_state.get('finish_animation_id') == anim['id'] and can_edit("CRM"):
+                    st.markdown("---")
+                    st.subheader("✅ Terminer l'animation")
+                    
+                    finish_resultats = st.text_area("Résultats de l'animation *", key="finish_res_a")
+                    finish_prochaine = st.date_input("Date prochaine animation", value=None, key="finish_proch_a")
+                    
+                    col_save, col_cancel = st.columns(2)
+                    
+                    with col_save:
+                        if st.button("💾 Enregistrer", type="primary", key="btn_save_finish_a"):
+                            if not finish_resultats:
+                                st.error("❌ Résultats obligatoires")
+                            else:
+                                update_data = anim.to_dict()
+                                update_data['statut'] = 'TERMINEE'
+                                update_data['resultats'] = finish_resultats
+                                if finish_prochaine:
+                                    update_data['prochaine_animation_date'] = finish_prochaine
+                                success, msg = update_animation(anim['id'], update_data)
+                                if success:
+                                    st.success("✅ Animation terminée")
+                                    st.session_state.pop('finish_animation_id', None)
+                                    st.session_state.pop('finish_animation_data', None)
+                                    st.balloons()
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+                    
+                    with col_cancel:
+                        if st.button("❌ Annuler", key="btn_cancel_finish_a"):
+                            st.session_state.pop('finish_animation_id', None)
+                            st.session_state.pop('finish_animation_data', None)
+                            st.rerun()
         
         # Formulaire modification
         if 'edit_animation_id' in st.session_state and can_edit("CRM"):
@@ -434,11 +468,16 @@ with tab1:
             with col2:
                 edit_date = st.date_input("Date début *", value=data.get('date_animation') or datetime.now().date(), key="edit_date_a")
                 edit_date_fin = st.date_input("Date fin", value=data.get('date_fin'), key="edit_datefin_a")
-                edit_statut = st.selectbox("Statut", ['PLANIFIEE', 'EN_COURS', 'TERMINEE', 'ANNULEE'], 
-                                          index=['PLANIFIEE', 'EN_COURS', 'TERMINEE', 'ANNULEE'].index(data.get('statut', 'PLANIFIEE')), key="edit_stat_a")
+                
+                statut_options = ['PLANIFIEE', 'EN_COURS', 'TERMINEE', 'ANNULEE']
+                current_statut = safe_str(data.get('statut'), 'PLANIFIEE')
+                if current_statut not in statut_options:
+                    current_statut = 'PLANIFIEE'
+                edit_statut = st.selectbox("Statut", statut_options, 
+                                          index=statut_options.index(current_statut), key="edit_stat_a")
             
-            edit_desc = st.text_area("Description", value=data.get('description', '') or '', key="edit_desc_a")
-            edit_resultats = st.text_area("Résultats", value=data.get('resultats', '') or '', key="edit_res_a")
+            edit_desc = st.text_area("Description", value=safe_str(data.get('description')), key="edit_desc_a")
+            edit_resultats = st.text_area("Résultats", value=safe_str(data.get('resultats')), key="edit_res_a")
             edit_prochaine = st.date_input("Prochaine animation", value=data.get('prochaine_animation_date'), key="edit_proch_a")
             
             col_save, col_cancel = st.columns(2)
@@ -449,8 +488,10 @@ with tab1:
                         'magasin_id': edit_magasin[0],
                         'commercial_id': edit_commercial[0] if edit_commercial else None,
                         'type_animation_id': edit_type[0] if edit_type else None,
-                        'date_animation': edit_date, 'date_fin': edit_date_fin if edit_date_fin else None,
-                        'statut': edit_statut, 'description': edit_desc or None,
+                        'date_animation': edit_date,
+                        'date_fin': edit_date_fin if edit_date_fin else None,
+                        'statut': edit_statut,
+                        'description': edit_desc or None,
                         'resultats': edit_resultats or None,
                         'prochaine_animation_date': edit_prochaine if edit_prochaine else None
                     }
@@ -505,8 +546,10 @@ with tab2:
                     'magasin_id': new_magasin[0],
                     'commercial_id': new_commercial[0] if new_commercial else None,
                     'type_animation_id': new_type[0] if new_type else None,
-                    'date_animation': new_date, 'date_fin': new_date_fin if new_date_fin else None,
-                    'statut': new_statut, 'description': new_desc or None,
+                    'date_animation': new_date,
+                    'date_fin': new_date_fin if new_date_fin else None,
+                    'statut': new_statut,
+                    'description': new_desc or None,
                     'created_by': st.session_state.get('username', 'system')
                 }
                 success, msg = create_animation(data)
