@@ -26,6 +26,40 @@ st.title("🏪 CRM - Gestion des Magasins")
 st.markdown("---")
 
 # ==========================================
+# FONCTIONS HELPER
+# ==========================================
+
+def safe_int(value, default=0):
+    """Convertit une valeur en int, gère None et NaN"""
+    if value is None:
+        return default
+    if pd.isna(value):
+        return default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+def safe_str(value, default=''):
+    """Convertit une valeur en str, gère None et NaN"""
+    if value is None:
+        return default
+    if pd.isna(value):
+        return default
+    return str(value)
+
+def safe_float(value, default=0.0):
+    """Convertit une valeur en float, gère None et NaN"""
+    if value is None:
+        return default
+    if pd.isna(value):
+        return default
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+# ==========================================
 # FONCTIONS
 # ==========================================
 
@@ -72,7 +106,6 @@ def get_magasins(filtres=None):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # CORRECTION: Colonnes qui existent vraiment dans le schéma
         query = """
             SELECT 
                 m.id, m.code_magasin, m.enseigne, m.ville, m.departement,
@@ -171,7 +204,7 @@ def create_magasin(data):
                 surface_m2, potentiel, statut, presence_produit,
                 points_amelioration, commentaires, notes, created_by
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id, code_magasin
+            RETURNING id
         """, (
             data['enseigne'], data['ville'], data.get('departement'),
             data.get('adresse'), data.get('code_postal'), data.get('commercial_id'),
@@ -181,12 +214,12 @@ def create_magasin(data):
             data.get('commentaires'), data.get('notes'), data.get('created_by')
         ))
         
-        result = cursor.fetchone()
+        new_id = cursor.fetchone()['id']
         conn.commit()
         cursor.close()
         conn.close()
         
-        return True, f"✅ Magasin {result['code_magasin']} créé"
+        return True, f"✅ Magasin créé (ID: {new_id})"
     except Exception as e:
         return False, f"❌ Erreur : {str(e)}"
 
@@ -198,9 +231,10 @@ def update_magasin(magasin_id, data):
         
         cursor.execute("""
             UPDATE crm_magasins SET
-                enseigne = %s, ville = %s, departement = %s, adresse = %s, code_postal = %s,
-                commercial_id = %s, centrale_achat = %s, type_magasin = %s, type_reseau = %s,
-                surface_m2 = %s, potentiel = %s, statut = %s, presence_produit = %s,
+                enseigne = %s, ville = %s, departement = %s, adresse = %s,
+                code_postal = %s, commercial_id = %s, centrale_achat = %s,
+                type_magasin = %s, type_reseau = %s, surface_m2 = %s,
+                potentiel = %s, statut = %s, presence_produit = %s,
                 points_amelioration = %s, commentaires = %s, notes = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
@@ -222,14 +256,20 @@ def update_magasin(magasin_id, data):
         return False, f"❌ Erreur : {str(e)}"
 
 def delete_magasin(magasin_id):
-    """Supprime (soft delete) un magasin"""
+    """Supprime (désactive) un magasin"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("UPDATE crm_magasins SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s", (magasin_id,))
+        
+        cursor.execute("""
+            UPDATE crm_magasins SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (magasin_id,))
+        
         conn.commit()
         cursor.close()
         conn.close()
+        
         return True, "✅ Magasin supprimé"
     except Exception as e:
         return False, f"❌ Erreur : {str(e)}"
@@ -238,153 +278,140 @@ def delete_magasin(magasin_id):
 # INTERFACE
 # ==========================================
 
-tab1, tab2 = st.tabs(["📋 Liste Magasins", "➕ Nouveau Magasin"])
+tab1, tab2 = st.tabs(["📋 Liste des magasins", "➕ Nouveau magasin"])
+
+# ==========================================
+# TAB 1 : LISTE
+# ==========================================
 
 with tab1:
     # Filtres
+    st.subheader("🔍 Filtres")
+    
     options = get_filtres_options()
     commerciaux = get_commerciaux()
     
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
-        filtre_enseigne = st.selectbox("Enseigne", ['Tous'] + options['enseignes'], key="f_ens")
+        f_enseigne = st.selectbox("Enseigne", ['Tous'] + options['enseignes'], key="f_ens")
     with col2:
-        filtre_dept = st.selectbox("Département", ['Tous'] + options['departements'], key="f_dept")
+        f_dept = st.selectbox("Département", ['Tous'] + options['departements'], key="f_dept")
     with col3:
-        comm_opts = [(0, 'Tous')] + commerciaux
-        filtre_comm = st.selectbox("Commercial", comm_opts, format_func=lambda x: x[1], key="f_comm")
+        f_ville = st.selectbox("Ville", ['Tous'] + options['villes'], key="f_ville")
     with col4:
-        filtre_statut = st.selectbox("Statut", ['Tous', 'ACTIF', 'PROSPECT', 'INACTIF', 'EN_PAUSE', 'PERDU'], key="f_stat")
+        comm_options = [(0, 'Tous')] + commerciaux
+        f_commercial = st.selectbox("Commercial", comm_options, format_func=lambda x: x[1], key="f_comm")
     with col5:
-        filtre_ville = st.selectbox("Ville", ['Tous'] + options['villes'], key="f_ville")
+        f_statut = st.selectbox("Statut", ['Tous', 'ACTIF', 'PROSPECT', 'INACTIF', 'EN_PAUSE', 'PERDU'], key="f_stat")
+    
+    filtres = {
+        'enseigne': f_enseigne,
+        'departement': f_dept,
+        'ville': f_ville,
+        'commercial_id': f_commercial[0],
+        'statut': f_statut
+    }
     
     st.markdown("---")
     
-    # Charger magasins
-    filtres = {
-        'enseigne': filtre_enseigne,
-        'departement': filtre_dept,
-        'commercial_id': filtre_comm[0],
-        'statut': filtre_statut,
-        'ville': filtre_ville
-    }
-    
+    # Liste magasins
     df = get_magasins(filtres)
     
     if not df.empty:
         st.info(f"📊 {len(df)} magasin(s) trouvé(s)")
         
-        # Tableau sélection
-        df_display = df[['id', 'enseigne', 'ville', 'departement', 'commercial', 'statut']].copy()
-        df_display.columns = ['ID', 'Enseigne', 'Ville', 'Département', 'Commercial', 'Statut']
-        
-        event = st.dataframe(
-            df_display,
-            use_container_width=True,
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="single-row",
-            key="table_magasins"
-        )
-        
-        # Détail magasin sélectionné
-        selected_rows = event.selection.rows if hasattr(event, 'selection') else []
-        
-        if selected_rows:
-            idx = selected_rows[0]
-            mag = df.iloc[idx]
+        for _, mag in df.iterrows():
+            statut_icon = "🟢" if mag['statut'] == 'ACTIF' else ("🔵" if mag['statut'] == 'PROSPECT' else ("🟡" if mag['statut'] == 'EN_PAUSE' else "🔴"))
             
-            st.markdown("---")
-            st.subheader(f"🏪 {mag['enseigne']} - {mag['ville']}")
-            
-            sub1, sub2, sub3 = st.tabs(["📋 Fiche", "👥 Contacts", "📅 Visites"])
-            
-            with sub1:
-                col1, col2 = st.columns(2)
+            with st.expander(f"{statut_icon} **{mag['enseigne']}** - {mag['ville']} ({mag['departement'] or 'N/A'})"):
+                sub1, sub2, sub3 = st.tabs(["📝 Infos", "👥 Contacts", "📅 Visites"])
                 
-                with col1:
-                    st.markdown(f"**Code** : {mag['code_magasin'] or 'N/A'}")
-                    st.markdown(f"**Adresse** : {mag['adresse'] or 'N/A'}")
-                    st.markdown(f"**CP / Ville** : {mag['code_postal'] or ''} {mag['ville'] or ''}")
-                    st.markdown(f"**Département** : {mag['departement'] or 'N/A'}")
-                    st.markdown(f"**Commercial** : {mag['commercial'] or 'Non assigné'}")
-                    st.markdown(f"**Statut** : {mag['statut'] or 'N/A'}")
-                
-                with col2:
-                    st.markdown(f"**Centrale** : {mag['centrale_achat'] or 'N/A'}")
-                    st.markdown(f"**Type magasin** : {mag['type_magasin'] or 'N/A'}")
-                    st.markdown(f"**Type réseau** : {mag['type_reseau'] or 'N/A'}")
-                    st.markdown(f"**Surface** : {mag['surface_m2'] or 'N/A'} m²")
-                    st.markdown(f"**Potentiel** : {mag['potentiel'] or 'N/A'}")
-                    st.markdown(f"**Présence produit** : {mag['presence_produit'] or 'N/A'}")
-                
-                if mag['points_amelioration']:
-                    st.warning(f"📌 Points amélioration : {mag['points_amelioration']}")
-                if mag['commentaires']:
-                    st.info(f"💬 Commentaires : {mag['commentaires']}")
-                if mag['notes']:
-                    st.caption(f"📝 Notes : {mag['notes']}")
-                
-                # Boutons actions
-                col_a, col_b, col_c = st.columns([1, 1, 2])
-                
-                with col_a:
-                    if can_edit("CRM"):
-                        if st.button("✏️ Modifier", key="btn_edit_m"):
-                            st.session_state['edit_magasin_id'] = mag['id']
-                            st.session_state['edit_magasin_data'] = mag.to_dict()
-                            st.rerun()
-                
-                with col_b:
-                    if can_delete("CRM"):
-                        if st.button("🗑️ Supprimer", key="btn_del_m", type="secondary"):
-                            st.session_state['confirm_delete_magasin'] = mag['id']
-                            st.rerun()
-                
-                if st.session_state.get('confirm_delete_magasin') == mag['id']:
-                    st.warning("⚠️ Confirmer la suppression ?")
-                    col_yes, col_no = st.columns(2)
-                    with col_yes:
-                        if st.button("✅ Confirmer", key="confirm_yes_m"):
-                            success, msg = delete_magasin(mag['id'])
-                            if success:
-                                st.success(msg)
+                with sub1:
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown(f"**Code** : {safe_str(mag.get('code_magasin'), 'N/A')}")
+                        st.markdown(f"**Adresse** : {safe_str(mag.get('adresse'), 'N/A')}")
+                        st.markdown(f"**Code postal** : {safe_str(mag.get('code_postal'), 'N/A')}")
+                        st.markdown(f"**Commercial** : {safe_str(mag.get('commercial'), 'Non assigné')}")
+                        st.markdown(f"**Centrale** : {safe_str(mag.get('centrale_achat'), 'N/A')}")
+                    
+                    with col2:
+                        st.markdown(f"**Type magasin** : {safe_str(mag.get('type_magasin'), 'N/A')}")
+                        st.markdown(f"**Type réseau** : {safe_str(mag.get('type_reseau'), 'N/A')}")
+                        surface_val = safe_int(mag.get('surface_m2'), 0)
+                        st.markdown(f"**Surface** : {surface_val} m²" if surface_val > 0 else "**Surface** : N/A")
+                        st.markdown(f"**Potentiel** : {safe_str(mag.get('potentiel'), 'N/A')}")
+                        st.markdown(f"**Statut** : {mag['statut']}")
+                    
+                    if mag.get('presence_produit'):
+                        st.markdown(f"**Présence produit** : {mag['presence_produit']}")
+                    if mag.get('points_amelioration'):
+                        st.markdown(f"**Points amélioration** : {mag['points_amelioration']}")
+                    if mag.get('notes'):
+                        st.markdown(f"**Notes** : {mag['notes']}")
+                    
+                    # Boutons actions
+                    col_edit, col_delete = st.columns(2)
+                    
+                    with col_edit:
+                        if can_edit("CRM"):
+                            if st.button("✏️ Modifier", key=f"edit_{mag['id']}"):
+                                st.session_state['edit_magasin_id'] = mag['id']
+                                st.session_state['edit_magasin_data'] = mag.to_dict()
+                                st.rerun()
+                    
+                    with col_delete:
+                        if can_delete("CRM"):
+                            if st.button("🗑️ Supprimer", key=f"del_{mag['id']}"):
+                                st.session_state['confirm_delete_magasin'] = mag['id']
+                                st.rerun()
+                    
+                    # Confirmation suppression
+                    if st.session_state.get('confirm_delete_magasin') == mag['id']:
+                        st.warning("⚠️ Confirmer la suppression ?")
+                        col_yes, col_no = st.columns(2)
+                        with col_yes:
+                            if st.button("✅ Confirmer", key="confirm_yes_m"):
+                                success, msg = delete_magasin(mag['id'])
+                                if success:
+                                    st.success(msg)
+                                    st.session_state.pop('confirm_delete_magasin', None)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+                        with col_no:
+                            if st.button("❌ Annuler", key="confirm_no_m"):
                                 st.session_state.pop('confirm_delete_magasin', None)
                                 st.rerun()
-                            else:
-                                st.error(msg)
-                    with col_no:
-                        if st.button("❌ Annuler", key="confirm_no_m"):
-                            st.session_state.pop('confirm_delete_magasin', None)
-                            st.rerun()
-            
-            with sub2:
-                contacts = get_contacts_magasin(mag['id'])
-                if contacts:
-                    for c in contacts:
-                        principal = "⭐ " if c['is_principal'] else ""
-                        st.markdown(f"**{principal}{c['prenom'] or ''} {c['nom'] or ''}** - {c['fonction'] or 'N/A'}")
-                        st.caption(f"📞 {c['telephone'] or 'N/A'} | ✉️ {c['email'] or 'N/A'}")
-                        st.markdown("---")
-                else:
-                    st.info("Aucun contact")
                 
-                st.page_link("pages/22_CRM_Contacts.py", label="➕ Gérer les contacts", icon="👥")
-            
-            with sub3:
-                visites = get_visites_magasin(mag['id'])
-                if visites:
-                    for v in visites:
-                        date_str = v['date_visite'].strftime('%d/%m/%Y') if v['date_visite'] else ''
-                        st.markdown(f"**{date_str}** - {v['commercial'] or 'N/A'} ({v['type_visite'] or 'N/A'})")
-                        if v['compte_rendu']:
-                            st.caption(v['compte_rendu'][:200] + "..." if len(v['compte_rendu'] or '') > 200 else v['compte_rendu'])
-                        st.markdown("---")
-                else:
-                    st.info("Aucune visite")
+                with sub2:
+                    contacts = get_contacts_magasin(mag['id'])
+                    if contacts:
+                        for c in contacts:
+                            principal = "⭐ " if c['is_principal'] else ""
+                            st.markdown(f"**{principal}{c['prenom'] or ''} {c['nom'] or ''}** - {c['fonction'] or 'N/A'}")
+                            st.caption(f"📞 {c['telephone'] or 'N/A'} | ✉️ {c['email'] or 'N/A'}")
+                            st.markdown("---")
+                    else:
+                        st.info("Aucun contact")
+                    
+                    st.page_link("pages/22_CRM_Contacts.py", label="➕ Gérer les contacts", icon="👥")
                 
-                st.page_link("pages/23_CRM_Visites.py", label="➕ Gérer les visites", icon="📅")
+                with sub3:
+                    visites = get_visites_magasin(mag['id'])
+                    if visites:
+                        for v in visites:
+                            date_str = v['date_visite'].strftime('%d/%m/%Y') if v['date_visite'] else ''
+                            st.markdown(f"**{date_str}** - {v['commercial'] or 'N/A'} ({v['type_visite'] or 'N/A'})")
+                            if v['compte_rendu']:
+                                st.caption(v['compte_rendu'][:200] + "..." if len(v['compte_rendu'] or '') > 200 else v['compte_rendu'])
+                            st.markdown("---")
+                    else:
+                        st.info("Aucune visite")
+                    
+                    st.page_link("pages/23_CRM_Visites.py", label="➕ Gérer les visites", icon="📅")
         
         # Formulaire modification
         if 'edit_magasin_id' in st.session_state and can_edit("CRM"):
@@ -396,29 +423,36 @@ with tab1:
             col1, col2 = st.columns(2)
             
             with col1:
-                edit_enseigne = st.text_input("Enseigne *", value=data.get('enseigne', ''), key="edit_ens")
-                edit_ville = st.text_input("Ville *", value=data.get('ville', ''), key="edit_ville")
-                edit_adresse = st.text_input("Adresse", value=data.get('adresse', '') or '', key="edit_adr")
-                edit_cp = st.text_input("Code postal", value=data.get('code_postal', '') or '', key="edit_cp")
-                edit_dept = st.text_input("Département", value=data.get('departement', '') or '', key="edit_dept")
+                edit_enseigne = st.text_input("Enseigne *", value=safe_str(data.get('enseigne')), key="edit_ens")
+                edit_ville = st.text_input("Ville *", value=safe_str(data.get('ville')), key="edit_ville")
+                edit_adresse = st.text_input("Adresse", value=safe_str(data.get('adresse')), key="edit_adr")
+                edit_cp = st.text_input("Code postal", value=safe_str(data.get('code_postal')), key="edit_cp")
+                edit_dept = st.text_input("Département", value=safe_str(data.get('departement')), key="edit_dept")
                 
                 comm_list = [(None, 'Non assigné')] + commerciaux
                 current_comm = next((i for i, c in enumerate(comm_list) if c[0] == data.get('commercial_id')), 0)
                 edit_commercial = st.selectbox("Commercial", comm_list, index=current_comm, format_func=lambda x: x[1], key="edit_comm")
             
             with col2:
-                edit_centrale = st.text_input("Centrale achat", value=data.get('centrale_achat', '') or '', key="edit_centr")
-                edit_type_mag = st.text_input("Type magasin", value=data.get('type_magasin', '') or '', key="edit_tmag")
-                edit_type_res = st.text_input("Type réseau", value=data.get('type_reseau', '') or '', key="edit_tres")
-                edit_surface = st.number_input("Surface m²", value=int(data.get('surface_m2') or 0), key="edit_surf")
-                edit_potentiel = st.text_input("Potentiel", value=data.get('potentiel', '') or '', key="edit_pot")
-                edit_statut = st.selectbox("Statut", ['ACTIF', 'PROSPECT', 'INACTIF', 'EN_PAUSE', 'PERDU'], 
-                                          index=['ACTIF', 'PROSPECT', 'INACTIF', 'EN_PAUSE', 'PERDU'].index(data.get('statut', 'PROSPECT')), key="edit_stat")
+                edit_centrale = st.text_input("Centrale achat", value=safe_str(data.get('centrale_achat')), key="edit_centr")
+                edit_type_mag = st.text_input("Type magasin", value=safe_str(data.get('type_magasin')), key="edit_tmag")
+                edit_type_res = st.text_input("Type réseau", value=safe_str(data.get('type_reseau')), key="edit_tres")
+                # ✅ CORRECTION: Utiliser safe_int pour gérer NaN
+                edit_surface = st.number_input("Surface m²", value=safe_int(data.get('surface_m2'), 0), key="edit_surf")
+                edit_potentiel = st.text_input("Potentiel", value=safe_str(data.get('potentiel')), key="edit_pot")
+                
+                # Gérer le statut avec valeur par défaut
+                statut_options = ['ACTIF', 'PROSPECT', 'INACTIF', 'EN_PAUSE', 'PERDU']
+                current_statut = safe_str(data.get('statut'), 'PROSPECT')
+                if current_statut not in statut_options:
+                    current_statut = 'PROSPECT'
+                edit_statut = st.selectbox("Statut", statut_options, 
+                                          index=statut_options.index(current_statut), key="edit_stat")
             
-            edit_presence = st.text_input("Présence produit", value=data.get('presence_produit', '') or '', key="edit_pres")
-            edit_points = st.text_area("Points amélioration", value=data.get('points_amelioration', '') or '', key="edit_pts")
-            edit_comments = st.text_area("Commentaires", value=data.get('commentaires', '') or '', key="edit_com")
-            edit_notes = st.text_area("Notes", value=data.get('notes', '') or '', key="edit_notes")
+            edit_presence = st.text_input("Présence produit", value=safe_str(data.get('presence_produit')), key="edit_pres")
+            edit_points = st.text_area("Points amélioration", value=safe_str(data.get('points_amelioration')), key="edit_pts")
+            edit_comments = st.text_area("Commentaires", value=safe_str(data.get('commentaires')), key="edit_com")
+            edit_notes = st.text_area("Notes", value=safe_str(data.get('notes')), key="edit_notes")
             
             col_save, col_cancel = st.columns(2)
             
