@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 from auth import show_login, is_authenticated
 
 st.set_page_config(
@@ -32,6 +33,48 @@ if not is_authenticated():
 st.logo('https://i.imgur.com/kuLXrHZ.png')
 
 # ============================================================
+# ⭐ CSS + JS POUR REPLIER LES MENUS PAR DÉFAUT
+# ============================================================
+
+st.markdown("""
+<style>
+    /* Style compact pour la sidebar */
+    [data-testid="stSidebarNav"] {
+        padding-top: 0.5rem;
+    }
+    
+    /* Réduire l'espacement des groupes */
+    [data-testid="stSidebarNav"] > ul {
+        padding: 0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ⭐ Script pour replier tous les groupes au chargement
+# Utilise session_state pour ne l'exécuter qu'une fois par session
+if 'nav_collapsed' not in st.session_state:
+    components.html("""
+    <script>
+        // Fonction pour replier les menus
+        function collapseNavGroups() {
+            const details = parent.document.querySelectorAll('[data-testid="stSidebarNav"] details');
+            if (details.length > 0) {
+                details.forEach(function(detail) {
+                    detail.removeAttribute('open');
+                });
+            } else {
+                // Réessayer si la sidebar n'est pas encore chargée
+                setTimeout(collapseNavGroups, 100);
+            }
+        }
+        
+        // Lancer après un court délai
+        setTimeout(collapseNavGroups, 200);
+    </script>
+    """, height=0)
+    st.session_state['nav_collapsed'] = True
+
+# ============================================================
 # DÉFINITION DES PAGES
 # ============================================================
 
@@ -58,13 +101,13 @@ pages = {
         st.Page("pages/07_Affectation_Stock.py", title="Affectation Stock", icon="🔗"),
     ],
     "🛒 CRM": [
-    st.Page("pages/20_CRM_Dashboard.py", title="Dashboard CRM", icon="📊"),
-    st.Page("pages/21_CRM_Magasins.py", title="Clients", icon="🏪"),
-    st.Page("pages/22_CRM_Contacts.py", title="Contacts", icon="👥"),
-    st.Page("pages/23_CRM_Visites.py", title="Visites", icon="📅"),
-    st.Page("pages/24_CRM_Animations.py", title="Animations", icon="🎉"),
-    st.Page("pages/25_CRM_Statistics.py", title="Statistiques", icon="📈"),
-],
+        st.Page("pages/20_CRM_Dashboard.py", title="Dashboard CRM", icon="📊"),
+        st.Page("pages/21_CRM_Magasins.py", title="Clients", icon="🏪"),
+        st.Page("pages/22_CRM_Contacts.py", title="Contacts", icon="👥"),
+        st.Page("pages/23_CRM_Visites.py", title="Visites", icon="📅"),
+        st.Page("pages/24_CRM_Animations.py", title="Animations", icon="🎉"),
+        st.Page("pages/25_CRM_Statistics.py", title="Statistiques", icon="📈"),
+    ],
     "💰 Finance": [
         st.Page("pages/09_Valorisation_Lots.py", title="Valorisation Lots", icon="💰"),
     ],
