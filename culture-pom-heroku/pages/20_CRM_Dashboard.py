@@ -42,33 +42,33 @@ def get_kpis_globaux():
         kpis = {}
         
         # Total magasins
-        cursor.execute("SELECT COUNT(*) FROM crm_magasins")
-        kpis['total_magasins'] = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) as nb FROM crm_magasins")
+        kpis['total_magasins'] = cursor.fetchone()['nb']
         
         # Magasins statut ACTIF
-        cursor.execute("SELECT COUNT(*) FROM crm_magasins WHERE statut = 'ACTIF'")
-        kpis['magasins_actifs'] = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) as nb FROM crm_magasins WHERE statut = 'ACTIF'")
+        kpis['magasins_actifs'] = cursor.fetchone()['nb']
         
         # Visites ce mois
         cursor.execute("""
-            SELECT COUNT(*) FROM crm_visites 
+            SELECT COUNT(*) as nb FROM crm_visites 
             WHERE statut = 'EFFECTUEE'
             AND date_visite >= DATE_TRUNC('month', CURRENT_DATE)
         """)
-        kpis['visites_mois'] = cursor.fetchone()[0]
+        kpis['visites_mois'] = cursor.fetchone()['nb']
         
         # Taux couverture 30 jours
         cursor.execute("""
-            SELECT COUNT(*) FROM crm_magasins 
+            SELECT COUNT(*) as nb FROM crm_magasins 
             WHERE statut = 'ACTIF'
             AND date_derniere_visite >= CURRENT_DATE - INTERVAL '30 days'
         """)
-        couverts = cursor.fetchone()[0]
+        couverts = cursor.fetchone()['nb']
         kpis['taux_couverture'] = round((couverts / kpis['magasins_actifs'] * 100), 1) if kpis['magasins_actifs'] > 0 else 0
         
         # Animations planifiées
-        cursor.execute("SELECT COUNT(*) FROM crm_animations WHERE statut = 'PLANIFIEE'")
-        kpis['animations_planifiees'] = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) as nb FROM crm_animations WHERE statut = 'PLANIFIEE'")
+        kpis['animations_planifiees'] = cursor.fetchone()['nb']
         
         cursor.close()
         conn.close()
@@ -155,7 +155,9 @@ def get_stats_commerciaux():
         conn.close()
         
         if rows:
-            return pd.DataFrame(rows, columns=['id', 'Commercial', 'Magasins', 'Actifs', 'Visites Mois', 'Visites 30j'])
+            df = pd.DataFrame(rows)
+            df.columns = ['id', 'Commercial', 'Magasins', 'Actifs', 'Visites Mois', 'Visites 30j']
+            return df
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Erreur stats commerciaux: {e}")
@@ -219,7 +221,8 @@ def get_dernieres_visites():
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows, columns=['Date', 'Enseigne', 'Ville', 'Commercial', 'Type'])
+            df = pd.DataFrame(rows)
+            df.columns = ['Date', 'Enseigne', 'Ville', 'Commercial', 'Type']
             df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%d/%m/%Y')
             return df
         return pd.DataFrame()
@@ -246,6 +249,8 @@ if kpis:
         st.metric("📊 Couverture 30j", f"{kpis['taux_couverture']}%")
     with col5:
         st.metric("🎉 Animations", kpis['animations_planifiees'])
+else:
+    st.warning("⚠️ Impossible de charger les KPIs")
 
 st.markdown("---")
 
