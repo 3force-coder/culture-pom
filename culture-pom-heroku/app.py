@@ -107,6 +107,7 @@ pages = {
         st.Page("pages/23_CRM_Visites.py", title="Visites", icon="📅"),
         st.Page("pages/24_CRM_Animations.py", title="Animations", icon="🎉"),
         st.Page("pages/25_CRM_Statistics.py", title="Statistiques", icon="📈"),
+        st.Page("26_CRM_Magasins_API_ADRESSE.py", title="Clients_test", icon="🏪"),
     ],
     "💰 Finance": [
         st.Page("pages/09_Valorisation_Lots.py", title="Valorisation Lots", icon="💰"),
