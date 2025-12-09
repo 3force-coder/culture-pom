@@ -63,7 +63,7 @@ def get_contacts(filtres=None):
         if filtres:
             if filtres.get('magasin_id') and filtres['magasin_id'] != 0:
                 query += " AND c.magasin_id = %s"
-                params.append(filtres['magasin_id'])
+                params.append(int(filtres['magasin_id']))  # ⭐ Conversion int
             if filtres.get('fonction') and filtres['fonction'] != 'Tous':
                 query += " AND c.fonction = %s"
                 params.append(filtres['fonction'])
@@ -103,18 +103,21 @@ def create_contact(data):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ⭐ Conversion int pour magasin_id
+        magasin_id = int(data['magasin_id'])
+        
         # Si principal, retirer le principal existant
         if data.get('is_principal'):
-            cursor.execute("UPDATE crm_contacts SET is_principal = FALSE WHERE magasin_id = %s", (data['magasin_id'],))
+            cursor.execute("UPDATE crm_contacts SET is_principal = FALSE WHERE magasin_id = %s", (magasin_id,))
         
         cursor.execute("""
             INSERT INTO crm_contacts (magasin_id, nom, prenom, fonction, telephone, email, is_principal, commentaires)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """, (
-            data['magasin_id'], data.get('nom'), data.get('prenom'),
+            magasin_id, data.get('nom'), data.get('prenom'),
             data.get('fonction'), data.get('telephone'), data.get('email'),
-            data.get('is_principal', False), data.get('commentaires')
+            bool(data.get('is_principal', False)), data.get('commentaires')
         ))
         
         contact_id = cursor.fetchone()['id']
@@ -131,10 +134,14 @@ def update_contact(contact_id, data):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ⭐ Conversion int pour les IDs
+        contact_id = int(contact_id)
+        magasin_id = int(data['magasin_id'])
+        
         # Si principal, retirer le principal existant
         if data.get('is_principal'):
             cursor.execute("UPDATE crm_contacts SET is_principal = FALSE WHERE magasin_id = %s AND id != %s", 
-                          (data['magasin_id'], contact_id))
+                          (magasin_id, contact_id))
         
         cursor.execute("""
             UPDATE crm_contacts SET
@@ -143,9 +150,9 @@ def update_contact(contact_id, data):
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
         """, (
-            data['magasin_id'], data.get('nom'), data.get('prenom'),
+            magasin_id, data.get('nom'), data.get('prenom'),
             data.get('fonction'), data.get('telephone'), data.get('email'),
-            data.get('is_principal', False), data.get('commentaires'), contact_id
+            bool(data.get('is_principal', False)), data.get('commentaires'), contact_id
         ))
         
         conn.commit()
@@ -160,6 +167,10 @@ def delete_contact(contact_id):
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        
+        # ⭐ CORRECTION : Conversion int() pour éviter numpy.int64
+        contact_id = int(contact_id)
+        
         cursor.execute("UPDATE crm_contacts SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s", (contact_id,))
         conn.commit()
         cursor.close()
@@ -243,22 +254,26 @@ with tab1:
             with col_a:
                 if can_edit("CRM"):
                     if st.button("✏️ Modifier", key="btn_edit_c"):
-                        st.session_state['edit_contact_id'] = contact['id']
+                        # ⭐ Conversion int pour stocker en session
+                        st.session_state['edit_contact_id'] = int(contact['id'])
                         st.session_state['edit_contact_data'] = contact.to_dict()
                         st.rerun()
             
             with col_b:
                 if can_delete("CRM"):
                     if st.button("🗑️ Supprimer", key="btn_del_c", type="secondary"):
-                        st.session_state['confirm_delete_contact'] = contact['id']
+                        # ⭐ Conversion int pour stocker en session
+                        st.session_state['confirm_delete_contact'] = int(contact['id'])
                         st.rerun()
             
-            if st.session_state.get('confirm_delete_contact') == contact['id']:
+            # ⭐ Comparaison avec int converti
+            if st.session_state.get('confirm_delete_contact') == int(contact['id']):
                 st.warning("⚠️ Confirmer la suppression ?")
                 col_yes, col_no = st.columns(2)
                 with col_yes:
                     if st.button("✅ Confirmer", key="confirm_yes_c"):
-                        success, msg = delete_contact(contact['id'])
+                        # ⭐ L'ID est déjà un int dans session_state
+                        success, msg = delete_contact(st.session_state['confirm_delete_contact'])
                         if success:
                             st.success(msg)
                             st.session_state.pop('confirm_delete_contact', None)
