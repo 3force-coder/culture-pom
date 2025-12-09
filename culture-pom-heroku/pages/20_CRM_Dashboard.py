@@ -41,18 +41,18 @@ def get_kpis_globaux():
         
         kpis = {}
         
-        # Total magasins actifs
-        cursor.execute("SELECT COUNT(*) FROM crm_magasins WHERE is_active = TRUE")
+        # Total magasins
+        cursor.execute("SELECT COUNT(*) FROM crm_magasins")
         kpis['total_magasins'] = cursor.fetchone()[0]
         
         # Magasins statut ACTIF
-        cursor.execute("SELECT COUNT(*) FROM crm_magasins WHERE is_active = TRUE AND statut = 'ACTIF'")
+        cursor.execute("SELECT COUNT(*) FROM crm_magasins WHERE statut = 'ACTIF'")
         kpis['magasins_actifs'] = cursor.fetchone()[0]
         
         # Visites ce mois
         cursor.execute("""
             SELECT COUNT(*) FROM crm_visites 
-            WHERE is_active = TRUE AND statut = 'EFFECTUEE'
+            WHERE statut = 'EFFECTUEE'
             AND date_visite >= DATE_TRUNC('month', CURRENT_DATE)
         """)
         kpis['visites_mois'] = cursor.fetchone()[0]
@@ -60,14 +60,14 @@ def get_kpis_globaux():
         # Taux couverture 30 jours
         cursor.execute("""
             SELECT COUNT(*) FROM crm_magasins 
-            WHERE is_active = TRUE AND statut = 'ACTIF'
+            WHERE statut = 'ACTIF'
             AND date_derniere_visite >= CURRENT_DATE - INTERVAL '30 days'
         """)
         couverts = cursor.fetchone()[0]
         kpis['taux_couverture'] = round((couverts / kpis['magasins_actifs'] * 100), 1) if kpis['magasins_actifs'] > 0 else 0
         
         # Animations planifiées
-        cursor.execute("SELECT COUNT(*) FROM crm_animations WHERE is_active = TRUE AND statut = 'PLANIFIEE'")
+        cursor.execute("SELECT COUNT(*) FROM crm_animations WHERE statut = 'PLANIFIEE'")
         kpis['animations_planifiees'] = cursor.fetchone()[0]
         
         cursor.close()
@@ -91,7 +91,7 @@ def get_alertes():
             SELECT m.id, m.enseigne, m.ville, m.date_derniere_visite,
                    CURRENT_DATE - m.date_derniere_visite as jours_sans_visite
             FROM crm_magasins m
-            WHERE m.is_active = TRUE AND m.statut = 'ACTIF'
+            WHERE m.statut = 'ACTIF'
             AND (m.date_derniere_visite IS NULL OR m.date_derniere_visite < CURRENT_DATE - INTERVAL '30 days')
             ORDER BY m.date_derniere_visite ASC NULLS FIRST
             LIMIT 5
@@ -102,8 +102,7 @@ def get_alertes():
         cursor.execute("""
             SELECT m.id, m.enseigne, m.ville, m.date_prochaine_visite
             FROM crm_magasins m
-            WHERE m.is_active = TRUE 
-            AND m.date_prochaine_visite < CURRENT_DATE
+            WHERE m.date_prochaine_visite < CURRENT_DATE
             ORDER BY m.date_prochaine_visite ASC
             LIMIT 5
         """)
@@ -115,7 +114,7 @@ def get_alertes():
             FROM crm_animations a
             JOIN crm_magasins m ON a.magasin_id = m.id
             LEFT JOIN crm_types_animation ta ON a.type_animation_id = ta.id
-            WHERE a.is_active = TRUE AND a.statut = 'PLANIFIEE'
+            WHERE a.statut = 'PLANIFIEE'
             AND a.date_animation BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '14 days'
             ORDER BY a.date_animation ASC
             LIMIT 5
@@ -145,9 +144,8 @@ def get_stats_commerciaux():
                 COUNT(DISTINCT v.id) FILTER (WHERE v.statut = 'EFFECTUEE' AND v.date_visite >= DATE_TRUNC('month', CURRENT_DATE)) as visites_mois,
                 COUNT(DISTINCT v.id) FILTER (WHERE v.statut = 'EFFECTUEE' AND v.date_visite >= CURRENT_DATE - INTERVAL '30 days') as visites_30j
             FROM crm_commerciaux c
-            LEFT JOIN crm_magasins m ON c.id = m.commercial_id AND m.is_active = TRUE
-            LEFT JOIN crm_visites v ON c.id = v.commercial_id AND v.is_active = TRUE
-            WHERE c.is_active = TRUE
+            LEFT JOIN crm_magasins m ON c.id = m.commercial_id
+            LEFT JOIN crm_visites v ON c.id = v.commercial_id
             GROUP BY c.id, c.prenom, c.nom
             ORDER BY visites_mois DESC
         """)
@@ -159,7 +157,8 @@ def get_stats_commerciaux():
         if rows:
             return pd.DataFrame(rows, columns=['id', 'Commercial', 'Magasins', 'Actifs', 'Visites Mois', 'Visites 30j'])
         return pd.DataFrame()
-    except:
+    except Exception as e:
+        st.error(f"Erreur stats commerciaux: {e}")
         return pd.DataFrame()
 
 def get_agenda_semaine():
@@ -179,8 +178,7 @@ def get_agenda_semaine():
             JOIN crm_magasins m ON v.magasin_id = m.id
             LEFT JOIN crm_commerciaux c ON v.commercial_id = c.id
             LEFT JOIN crm_types_visite tv ON v.type_visite_id = tv.id
-            WHERE v.is_active = TRUE 
-            AND v.statut = 'PLANIFIEE'
+            WHERE v.statut = 'PLANIFIEE'
             AND v.date_visite BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
             ORDER BY v.date_visite ASC
         """)
@@ -190,7 +188,8 @@ def get_agenda_semaine():
         conn.close()
         
         return rows if rows else []
-    except:
+    except Exception as e:
+        st.error(f"Erreur agenda: {e}")
         return []
 
 def get_dernieres_visites():
@@ -210,7 +209,7 @@ def get_dernieres_visites():
             JOIN crm_magasins m ON v.magasin_id = m.id
             LEFT JOIN crm_commerciaux c ON v.commercial_id = c.id
             LEFT JOIN crm_types_visite tv ON v.type_visite_id = tv.id
-            WHERE v.is_active = TRUE AND v.statut = 'EFFECTUEE'
+            WHERE v.statut = 'EFFECTUEE'
             ORDER BY v.date_visite DESC
             LIMIT 10
         """)
@@ -224,7 +223,8 @@ def get_dernieres_visites():
             df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%d/%m/%Y')
             return df
         return pd.DataFrame()
-    except:
+    except Exception as e:
+        st.error(f"Erreur dernières visites: {e}")
         return pd.DataFrame()
 
 # ==========================================
