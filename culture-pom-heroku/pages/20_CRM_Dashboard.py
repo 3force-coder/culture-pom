@@ -304,10 +304,11 @@ with col_stats:
     if not df_stats.empty:
         st.dataframe(df_stats.drop(columns=['id']), use_container_width=True, hide_index=True)
         
-        # Commercial du mois
-        if len(df_stats) > 0:
-            best = df_stats.loc[df_stats['Visites Mois'].idxmax()]
-            if best['Visites Mois'] > 0:
+        # Commercial du mois (avec vérification des données valides)
+        if len(df_stats) > 0 and df_stats['Visites Mois'].notna().any():
+            max_visites = df_stats['Visites Mois'].max()
+            if pd.notna(max_visites) and max_visites > 0:
+                best = df_stats.loc[df_stats['Visites Mois'].idxmax()]
                 st.success(f"🏆 **Commercial du mois** : {best['Commercial']} ({int(best['Visites Mois'])} visites)")
     else:
         st.info("Aucune donnée")
