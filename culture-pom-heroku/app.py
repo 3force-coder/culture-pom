@@ -57,6 +57,14 @@ pages = {
         st.Page("pages/06_Previsions_Ventes.py", title="Prévisions Ventes", icon="📈"),
         st.Page("pages/07_Affectation_Stock.py", title="Affectation Stock", icon="🔗"),
     ],
+    "🛒 CRM": [
+    st.Page("pages/20_CRM_Dashboard.py", title="Dashboard CRM", icon="📊"),
+    st.Page("pages/21_CRM_Magasins.py", title="Magasins", icon="🏪"),
+    st.Page("pages/22_CRM_Contacts.py", title="Contacts", icon="👥"),
+    st.Page("pages/23_CRM_Visites.py", title="Visites", icon="📅"),
+    st.Page("pages/24_CRM_Animations.py", title="Animations", icon="🎉"),
+    st.Page("pages/25_CRM_Statistics.py", title="Statistiques", icon="📈"),
+],
     "💰 Finance": [
         st.Page("pages/09_Valorisation_Lots.py", title="Valorisation Lots", icon="💰"),
     ],
