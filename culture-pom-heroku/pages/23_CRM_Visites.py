@@ -34,7 +34,8 @@ def get_magasins_dropdown():
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, enseigne || ' - ' || ville as nom FROM crm_magasins WHERE is_active = TRUE ORDER BY enseigne, ville")
+        # CORRECTION: Supprimé is_active (peut ne pas exister)
+        cursor.execute("SELECT id, enseigne || ' - ' || ville as nom FROM crm_magasins ORDER BY enseigne, ville")
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -46,7 +47,8 @@ def get_commerciaux():
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, prenom || ' ' || nom as nom FROM crm_commerciaux WHERE is_active = TRUE ORDER BY nom")
+        # CORRECTION: Supprimé is_active (peut ne pas exister)
+        cursor.execute("SELECT id, prenom || ' ' || nom as nom FROM crm_commerciaux ORDER BY nom")
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -58,7 +60,8 @@ def get_types_visite():
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, libelle FROM crm_types_visite WHERE is_active = TRUE ORDER BY libelle")
+        # CORRECTION: Supprimé is_active (peut ne pas exister)
+        cursor.execute("SELECT id, libelle FROM crm_types_visite ORDER BY libelle")
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -73,16 +76,17 @@ def get_kpis_visites():
         
         kpis = {}
         
-        cursor.execute("SELECT COUNT(*) FROM crm_visites WHERE is_active = TRUE AND statut = 'PLANIFIEE'")
+        # CORRECTION: Supprimé is_active = TRUE
+        cursor.execute("SELECT COUNT(*) FROM crm_visites WHERE statut = 'PLANIFIEE'")
         kpis['planifiees'] = cursor.fetchone()[0]
         
-        cursor.execute("SELECT COUNT(*) FROM crm_visites WHERE is_active = TRUE AND statut = 'EFFECTUEE' AND date_visite >= DATE_TRUNC('month', CURRENT_DATE)")
+        cursor.execute("SELECT COUNT(*) FROM crm_visites WHERE statut = 'EFFECTUEE' AND date_visite >= DATE_TRUNC('month', CURRENT_DATE)")
         kpis['effectuees_mois'] = cursor.fetchone()[0]
         
-        cursor.execute("SELECT COUNT(*) FROM crm_visites WHERE is_active = TRUE AND statut = 'PLANIFIEE' AND date_visite BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'")
+        cursor.execute("SELECT COUNT(*) FROM crm_visites WHERE statut = 'PLANIFIEE' AND date_visite BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'")
         kpis['semaine'] = cursor.fetchone()[0]
         
-        cursor.execute("SELECT COUNT(*) FROM crm_visites WHERE is_active = TRUE AND statut = 'PLANIFIEE' AND date_visite < CURRENT_DATE")
+        cursor.execute("SELECT COUNT(*) FROM crm_visites WHERE statut = 'PLANIFIEE' AND date_visite < CURRENT_DATE")
         kpis['retard'] = cursor.fetchone()[0]
         
         cursor.close()
@@ -97,7 +101,7 @@ def get_visites(filtres=None):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # CORRECTION: note_visite → note_satisfaction, prochaine_visite → prochaine_visite_date
+        # CORRECTION: Supprimé v.is_active = TRUE
         query = """
             SELECT 
                 v.id, v.date_visite, v.statut,
@@ -109,7 +113,7 @@ def get_visites(filtres=None):
             JOIN crm_magasins m ON v.magasin_id = m.id
             LEFT JOIN crm_commerciaux c ON v.commercial_id = c.id
             LEFT JOIN crm_types_visite tv ON v.type_visite_id = tv.id
-            WHERE v.is_active = TRUE
+            WHERE 1=1
         """
         params = []
         
@@ -149,6 +153,7 @@ def get_planning_semaine():
         conn = get_connection()
         cursor = conn.cursor()
         
+        # CORRECTION: Supprimé v.is_active = TRUE
         cursor.execute("""
             SELECT 
                 v.id, v.date_visite,
@@ -160,8 +165,7 @@ def get_planning_semaine():
             JOIN crm_magasins m ON v.magasin_id = m.id
             LEFT JOIN crm_commerciaux c ON v.commercial_id = c.id
             LEFT JOIN crm_types_visite tv ON v.type_visite_id = tv.id
-            WHERE v.is_active = TRUE
-            AND v.date_visite BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
+            WHERE v.date_visite BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
             ORDER BY v.date_visite, c.nom
         """)
         
@@ -178,17 +182,16 @@ def create_visite(data):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # CORRECTION: note_visite → note_satisfaction, prochaine_visite → prochaine_visite_date
         cursor.execute("""
             INSERT INTO crm_visites (
-                magasin_id, commercial_id, type_visite_id, date_visite,
-                statut, compte_rendu, note_satisfaction, prochaine_visite_date, actions_suivre, created_by
+                magasin_id, commercial_id, type_visite_id, date_visite, statut,
+                compte_rendu, note_satisfaction, prochaine_visite_date, actions_suivre, created_by
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """, (
             data['magasin_id'], data.get('commercial_id'), data.get('type_visite_id'),
-            data['date_visite'], data.get('statut', 'PLANIFIEE'),
-            data.get('compte_rendu'), data.get('note_satisfaction'), data.get('prochaine_visite_date'),
+            data['date_visite'], data['statut'], data.get('compte_rendu'),
+            data.get('note_satisfaction'), data.get('prochaine_visite_date'),
             data.get('actions_suivre'), data.get('created_by')
         ))
         
@@ -206,7 +209,6 @@ def update_visite(visite_id, data):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # CORRECTION: note_visite → note_satisfaction, prochaine_visite → prochaine_visite_date
         cursor.execute("""
             UPDATE crm_visites SET
                 magasin_id = %s, commercial_id = %s, type_visite_id = %s,
@@ -217,8 +219,8 @@ def update_visite(visite_id, data):
         """, (
             data['magasin_id'], data.get('commercial_id'), data.get('type_visite_id'),
             data['date_visite'], data['statut'], data.get('compte_rendu'),
-            data.get('note_satisfaction'), data.get('prochaine_visite_date'), data.get('actions_suivre'),
-            visite_id
+            data.get('note_satisfaction'), data.get('prochaine_visite_date'),
+            data.get('actions_suivre'), visite_id
         ))
         
         conn.commit()
@@ -233,10 +235,14 @@ def delete_visite(visite_id):
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("UPDATE crm_visites SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s", (visite_id,))
+        
+        # Suppression réelle (pas de is_active)
+        cursor.execute("DELETE FROM crm_visites WHERE id = %s", (visite_id,))
+        
         conn.commit()
         cursor.close()
         conn.close()
+        
         return True, "✅ Visite supprimée"
     except Exception as e:
         return False, f"❌ Erreur : {str(e)}"
@@ -261,6 +267,7 @@ if kpis:
 
 st.markdown("---")
 
+# Onglets
 tab1, tab2, tab3 = st.tabs(["📋 Liste Visites", "📅 Planning Semaine", "➕ Nouvelle Visite"])
 
 with tab1:
@@ -271,17 +278,21 @@ with tab1:
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
-        mag_opts = [(0, 'Tous')] + magasins
-        filtre_mag = st.selectbox("Magasin", mag_opts, format_func=lambda x: x[1], key="f_mag")
+        mag_options = [(0, 'Tous')] + magasins
+        filtre_mag = st.selectbox("Magasin", mag_options, format_func=lambda x: x[1], key="f_mag")
+    
     with col2:
-        comm_opts = [(0, 'Tous')] + commerciaux
-        filtre_comm = st.selectbox("Commercial", comm_opts, format_func=lambda x: x[1], key="f_comm")
+        comm_options = [(0, 'Tous')] + commerciaux
+        filtre_comm = st.selectbox("Commercial", comm_options, format_func=lambda x: x[1], key="f_comm")
+    
     with col3:
         filtre_statut = st.selectbox("Statut", ['Tous', 'PLANIFIEE', 'EFFECTUEE', 'ANNULEE'], key="f_stat")
+    
     with col4:
-        filtre_date_debut = st.date_input("Du", value=datetime.now().date() - timedelta(days=30), key="f_dd")
+        filtre_date_debut = st.date_input("Du", value=datetime.now().date() - timedelta(days=30), key="f_deb")
+    
     with col5:
-        filtre_date_fin = st.date_input("Au", value=datetime.now().date() + timedelta(days=30), key="f_df")
+        filtre_date_fin = st.date_input("Au", value=datetime.now().date() + timedelta(days=30), key="f_fin")
     
     st.markdown("---")
     
@@ -294,86 +305,65 @@ with tab1:
         'date_fin': filtre_date_fin
     }
     
-    df = get_visites(filtres)
+    df_visites = get_visites(filtres)
     
-    if not df.empty:
-        st.info(f"📊 {len(df)} visite(s) trouvée(s)")
-        
-        # Tableau sélection
-        df_display = df[['id', 'date_visite', 'enseigne', 'ville', 'commercial', 'type_visite', 'statut']].copy()
-        df_display['date_visite'] = pd.to_datetime(df_display['date_visite']).dt.strftime('%d/%m/%Y')
-        df_display.columns = ['ID', 'Date', 'Enseigne', 'Ville', 'Commercial', 'Type', 'Statut']
-        
-        event = st.dataframe(
-            df_display,
-            use_container_width=True,
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="single-row",
-            key="table_visites"
-        )
-        
-        # Détail visite sélectionnée
-        selected_rows = event.selection.rows if hasattr(event, 'selection') else []
-        
-        if selected_rows:
-            idx = selected_rows[0]
-            visite = df.iloc[idx]
-            
-            st.markdown("---")
-            
-            statut_class = "visite-planifiee" if visite['statut'] == 'PLANIFIEE' else ("visite-effectuee" if visite['statut'] == 'EFFECTUEE' else "visite-annulee")
-            statut = "📋 Planifiée" if visite['statut'] == 'PLANIFIEE' else ("✅ Effectuée" if visite['statut'] == 'EFFECTUEE' else "❌ Annulée")
+    if not df_visites.empty:
+        # Tableau
+        for idx, visite in df_visites.iterrows():
+            statut_class = f"visite-{visite['statut'].lower()}"
+            statut_icon = "✅" if visite['statut'] == 'EFFECTUEE' else ("❌" if visite['statut'] == 'ANNULEE' else "📋")
             date_str = visite['date_visite'].strftime('%d/%m/%Y') if visite['date_visite'] else ''
             
-            st.markdown(f"""
-            <div class="{statut_class}">
-                <h4>📅 {date_str} - {visite['enseigne']} ({visite['ville']})</h4>
-                <p><strong>Commercial :</strong> {visite['commercial'] or 'N/A'} | <strong>Type :</strong> {visite['type_visite'] or 'N/A'} | <strong>Statut :</strong> {statut}</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            if visite['compte_rendu']:
-                st.markdown(f"**📝 Compte-rendu :** {visite['compte_rendu']}")
-            if visite['note_satisfaction']:
-                st.markdown(f"**⭐ Note :** {visite['note_satisfaction']}/10")
-            if visite['actions_suivre']:
-                st.warning(f"🎯 Actions à suivre : {visite['actions_suivre']}")
-            if visite['prochaine_visite_date']:
-                proch_str = visite['prochaine_visite_date'].strftime('%d/%m/%Y') if visite['prochaine_visite_date'] else ''
-                st.info(f"📅 Prochaine visite prévue : {proch_str}")
-            
-            col_a, col_b, col_c = st.columns([1, 1, 2])
-            
-            with col_a:
-                if can_edit("CRM"):
-                    if st.button("✏️ Modifier", key="btn_edit_v"):
-                        st.session_state['edit_visite_id'] = visite['id']
-                        st.session_state['edit_visite_data'] = visite.to_dict()
-                        st.rerun()
-            
-            with col_b:
-                if can_delete("CRM"):
-                    if st.button("🗑️ Supprimer", key="btn_del_v", type="secondary"):
-                        st.session_state['confirm_delete_visite'] = visite['id']
-                        st.rerun()
-            
-            if st.session_state.get('confirm_delete_visite') == visite['id']:
-                st.warning("⚠️ Confirmer la suppression ?")
-                col_yes, col_no = st.columns(2)
-                with col_yes:
-                    if st.button("✅ Confirmer", key="confirm_yes_v"):
-                        success, msg = delete_visite(visite['id'])
-                        if success:
-                            st.success(msg)
+            with st.expander(f"{statut_icon} {date_str} - {visite['enseigne']} ({visite['ville']}) - {visite['commercial'] or 'N/A'}"):
+                st.markdown(f"""
+                <div class="{statut_class}">
+                    <strong>Type :</strong> {visite['type_visite'] or 'N/A'} | 
+                    <strong>Statut :</strong> {visite['statut']} |
+                    <strong>Commercial :</strong> {visite['commercial'] or 'Non assigné'}
+                </div>
+                """, unsafe_allow_html=True)
+                
+                if visite['compte_rendu']:
+                    st.markdown(f"**📝 Compte-rendu :** {visite['compte_rendu']}")
+                if visite['note_satisfaction']:
+                    st.markdown(f"**⭐ Note :** {visite['note_satisfaction']}/10")
+                if visite['actions_suivre']:
+                    st.warning(f"🎯 Actions à suivre : {visite['actions_suivre']}")
+                if visite['prochaine_visite_date']:
+                    proch_str = visite['prochaine_visite_date'].strftime('%d/%m/%Y') if visite['prochaine_visite_date'] else ''
+                    st.info(f"📅 Prochaine visite prévue : {proch_str}")
+                
+                col_a, col_b, col_c = st.columns([1, 1, 2])
+                
+                with col_a:
+                    if can_edit("CRM"):
+                        if st.button("✏️ Modifier", key=f"btn_edit_v_{visite['id']}"):
+                            st.session_state['edit_visite_id'] = visite['id']
+                            st.session_state['edit_visite_data'] = visite.to_dict()
+                            st.rerun()
+                
+                with col_b:
+                    if can_delete("CRM"):
+                        if st.button("🗑️ Supprimer", key=f"btn_del_v_{visite['id']}", type="secondary"):
+                            st.session_state['confirm_delete_visite'] = visite['id']
+                            st.rerun()
+                
+                if st.session_state.get('confirm_delete_visite') == visite['id']:
+                    st.warning("⚠️ Confirmer la suppression ?")
+                    col_yes, col_no = st.columns(2)
+                    with col_yes:
+                        if st.button("✅ Confirmer", key=f"confirm_yes_v_{visite['id']}"):
+                            success, msg = delete_visite(visite['id'])
+                            if success:
+                                st.success(msg)
+                                st.session_state.pop('confirm_delete_visite', None)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                    with col_no:
+                        if st.button("❌ Annuler", key=f"confirm_no_v_{visite['id']}"):
                             st.session_state.pop('confirm_delete_visite', None)
                             st.rerun()
-                        else:
-                            st.error(msg)
-                with col_no:
-                    if st.button("❌ Annuler", key="confirm_no_v"):
-                        st.session_state.pop('confirm_delete_visite', None)
-                        st.rerun()
         
         # Formulaire modification
         if 'edit_visite_id' in st.session_state and can_edit("CRM"):
