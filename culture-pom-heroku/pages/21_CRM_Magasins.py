@@ -6,42 +6,43 @@ from database import get_connection
 from components import show_footer
 from auth import is_authenticated, require_access, can_edit, can_delete
 
-st.set_page_config(page_title="Proto API Adresse - Culture Pom", page_icon="🧪", layout="wide")
+st.set_page_config(page_title="CRM Clients - Culture Pom", page_icon="🏪", layout="wide")
 
 if not is_authenticated():
     st.warning("⚠️ Veuillez vous connecter")
     st.stop()
 
-require_access("COMMERCIAL")
+require_access("CRM")
 
 st.markdown("""
 <style>
     .block-container { padding-top: 1.5rem !important; padding-bottom: 0.5rem !important; }
     h1, h2, h3, h4 { margin-top: 0.3rem !important; margin-bottom: 0.3rem !important; }
     
-    /* Style pour les suggestions d'adresse */
-    .address-result {
-        padding: 0.5rem;
-        border-radius: 5px;
-        background: #f0f2f6;
-        margin: 0.2rem 0;
-        cursor: pointer;
+    /* Style pour les tags de marques */
+    .tag-marque {
+        display: inline-block;
+        background: #e3f2fd;
+        color: #1565c0;
+        padding: 0.2rem 0.5rem;
+        border-radius: 15px;
+        margin: 0.1rem;
+        font-size: 0.85rem;
     }
-    .address-result:hover {
-        background: #e0e2e6;
-    }
-    
-    /* Carte miniature */
-    .mini-map {
-        border-radius: 10px;
-        overflow: hidden;
-        border: 2px solid #ddd;
+    .tag-produit {
+        display: inline-block;
+        background: #e8f5e9;
+        color: #2e7d32;
+        padding: 0.2rem 0.5rem;
+        border-radius: 15px;
+        margin: 0.1rem;
+        font-size: 0.85rem;
     }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🧪 Proto - CRM Clients avec API Adresse")
-st.caption("🗺️ Test autocomplétion adresse (data.gouv.fr) - Page de test")
+st.title("🏪 CRM - Gestion des Clients")
+st.caption("🗺️ Recherche d'adresse avec API Adresse (data.gouv.fr)")
 st.markdown("---")
 
 # ==========================================
@@ -49,21 +50,14 @@ st.markdown("---")
 # ==========================================
 
 def search_adresse(query, limit=5):
-    """
-    Recherche d'adresse via l'API Adresse du gouvernement français
-    Retourne une liste de suggestions avec coordonnées GPS
-    """
+    """Recherche d'adresse via l'API Adresse du gouvernement français"""
     if not query or len(query) < 3:
         return []
     
     try:
         response = requests.get(
             "https://api-adresse.data.gouv.fr/search/",
-            params={
-                "q": query,
-                "limit": limit,
-                "autocomplete": 1
-            },
+            params={"q": query, "limit": limit, "autocomplete": 1},
             timeout=5
         )
         
@@ -78,45 +72,33 @@ def search_adresse(query, limit=5):
                 results.append({
                     'label': props.get('label', ''),
                     'name': props.get('name', ''),
-                    'housenumber': props.get('housenumber', ''),
-                    'street': props.get('street', ''),
                     'postcode': props.get('postcode', ''),
                     'city': props.get('city', ''),
-                    'context': props.get('context', ''),  # Ex: "75, Paris, Île-de-France"
                     'departement': props.get('postcode', '')[:2] if props.get('postcode') else '',
                     'longitude': coords[0] if coords else None,
                     'latitude': coords[1] if coords else None,
-                    'score': props.get('score', 0)
                 })
-            
             return results
         return []
-    except Exception as e:
-        st.warning(f"⚠️ Erreur API Adresse : {e}")
+    except:
         return []
 
 def geocode_adresse(adresse_complete):
-    """
-    Géocode une adresse complète pour obtenir lat/lng
-    """
-    if not adresse_complete:
-        return None, None
-    
+    """Géocode une adresse complète pour obtenir lat/lng"""
     try:
         response = requests.get(
             "https://api-adresse.data.gouv.fr/search/",
             params={"q": adresse_complete, "limit": 1},
             timeout=5
         )
-        
         if response.status_code == 200:
             data = response.json()
             if data.get('features'):
-                coords = data['features'][0]['geometry']['coordinates']
-                return coords[1], coords[0]  # lat, lng
-        return None, None
+                coords = data['features'][0].get('geometry', {}).get('coordinates', [None, None])
+                return {'latitude': coords[1], 'longitude': coords[0]}
+        return None
     except:
-        return None, None
+        return None
 
 # ==========================================
 # FONCTIONS HELPER
@@ -144,7 +126,7 @@ def safe_float(value, default=None):
         return default
 
 # ==========================================
-# FONCTIONS DB
+# FONCTIONS DB - DONNÉES DE BASE
 # ==========================================
 
 def get_commerciaux():
@@ -163,18 +145,13 @@ def get_filtres_options():
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        
         options = {}
-        
         cursor.execute("SELECT DISTINCT enseigne FROM crm_magasins WHERE is_active = TRUE AND enseigne IS NOT NULL ORDER BY enseigne")
         options['enseignes'] = [r['enseigne'] for r in cursor.fetchall()]
-        
         cursor.execute("SELECT DISTINCT departement FROM crm_magasins WHERE is_active = TRUE AND departement IS NOT NULL ORDER BY departement")
         options['departements'] = [r['departement'] for r in cursor.fetchall()]
-        
         cursor.close()
         conn.close()
-        
         return options
     except:
         return {'enseignes': [], 'departements': []}
@@ -183,12 +160,7 @@ def get_centrales_achat():
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT DISTINCT centrale_achat 
-            FROM crm_magasins 
-            WHERE is_active = TRUE AND centrale_achat IS NOT NULL AND centrale_achat != ''
-            ORDER BY centrale_achat
-        """)
+        cursor.execute("SELECT DISTINCT centrale_achat FROM crm_magasins WHERE is_active = TRUE AND centrale_achat IS NOT NULL AND centrale_achat != '' ORDER BY centrale_achat")
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -200,12 +172,7 @@ def get_types_client():
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT DISTINCT type_magasin 
-            FROM crm_magasins 
-            WHERE is_active = TRUE AND type_magasin IS NOT NULL AND type_magasin != ''
-            ORDER BY type_magasin
-        """)
+        cursor.execute("SELECT DISTINCT type_magasin FROM crm_magasins WHERE is_active = TRUE AND type_magasin IS NOT NULL AND type_magasin != '' ORDER BY type_magasin")
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -217,18 +184,188 @@ def get_types_reseau():
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT DISTINCT type_reseau 
-            FROM crm_magasins 
-            WHERE is_active = TRUE AND type_reseau IS NOT NULL AND type_reseau != ''
-            ORDER BY type_reseau
-        """)
+        cursor.execute("SELECT DISTINCT type_reseau FROM crm_magasins WHERE is_active = TRUE AND type_reseau IS NOT NULL AND type_reseau != '' ORDER BY type_reseau")
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
         return [r['type_reseau'] for r in rows]
     except:
         return []
+
+# ==========================================
+# FONCTIONS DB - PRÉSENCE PRODUIT
+# ==========================================
+
+def get_marques_concurrentes():
+    """Récupère toutes les marques concurrentes actives"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, nom FROM ref_marques_concurrentes WHERE is_active = TRUE ORDER BY nom")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [(r['id'], r['nom']) for r in rows]
+    except:
+        return []
+
+def get_types_produits_crm():
+    """Récupère tous les types de produits CRM actifs"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, code, libelle, categorie FROM ref_types_produits_crm WHERE is_active = TRUE ORDER BY ordre")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [(r['id'], r['code'], r['libelle'], r['categorie']) for r in rows]
+    except:
+        return []
+
+def get_magasin_marques(magasin_id):
+    """Récupère les marques associées à un magasin"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT m.id, m.nom 
+            FROM ref_marques_concurrentes m
+            JOIN crm_magasins_marques mm ON m.id = mm.marque_id
+            WHERE mm.magasin_id = %s AND mm.is_active = TRUE AND m.is_active = TRUE
+            ORDER BY m.nom
+        """, (int(magasin_id),))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [(r['id'], r['nom']) for r in rows]
+    except:
+        return []
+
+def get_magasin_produits(magasin_id):
+    """Récupère les types de produits associés à un magasin"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT tp.id, tp.code, tp.libelle
+            FROM ref_types_produits_crm tp
+            JOIN crm_magasins_produits mp ON tp.id = mp.type_produit_id
+            WHERE mp.magasin_id = %s AND mp.is_active = TRUE AND tp.is_active = TRUE
+            ORDER BY tp.ordre
+        """, (int(magasin_id),))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [r['id'] for r in rows]
+    except:
+        return []
+
+def create_marque_concurrente(nom):
+    """Crée une nouvelle marque concurrente"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO ref_marques_concurrentes (nom) VALUES (%s)
+            ON CONFLICT (nom) DO UPDATE SET is_active = TRUE
+            RETURNING id
+        """, (nom.strip(),))
+        new_id = cursor.fetchone()['id']
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return new_id
+    except:
+        return None
+
+def create_type_produit_crm(code, libelle, categorie='AUTRE'):
+    """Crée un nouveau type de produit"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        # Récupérer le max ordre
+        cursor.execute("SELECT COALESCE(MAX(ordre), 0) + 1 as next_ordre FROM ref_types_produits_crm")
+        next_ordre = cursor.fetchone()['next_ordre']
+        
+        cursor.execute("""
+            INSERT INTO ref_types_produits_crm (code, libelle, categorie, ordre) 
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (code) DO UPDATE SET is_active = TRUE
+            RETURNING id
+        """, (code.upper().replace(' ', '_'), libelle.strip(), categorie, next_ordre))
+        new_id = cursor.fetchone()['id']
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return new_id
+    except:
+        return None
+
+def save_magasin_marques(magasin_id, marque_ids):
+    """Sauvegarde les marques d'un magasin (avec historique)"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        username = st.session_state.get('username', 'system')
+        
+        # Désactiver les anciennes liaisons
+        cursor.execute("""
+            UPDATE crm_magasins_marques 
+            SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP 
+            WHERE magasin_id = %s AND is_active = TRUE
+        """, (int(magasin_id),))
+        
+        # Insérer/réactiver les nouvelles
+        for marque_id in marque_ids:
+            cursor.execute("""
+                INSERT INTO crm_magasins_marques (magasin_id, marque_id, created_by)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (magasin_id, marque_id) 
+                DO UPDATE SET is_active = TRUE, updated_at = CURRENT_TIMESTAMP
+            """, (int(magasin_id), int(marque_id), username))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Erreur sauvegarde marques: {e}")
+        return False
+
+def save_magasin_produits(magasin_id, produit_ids):
+    """Sauvegarde les types de produits d'un magasin (avec historique)"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        username = st.session_state.get('username', 'system')
+        
+        # Désactiver les anciennes liaisons
+        cursor.execute("""
+            UPDATE crm_magasins_produits 
+            SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP 
+            WHERE magasin_id = %s AND is_active = TRUE
+        """, (int(magasin_id),))
+        
+        # Insérer/réactiver les nouvelles
+        for produit_id in produit_ids:
+            cursor.execute("""
+                INSERT INTO crm_magasins_produits (magasin_id, type_produit_id, created_by)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (magasin_id, type_produit_id) 
+                DO UPDATE SET is_active = TRUE, updated_at = CURRENT_TIMESTAMP
+            """, (int(magasin_id), int(produit_id), username))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Erreur sauvegarde produits: {e}")
+        return False
+
+# ==========================================
+# FONCTIONS DB - MAGASINS
+# ==========================================
 
 def get_magasins(filtres=None):
     try:
@@ -241,6 +378,7 @@ def get_magasins(filtres=None):
                 m.statut, m.commercial_id, c.prenom || ' ' || c.nom as commercial,
                 m.adresse, m.centrale_achat, m.type_magasin, m.type_reseau,
                 m.surface_m2, m.potentiel, m.presence_produit,
+                m.presence_marque_hors_mdd,
                 m.points_amelioration, m.commentaires, m.notes,
                 m.latitude, m.longitude,
                 m.date_derniere_visite, m.date_prochaine_visite
@@ -271,9 +409,7 @@ def get_magasins(filtres=None):
         cursor.close()
         conn.close()
         
-        if rows:
-            return pd.DataFrame(rows)
-        return pd.DataFrame()
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
     except Exception as e:
         st.error(f"❌ Erreur : {str(e)}")
         return pd.DataFrame()
@@ -302,15 +438,14 @@ def create_magasin(data):
         
         commercial_id = int(data['commercial_id']) if data.get('commercial_id') else None
         
-        # ⭐ Inclure latitude et longitude
         cursor.execute("""
             INSERT INTO crm_magasins (
                 enseigne, ville, departement, adresse, code_postal,
                 commercial_id, centrale_achat, type_magasin, type_reseau,
                 surface_m2, potentiel, statut, presence_produit,
+                presence_marque_hors_mdd,
                 points_amelioration, commentaires, notes, 
-                latitude, longitude,
-                created_by
+                latitude, longitude
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """, (
@@ -318,10 +453,11 @@ def create_magasin(data):
             data.get('adresse'), data.get('code_postal'), commercial_id,
             data.get('centrale_achat'), data.get('type_magasin'), data.get('type_reseau'),
             data.get('surface_m2'), data.get('potentiel'), data.get('statut', 'PROSPECT'),
-            data.get('presence_produit'), data.get('points_amelioration'),
+            data.get('presence_produit'),
+            data.get('presence_marque_hors_mdd', False),
+            data.get('points_amelioration'),
             data.get('commentaires'), data.get('notes'),
-            data.get('latitude'), data.get('longitude'),
-            data.get('created_by')
+            data.get('latitude'), data.get('longitude')
         ))
         
         new_id = cursor.fetchone()['id']
@@ -329,9 +465,9 @@ def create_magasin(data):
         cursor.close()
         conn.close()
         
-        return True, f"✅ Client créé (ID: {new_id})"
+        return True, new_id
     except Exception as e:
-        return False, f"❌ Erreur : {str(e)}"
+        return False, str(e)
 
 def update_magasin(magasin_id, data):
     try:
@@ -341,13 +477,13 @@ def update_magasin(magasin_id, data):
         magasin_id = int(magasin_id)
         commercial_id = int(data['commercial_id']) if data.get('commercial_id') else None
         
-        # ⭐ Inclure latitude et longitude
         cursor.execute("""
             UPDATE crm_magasins SET
                 enseigne = %s, ville = %s, departement = %s, adresse = %s,
                 code_postal = %s, commercial_id = %s, centrale_achat = %s,
                 type_magasin = %s, type_reseau = %s, surface_m2 = %s,
                 potentiel = %s, statut = %s, presence_produit = %s,
+                presence_marque_hors_mdd = %s,
                 points_amelioration = %s, commentaires = %s, notes = %s,
                 latitude = %s, longitude = %s,
                 updated_at = CURRENT_TIMESTAMP
@@ -357,7 +493,9 @@ def update_magasin(magasin_id, data):
             data.get('adresse'), data.get('code_postal'), commercial_id,
             data.get('centrale_achat'), data.get('type_magasin'), data.get('type_reseau'),
             data.get('surface_m2'), data.get('potentiel'), data.get('statut'),
-            data.get('presence_produit'), data.get('points_amelioration'),
+            data.get('presence_produit'),
+            data.get('presence_marque_hors_mdd', False),
+            data.get('points_amelioration'),
             data.get('commentaires'), data.get('notes'),
             data.get('latitude'), data.get('longitude'),
             magasin_id
@@ -384,129 +522,209 @@ def delete_magasin(magasin_id):
         return False, f"❌ Erreur : {str(e)}"
 
 # ==========================================
-# ⭐ COMPOSANT RECHERCHE ADRESSE
+# ⭐ COMPOSANT ADRESSE AUTOCOMPLETE
 # ==========================================
 
 def adresse_autocomplete(prefix_key, initial_values=None):
-    """
-    Composant de recherche d'adresse avec autocomplétion
-    Retourne un dict avec adresse, code_postal, ville, departement, lat, lng
-    """
+    """Composant de recherche d'adresse avec autocomplétion"""
     
     if initial_values is None:
         initial_values = {}
     
-    st.markdown("#### 🗺️ Adresse (recherche automatique)")
+    st.markdown("#### 🗺️ Adresse")
     
-    # Champ de recherche
+    selected_key = f"{prefix_key}_selected"
+    applied_key = f"{prefix_key}_applied"
+    
     search_query = st.text_input(
         "🔍 Rechercher une adresse",
         placeholder="Tapez une adresse (ex: 12 rue de la Paix Paris)...",
         key=f"{prefix_key}_search"
     )
     
-    # Stocker les résultats en session
-    results_key = f"{prefix_key}_results"
-    selected_key = f"{prefix_key}_selected"
-    
-    # Recherche si query >= 3 caractères
     if search_query and len(search_query) >= 3:
         results = search_adresse(search_query)
-        st.session_state[results_key] = results
         
         if results:
-            # Afficher les suggestions
-            options = [""] + [r['label'] for r in results]
-            selected_label = st.selectbox(
-                "📍 Sélectionner une adresse",
-                options,
-                key=f"{prefix_key}_select"
-            )
+            options = ["-- Sélectionner --"] + [r['label'] for r in results]
+            selected_label = st.selectbox("📍 Sélectionner", options, key=f"{prefix_key}_select")
             
-            # Si une adresse est sélectionnée
-            if selected_label:
+            if selected_label and selected_label != "-- Sélectionner --":
                 selected = next((r for r in results if r['label'] == selected_label), None)
+                
+                if selected and st.session_state.get(applied_key) != selected_label:
+                    st.session_state[f"{prefix_key}_adresse"] = selected.get('name', '')
+                    st.session_state[f"{prefix_key}_cp"] = selected.get('postcode', '')
+                    st.session_state[f"{prefix_key}_ville"] = selected.get('city', '')
+                    st.session_state[f"{prefix_key}_dept"] = selected.get('departement', '')
+                    st.session_state[f"{prefix_key}_lat"] = float(selected.get('latitude', 0) or 0)
+                    st.session_state[f"{prefix_key}_lng"] = float(selected.get('longitude', 0) or 0)
+                    st.session_state[applied_key] = selected_label
+                    st.rerun()
+                
                 if selected:
-                    st.session_state[selected_key] = selected
-                    st.success(f"✅ Adresse sélectionnée : **{selected['label']}**")
-                    
-                    # Afficher les détails
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.caption(f"📮 Code postal : **{selected['postcode']}**")
-                    with col2:
-                        st.caption(f"🏙️ Ville : **{selected['city']}**")
-                    with col3:
-                        st.caption(f"📍 Dept : **{selected['departement']}**")
-                    
-                    # Mini-carte si coordonnées disponibles
-                    if selected['latitude'] and selected['longitude']:
-                        st.caption(f"🌐 GPS : {selected['latitude']:.6f}, {selected['longitude']:.6f}")
-                        
-                        # Carte
-                        map_data = pd.DataFrame({
-                            'lat': [selected['latitude']],
-                            'lon': [selected['longitude']]
-                        })
-                        st.map(map_data, zoom=14)
-        else:
-            st.info("Aucune adresse trouvée. Essayez une autre recherche.")
+                    st.success(f"✅ {selected_label}")
     
-    # Récupérer l'adresse sélectionnée ou les valeurs initiales
-    selected = st.session_state.get(selected_key, {})
+    def get_default(field, ss_key, default=''):
+        if f"{prefix_key}_{ss_key}" in st.session_state:
+            return st.session_state[f"{prefix_key}_{ss_key}"]
+        return safe_str(initial_values.get(field)) if initial_values else default
     
-    st.markdown("---")
-    st.markdown("#### ✏️ Détails de l'adresse")
+    def get_default_float(field, ss_key, default=0.0):
+        if f"{prefix_key}_{ss_key}" in st.session_state:
+            return st.session_state[f"{prefix_key}_{ss_key}"]
+        return safe_float(initial_values.get(field), default) if initial_values else default
     
     col1, col2 = st.columns(2)
     
     with col1:
-        adresse = st.text_input(
-            "Adresse",
-            value=selected.get('name', '') or safe_str(initial_values.get('adresse')),
-            key=f"{prefix_key}_adresse"
-        )
-        
-        code_postal = st.text_input(
-            "Code postal",
-            value=selected.get('postcode', '') or safe_str(initial_values.get('code_postal')),
-            key=f"{prefix_key}_cp"
-        )
-        
-        ville = st.text_input(
-            "Ville *",
-            value=selected.get('city', '') or safe_str(initial_values.get('ville')),
-            key=f"{prefix_key}_ville"
-        )
+        adresse = st.text_input("Adresse", value=get_default('adresse', 'adresse'), key=f"{prefix_key}_adresse")
+        code_postal = st.text_input("Code postal", value=get_default('code_postal', 'cp'), key=f"{prefix_key}_cp")
+        ville = st.text_input("Ville *", value=get_default('ville', 'ville'), key=f"{prefix_key}_ville")
     
     with col2:
-        departement = st.text_input(
-            "Département",
-            value=selected.get('departement', '') or safe_str(initial_values.get('departement')),
-            key=f"{prefix_key}_dept"
-        )
-        
-        latitude = st.number_input(
-            "Latitude",
-            value=selected.get('latitude') or safe_float(initial_values.get('latitude'), 0.0),
-            format="%.6f",
-            key=f"{prefix_key}_lat"
-        )
-        
-        longitude = st.number_input(
-            "Longitude",
-            value=selected.get('longitude') or safe_float(initial_values.get('longitude'), 0.0),
-            format="%.6f",
-            key=f"{prefix_key}_lng"
-        )
+        departement = st.text_input("Département", value=get_default('departement', 'dept'), key=f"{prefix_key}_dept")
+        latitude = st.number_input("Latitude", value=get_default_float('latitude', 'lat', 0.0), format="%.6f", key=f"{prefix_key}_lat")
+        longitude = st.number_input("Longitude", value=get_default_float('longitude', 'lng', 0.0), format="%.6f", key=f"{prefix_key}_lng")
     
     return {
-        'adresse': adresse,
-        'code_postal': code_postal,
-        'ville': ville,
-        'departement': departement,
-        'latitude': latitude if latitude != 0 else None,
-        'longitude': longitude if longitude != 0 else None
+        'adresse': st.session_state.get(f"{prefix_key}_adresse", ''),
+        'code_postal': st.session_state.get(f"{prefix_key}_cp", ''),
+        'ville': st.session_state.get(f"{prefix_key}_ville", ''),
+        'departement': st.session_state.get(f"{prefix_key}_dept", ''),
+        'latitude': st.session_state.get(f"{prefix_key}_lat", 0) if st.session_state.get(f"{prefix_key}_lat", 0) != 0 else None,
+        'longitude': st.session_state.get(f"{prefix_key}_lng", 0) if st.session_state.get(f"{prefix_key}_lng", 0) != 0 else None
+    }
+
+# ==========================================
+# ⭐ COMPOSANT PRÉSENCE PRODUIT
+# ==========================================
+
+def presence_produit_component(prefix_key, magasin_id=None):
+    """
+    Composant pour gérer la présence produit :
+    - Checkbox présence marque hors MDD
+    - Multi-select marques concurrentes
+    - Multi-checkbox types produits
+    """
+    
+    st.markdown("#### 📦 Présence Produits")
+    
+    # Charger les données de référence
+    marques_dispo = get_marques_concurrentes()
+    types_produits = get_types_produits_crm()
+    
+    # Charger les données existantes si magasin_id
+    marques_magasin = []
+    produits_magasin = []
+    presence_mdd = False
+    
+    if magasin_id:
+        marques_magasin = get_magasin_marques(magasin_id)
+        produits_magasin = get_magasin_produits(magasin_id)
+        mag = get_magasin_by_id(magasin_id)
+        if mag:
+            presence_mdd = mag.get('presence_marque_hors_mdd', False) or False
+    
+    # 1. Checkbox présence marque hors MDD
+    presence_marque_mdd = st.checkbox(
+        "🏷️ Présence marque hors MDD",
+        value=presence_mdd,
+        key=f"{prefix_key}_presence_mdd"
+    )
+    
+    # 2. Multi-select marques concurrentes (si présence = Oui)
+    selected_marques = []
+    
+    if presence_marque_mdd:
+        st.markdown("##### 🏷️ Marques concurrentes présentes")
+        
+        # Liste des marques déjà sélectionnées
+        marques_ids_existants = [m[0] for m in marques_magasin]
+        
+        # Multi-select avec les marques disponibles
+        marques_options = {m[1]: m[0] for m in marques_dispo}
+        
+        # Déterminer les valeurs par défaut
+        default_marques = [m[1] for m in marques_magasin]
+        
+        selected_marques_noms = st.multiselect(
+            "Sélectionner les marques",
+            options=list(marques_options.keys()),
+            default=default_marques,
+            key=f"{prefix_key}_marques_select"
+        )
+        
+        selected_marques = [marques_options[nom] for nom in selected_marques_noms]
+        
+        # Option pour ajouter une nouvelle marque
+        col_new, col_btn = st.columns([3, 1])
+        with col_new:
+            new_marque = st.text_input("➕ Nouvelle marque", key=f"{prefix_key}_new_marque", placeholder="Nom de la marque...")
+        with col_btn:
+            st.write("")  # Espacement
+            st.write("")
+            if st.button("Ajouter", key=f"{prefix_key}_btn_add_marque"):
+                if new_marque and new_marque.strip():
+                    new_id = create_marque_concurrente(new_marque)
+                    if new_id:
+                        st.success(f"✅ Marque '{new_marque}' ajoutée")
+                        st.rerun()
+                    else:
+                        st.error("❌ Erreur lors de l'ajout")
+    
+    st.markdown("---")
+    
+    # 3. Multi-checkbox types produits
+    st.markdown("##### 📋 Types de produits présents")
+    
+    # Grouper par catégorie
+    produits_par_cat = {}
+    for tp in types_produits:
+        cat = tp[3] or 'AUTRE'
+        if cat not in produits_par_cat:
+            produits_par_cat[cat] = []
+        produits_par_cat[cat].append(tp)
+    
+    selected_produits = []
+    
+    # Afficher en colonnes par catégorie
+    cols = st.columns(len(produits_par_cat))
+    
+    for i, (cat, produits) in enumerate(produits_par_cat.items()):
+        with cols[i]:
+            cat_label = {'CARTON': '📦 Cartons', 'SAC': '🛍️ Sacs', 'AUTRE': '🏷️ Autres'}.get(cat, cat)
+            st.markdown(f"**{cat_label}**")
+            
+            for tp in produits:
+                tp_id, tp_code, tp_libelle, _ = tp
+                is_checked = tp_id in produits_magasin
+                
+                if st.checkbox(tp_libelle, value=is_checked, key=f"{prefix_key}_prod_{tp_id}"):
+                    selected_produits.append(tp_id)
+    
+    # Option pour ajouter un nouveau type
+    with st.expander("➕ Ajouter un nouveau type de produit"):
+        col1, col2, col3 = st.columns([2, 2, 1])
+        with col1:
+            new_produit_libelle = st.text_input("Libellé", key=f"{prefix_key}_new_prod_lib")
+        with col2:
+            new_produit_cat = st.selectbox("Catégorie", ['CARTON', 'SAC', 'AUTRE'], key=f"{prefix_key}_new_prod_cat")
+        with col3:
+            st.write("")
+            st.write("")
+            if st.button("Ajouter", key=f"{prefix_key}_btn_add_prod"):
+                if new_produit_libelle:
+                    code = new_produit_libelle.upper().replace(' ', '_')[:20]
+                    new_id = create_type_produit_crm(code, new_produit_libelle, new_produit_cat)
+                    if new_id:
+                        st.success(f"✅ Type '{new_produit_libelle}' ajouté")
+                        st.rerun()
+    
+    return {
+        'presence_marque_hors_mdd': presence_marque_mdd,
+        'marques_ids': selected_marques,
+        'produits_ids': selected_produits
     }
 
 # ==========================================
@@ -528,12 +746,10 @@ def dropdown_dynamique(label, valeurs_existantes, valeur_actuelle, key_prefix):
     selected = st.selectbox(label, options, index=default_idx, key=f"{key_prefix}_select")
     
     if selected == "➕ Saisir nouvelle valeur":
-        nouvelle_valeur = st.text_input(f"Nouvelle valeur pour {label}", key=f"{key_prefix}_new")
-        return nouvelle_valeur if nouvelle_valeur else None
+        return st.text_input(f"Nouvelle valeur pour {label}", key=f"{key_prefix}_new") or None
     elif selected == "":
         return None
-    else:
-        return selected
+    return selected
 
 # ==========================================
 # INTERFACE
@@ -546,7 +762,6 @@ tab1, tab2, tab3 = st.tabs(["📋 Liste des clients", "➕ Nouveau client", "�
 # ==========================================
 
 with tab1:
-    # Filtres
     st.subheader("🔍 Filtres")
     
     options = get_filtres_options()
@@ -562,7 +777,9 @@ with tab1:
         comm_options = [(0, 'Tous')] + commerciaux
         f_commercial = st.selectbox("Commercial", comm_options, format_func=lambda x: x[1], key="f_comm")
     with col4:
-        f_statut = st.selectbox("Statut", ['Tous', 'ACTIF', 'PROSPECT', 'INACTIF', 'EN_PAUSE', 'PERDU'], key="f_stat")
+        f_statut = st.selectbox("Statut", ['Tous', 'PROSPECT', 'ACTIF', 'INACTIF', 'EN_PAUSE', 'PERDU'], key="f_stat")
+    
+    st.markdown("---")
     
     filtres = {
         'enseigne': f_enseigne,
@@ -571,30 +788,17 @@ with tab1:
         'statut': f_statut
     }
     
-    st.markdown("---")
-    
-    # Tableau
     df = get_magasins(filtres)
     
     if not df.empty:
-        st.info(f"📊 **{len(df)} client(s)** - Cliquez sur une ligne pour voir les détails")
+        st.info(f"📊 **{len(df)} client(s)**")
         
         df_display = df[['id', 'enseigne', 'ville', 'departement', 'statut', 'commercial']].copy()
         df_display.columns = ['ID', 'Enseigne', 'Ville', 'Dept', 'Statut', 'Commercial']
         df_display['Commercial'] = df_display['Commercial'].fillna('Non assigné')
         
-        column_config = {
-            "ID": st.column_config.NumberColumn("ID", width="small"),
-            "Enseigne": st.column_config.TextColumn("Enseigne", width="medium"),
-            "Ville": st.column_config.TextColumn("Ville", width="medium"),
-            "Dept": st.column_config.TextColumn("Dept", width="small"),
-            "Statut": st.column_config.TextColumn("Statut", width="small"),
-            "Commercial": st.column_config.TextColumn("Commercial", width="medium")
-        }
-        
         event = st.dataframe(
             df_display,
-            column_config=column_config,
             use_container_width=True,
             hide_index=True,
             on_select="rerun",
@@ -634,7 +838,7 @@ with tab1:
                                 st.error(msg)
                 
                 # ==========================================
-                # FORMULAIRE D'ÉDITION
+                # MODE ÉDITION
                 # ==========================================
                 if st.session_state.get('edit_mode') == selected_id:
                     st.markdown("---")
@@ -651,7 +855,6 @@ with tab1:
                         st.markdown("#### 🏪 Informations client")
                         edit_enseigne = st.text_input("Enseigne *", value=safe_str(mag.get('enseigne')), key="edit_ens")
                         
-                        # Commercial
                         comm_edit_list = [(None, 'Non assigné')] + commerciaux_edit
                         current_comm_idx = 0
                         if mag.get('commercial_id'):
@@ -672,7 +875,6 @@ with tab1:
                                                    key="edit_stat")
                     
                     with col_edit2:
-                        # ⭐ Composant adresse avec autocomplétion
                         adresse_data_edit = adresse_autocomplete("edit", {
                             'adresse': mag.get('adresse'),
                             'code_postal': mag.get('code_postal'),
@@ -682,7 +884,10 @@ with tab1:
                             'longitude': mag.get('longitude')
                         })
                     
-                    edit_presence = st.text_input("Présence produit", value=safe_str(mag.get('presence_produit')), key="edit_pres")
+                    # ⭐ SECTION PRÉSENCE PRODUIT
+                    st.markdown("---")
+                    presence_data = presence_produit_component("edit", selected_id)
+                    
                     edit_notes = st.text_area("Notes", value=safe_str(mag.get('notes')), key="edit_notes", height=80)
                     
                     col_save, col_cancel = st.columns(2)
@@ -709,11 +914,16 @@ with tab1:
                                     'surface_m2': edit_surface if edit_surface > 0 else None,
                                     'potentiel': edit_potentiel or None,
                                     'statut': edit_statut,
-                                    'presence_produit': edit_presence or None,
+                                    'presence_marque_hors_mdd': presence_data['presence_marque_hors_mdd'],
                                     'notes': edit_notes or None
                                 }
                                 success, msg = update_magasin(selected_id, update_data)
+                                
                                 if success:
+                                    # Sauvegarder les marques et produits
+                                    save_magasin_marques(selected_id, presence_data['marques_ids'])
+                                    save_magasin_produits(selected_id, presence_data['produits_ids'])
+                                    
                                     st.success(msg)
                                     st.session_state.pop('edit_mode', None)
                                     st.rerun()
@@ -724,74 +934,51 @@ with tab1:
                         if st.button("❌ Annuler", use_container_width=True, key="btn_cancel_edit"):
                             st.session_state.pop('edit_mode', None)
                             st.rerun()
-                    
-                    st.markdown("---")
                 
-                # Détails avec carte (seulement si pas en mode édition)
-                if st.session_state.get('edit_mode') != selected_id:
-                    col_info, col_map = st.columns([1, 1])
+                # ==========================================
+                # MODE AFFICHAGE
+                # ==========================================
+                else:
+                    col1, col2 = st.columns(2)
                     
-                    with col_info:
-                        st.markdown("##### 📝 Informations")
-                        st.markdown(f"**Adresse** : {safe_str(mag.get('adresse'), 'N/A')}")
-                        st.markdown(f"**Code postal** : {safe_str(mag.get('code_postal'), 'N/A')}")
-                        st.markdown(f"**Ville** : {mag['ville']}")
-                        st.markdown(f"**Département** : {safe_str(mag.get('departement'), 'N/A')}")
+                    with col1:
+                        st.markdown("#### 📋 Informations")
+                        st.write(f"**Adresse** : {mag.get('adresse', '-')}")
+                        st.write(f"**Ville** : {mag['ville']} ({mag.get('departement', '-')})")
+                        st.write(f"**Commercial** : {mag.get('commercial', 'Non assigné')}")
+                        st.write(f"**Centrale** : {mag.get('centrale_achat', '-')}")
+                        st.write(f"**Type** : {mag.get('type_magasin', '-')}")
                         
-                        statut = mag.get('statut', 'N/A')
-                        statut_icon = "🟢" if statut == 'ACTIF' else ("🔵" if statut == 'PROSPECT' else "🔴")
-                        st.markdown(f"**Statut** : {statut_icon} {statut}")
-                        st.markdown(f"**Commercial** : {safe_str(mag.get('commercial'), 'Non assigné')}")
+                        # Présence produit
+                        st.markdown("---")
+                        st.markdown("#### 📦 Présence Produits")
                         
-                        if mag.get('latitude') and mag.get('longitude'):
-                            st.markdown(f"**GPS** : {mag['latitude']:.6f}, {mag['longitude']:.6f}")
-                    
-                    with col_map:
-                        # Afficher carte si coordonnées disponibles
-                        if mag.get('latitude') and mag.get('longitude'):
-                            st.markdown("##### 🗺️ Localisation")
-                            map_data = pd.DataFrame({
-                                'lat': [float(mag['latitude'])],
-                                'lon': [float(mag['longitude'])]
-                            })
-                            st.map(map_data, zoom=13)
+                        if mag.get('presence_marque_hors_mdd'):
+                            st.write("🏷️ **Présence marque hors MDD** : ✅ Oui")
+                            marques = get_magasin_marques(selected_id)
+                            if marques:
+                                st.write("**Marques** : " + ", ".join([m[1] for m in marques]))
                         else:
-                            st.info("📍 Coordonnées GPS non disponibles")
-                            
-                            # Bouton pour géocoder
-                            if st.button("🔍 Rechercher coordonnées GPS"):
-                                adresse_complete = f"{safe_str(mag.get('adresse'))} {safe_str(mag.get('code_postal'))} {mag['ville']}"
-                                lat, lng = geocode_adresse(adresse_complete)
-                                
-                                if lat and lng:
-                                    # Mettre à jour en base
-                                    update_data = {
-                                        'enseigne': mag['enseigne'],
-                                        'ville': mag['ville'],
-                                        'departement': mag.get('departement'),
-                                        'adresse': mag.get('adresse'),
-                                        'code_postal': mag.get('code_postal'),
-                                        'commercial_id': mag.get('commercial_id'),
-                                        'centrale_achat': mag.get('centrale_achat'),
-                                        'type_magasin': mag.get('type_magasin'),
-                                        'type_reseau': mag.get('type_reseau'),
-                                        'surface_m2': mag.get('surface_m2'),
-                                        'potentiel': mag.get('potentiel'),
-                                        'statut': mag.get('statut'),
-                                        'presence_produit': mag.get('presence_produit'),
-                                        'points_amelioration': mag.get('points_amelioration'),
-                                        'notes': mag.get('notes'),
-                                        'latitude': lat,
-                                        'longitude': lng
-                                    }
-                                    success, msg = update_magasin(selected_id, update_data)
-                                    if success:
-                                        st.success(f"✅ GPS trouvé : {lat:.6f}, {lng:.6f}")
-                                        st.rerun()
-                                else:
-                                    st.warning("⚠️ Impossible de trouver les coordonnées")
+                            st.write("🏷️ **Présence marque hors MDD** : ❌ Non")
+                        
+                        produits = get_magasin_produits(selected_id)
+                        if produits:
+                            types_produits = get_types_produits_crm()
+                            produits_noms = [tp[2] for tp in types_produits if tp[0] in produits]
+                            st.write("**Types produits** : " + ", ".join(produits_noms))
+                    
+                    with col2:
+                        st.markdown("#### 🗺️ Localisation")
+                        lat = safe_float(mag.get('latitude'))
+                        lng = safe_float(mag.get('longitude'))
+                        
+                        if lat and lng:
+                            st.success(f"📍 GPS : {lat:.6f}, {lng:.6f}")
+                            st.map(pd.DataFrame({'lat': [lat], 'lon': [lng]}), zoom=13)
+                        else:
+                            st.warning("⚠️ Pas de coordonnées GPS")
         else:
-            st.info("👆 Sélectionnez un client dans le tableau pour voir les détails")
+            st.info("👆 Sélectionnez un client")
     else:
         st.warning("Aucun client trouvé")
 
@@ -828,10 +1015,12 @@ with tab2:
             new_statut = st.selectbox("Statut", ['PROSPECT', 'ACTIF', 'INACTIF', 'EN_PAUSE', 'PERDU'], key="new_stat")
         
         with col2:
-            # ⭐ Composant adresse avec autocomplétion
             adresse_data = adresse_autocomplete("new")
         
-        new_presence = st.text_input("Présence produit", key="new_pres")
+        # ⭐ SECTION PRÉSENCE PRODUIT
+        st.markdown("---")
+        presence_data = presence_produit_component("new")
+        
         new_notes = st.text_area("Notes", key="new_notes", height=80)
         
         if st.button("✅ Créer le client", type="primary", key="btn_create"):
@@ -855,83 +1044,45 @@ with tab2:
                     'surface_m2': new_surface if new_surface > 0 else None,
                     'potentiel': new_potentiel or None,
                     'statut': new_statut,
-                    'presence_produit': new_presence or None,
-                    'notes': new_notes or None,
-                    'created_by': st.session_state.get('username', 'system')
+                    'presence_marque_hors_mdd': presence_data['presence_marque_hors_mdd'],
+                    'notes': new_notes or None
                 }
-                success, msg = create_magasin(data)
+                success, result = create_magasin(data)
+                
                 if success:
-                    st.success(msg)
+                    new_id = result
+                    # Sauvegarder marques et produits
+                    save_magasin_marques(new_id, presence_data['marques_ids'])
+                    save_magasin_produits(new_id, presence_data['produits_ids'])
+                    
+                    st.success(f"✅ Client créé (ID: {new_id})")
                     st.balloons()
                 else:
-                    st.error(msg)
+                    st.error(f"❌ Erreur : {result}")
 
 # ==========================================
-# TAB 3 : CARTE TOUS LES CLIENTS
+# TAB 3 : CARTE
 # ==========================================
 
 with tab3:
-    st.subheader("🗺️ Carte de tous les clients")
+    st.subheader("🗺️ Carte des clients")
     
-    # Charger tous les clients avec coordonnées
     df_all = get_magasins()
     
     if not df_all.empty:
-        # Filtrer ceux qui ont des coordonnées
-        df_with_coords = df_all[
-            df_all['latitude'].notna() & 
-            df_all['longitude'].notna()
-        ].copy()
+        df_geo = df_all[df_all['latitude'].notna() & df_all['longitude'].notna()].copy()
         
-        col1, col2 = st.columns([1, 3])
-        
+        col1, col2 = st.columns(2)
         with col1:
-            st.metric("📍 Clients géolocalisés", len(df_with_coords))
-            st.metric("❓ Sans coordonnées", len(df_all) - len(df_with_coords))
-            
-            if len(df_all) - len(df_with_coords) > 0:
-                st.warning(f"⚠️ {len(df_all) - len(df_with_coords)} clients sans GPS")
-                
-                if st.button("🔄 Géocoder tous les clients"):
-                    progress = st.progress(0)
-                    updated = 0
-                    
-                    df_without = df_all[df_all['latitude'].isna() | df_all['longitude'].isna()]
-                    
-                    for i, (_, row) in enumerate(df_without.iterrows()):
-                        adresse_complete = f"{safe_str(row.get('adresse'))} {safe_str(row.get('code_postal'))} {row['ville']}"
-                        lat, lng = geocode_adresse(adresse_complete)
-                        
-                        if lat and lng:
-                            # Mettre à jour
-                            conn = get_connection()
-                            cursor = conn.cursor()
-                            cursor.execute(
-                                "UPDATE crm_magasins SET latitude = %s, longitude = %s WHERE id = %s",
-                                (lat, lng, int(row['id']))
-                            )
-                            conn.commit()
-                            cursor.close()
-                            conn.close()
-                            updated += 1
-                        
-                        progress.progress((i + 1) / len(df_without))
-                    
-                    st.success(f"✅ {updated} clients géocodés")
-                    st.rerun()
-        
+            st.metric("📊 Total", len(df_all))
         with col2:
-            if not df_with_coords.empty:
-                # Préparer données pour la carte
-                map_data = pd.DataFrame({
-                    'lat': df_with_coords['latitude'].astype(float),
-                    'lon': df_with_coords['longitude'].astype(float)
-                })
-                
-                st.map(map_data, zoom=5)
-            else:
-                st.info("📍 Aucun client avec coordonnées GPS")
-    else:
-        st.warning("Aucun client trouvé")
+            st.metric("📍 Avec GPS", len(df_geo))
+        
+        if not df_geo.empty:
+            map_df = pd.DataFrame({
+                'lat': df_geo['latitude'].astype(float),
+                'lon': df_geo['longitude'].astype(float)
+            })
+            st.map(map_df, zoom=5)
 
 show_footer()
