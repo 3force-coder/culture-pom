@@ -533,8 +533,21 @@ def adresse_autocomplete(prefix_key, initial_values=None):
     
     st.markdown("#### 🗺️ Adresse")
     
-    selected_key = f"{prefix_key}_selected"
     applied_key = f"{prefix_key}_applied"
+    
+    # Initialiser les valeurs dans session_state SI pas déjà présentes
+    if f"{prefix_key}_adresse_val" not in st.session_state:
+        st.session_state[f"{prefix_key}_adresse_val"] = safe_str(initial_values.get('adresse', ''))
+    if f"{prefix_key}_cp_val" not in st.session_state:
+        st.session_state[f"{prefix_key}_cp_val"] = safe_str(initial_values.get('code_postal', ''))
+    if f"{prefix_key}_ville_val" not in st.session_state:
+        st.session_state[f"{prefix_key}_ville_val"] = safe_str(initial_values.get('ville', ''))
+    if f"{prefix_key}_dept_val" not in st.session_state:
+        st.session_state[f"{prefix_key}_dept_val"] = safe_str(initial_values.get('departement', ''))
+    if f"{prefix_key}_lat_val" not in st.session_state:
+        st.session_state[f"{prefix_key}_lat_val"] = safe_float(initial_values.get('latitude'), 0.0)
+    if f"{prefix_key}_lng_val" not in st.session_state:
+        st.session_state[f"{prefix_key}_lng_val"] = safe_float(initial_values.get('longitude'), 0.0)
     
     search_query = st.text_input(
         "🔍 Rechercher une adresse",
@@ -553,47 +566,78 @@ def adresse_autocomplete(prefix_key, initial_values=None):
                 selected = next((r for r in results if r['label'] == selected_label), None)
                 
                 if selected and st.session_state.get(applied_key) != selected_label:
-                    st.session_state[f"{prefix_key}_adresse"] = selected.get('name', '')
-                    st.session_state[f"{prefix_key}_cp"] = selected.get('postcode', '')
-                    st.session_state[f"{prefix_key}_ville"] = selected.get('city', '')
-                    st.session_state[f"{prefix_key}_dept"] = selected.get('departement', '')
-                    st.session_state[f"{prefix_key}_lat"] = float(selected.get('latitude', 0) or 0)
-                    st.session_state[f"{prefix_key}_lng"] = float(selected.get('longitude', 0) or 0)
+                    # Mettre à jour les valeurs dans session_state
+                    st.session_state[f"{prefix_key}_adresse_val"] = selected.get('name', '')
+                    st.session_state[f"{prefix_key}_cp_val"] = selected.get('postcode', '')
+                    st.session_state[f"{prefix_key}_ville_val"] = selected.get('city', '')
+                    st.session_state[f"{prefix_key}_dept_val"] = selected.get('departement', '')
+                    st.session_state[f"{prefix_key}_lat_val"] = float(selected.get('latitude', 0) or 0)
+                    st.session_state[f"{prefix_key}_lng_val"] = float(selected.get('longitude', 0) or 0)
                     st.session_state[applied_key] = selected_label
                     st.rerun()
                 
                 if selected:
                     st.success(f"✅ {selected_label}")
     
-    def get_default(field, ss_key, default=''):
-        if f"{prefix_key}_{ss_key}" in st.session_state:
-            return st.session_state[f"{prefix_key}_{ss_key}"]
-        return safe_str(initial_values.get(field)) if initial_values else default
-    
-    def get_default_float(field, ss_key, default=0.0):
-        if f"{prefix_key}_{ss_key}" in st.session_state:
-            return st.session_state[f"{prefix_key}_{ss_key}"]
-        return safe_float(initial_values.get(field), default) if initial_values else default
-    
     col1, col2 = st.columns(2)
     
+    # Fonctions de callback pour mettre à jour les valeurs
+    def update_adresse(): st.session_state[f"{prefix_key}_adresse_val"] = st.session_state[f"{prefix_key}_adresse_input"]
+    def update_cp(): st.session_state[f"{prefix_key}_cp_val"] = st.session_state[f"{prefix_key}_cp_input"]
+    def update_ville(): st.session_state[f"{prefix_key}_ville_val"] = st.session_state[f"{prefix_key}_ville_input"]
+    def update_dept(): st.session_state[f"{prefix_key}_dept_val"] = st.session_state[f"{prefix_key}_dept_input"]
+    def update_lat(): st.session_state[f"{prefix_key}_lat_val"] = st.session_state[f"{prefix_key}_lat_input"]
+    def update_lng(): st.session_state[f"{prefix_key}_lng_val"] = st.session_state[f"{prefix_key}_lng_input"]
+    
     with col1:
-        adresse = st.text_input("Adresse", value=get_default('adresse', 'adresse'), key=f"{prefix_key}_adresse")
-        code_postal = st.text_input("Code postal", value=get_default('code_postal', 'cp'), key=f"{prefix_key}_cp")
-        ville = st.text_input("Ville *", value=get_default('ville', 'ville'), key=f"{prefix_key}_ville")
+        st.text_input(
+            "Adresse", 
+            value=st.session_state[f"{prefix_key}_adresse_val"],
+            key=f"{prefix_key}_adresse_input",
+            on_change=update_adresse
+        )
+        st.text_input(
+            "Code postal", 
+            value=st.session_state[f"{prefix_key}_cp_val"],
+            key=f"{prefix_key}_cp_input",
+            on_change=update_cp
+        )
+        st.text_input(
+            "Ville *", 
+            value=st.session_state[f"{prefix_key}_ville_val"],
+            key=f"{prefix_key}_ville_input",
+            on_change=update_ville
+        )
     
     with col2:
-        departement = st.text_input("Département", value=get_default('departement', 'dept'), key=f"{prefix_key}_dept")
-        latitude = st.number_input("Latitude", value=get_default_float('latitude', 'lat', 0.0), format="%.6f", key=f"{prefix_key}_lat")
-        longitude = st.number_input("Longitude", value=get_default_float('longitude', 'lng', 0.0), format="%.6f", key=f"{prefix_key}_lng")
+        st.text_input(
+            "Département", 
+            value=st.session_state[f"{prefix_key}_dept_val"],
+            key=f"{prefix_key}_dept_input",
+            on_change=update_dept
+        )
+        st.number_input(
+            "Latitude", 
+            value=st.session_state[f"{prefix_key}_lat_val"],
+            format="%.6f",
+            key=f"{prefix_key}_lat_input",
+            on_change=update_lat
+        )
+        st.number_input(
+            "Longitude", 
+            value=st.session_state[f"{prefix_key}_lng_val"],
+            format="%.6f",
+            key=f"{prefix_key}_lng_input",
+            on_change=update_lng
+        )
     
     return {
-        'adresse': st.session_state.get(f"{prefix_key}_adresse", ''),
-        'code_postal': st.session_state.get(f"{prefix_key}_cp", ''),
-        'ville': st.session_state.get(f"{prefix_key}_ville", ''),
-        'departement': st.session_state.get(f"{prefix_key}_dept", ''),
-        'latitude': st.session_state.get(f"{prefix_key}_lat", 0) if st.session_state.get(f"{prefix_key}_lat", 0) != 0 else None,
-        'longitude': st.session_state.get(f"{prefix_key}_lng", 0) if st.session_state.get(f"{prefix_key}_lng", 0) != 0 else None
+        'adresse': st.session_state.get(f"{prefix_key}_adresse_val", ''),
+        'code_postal': st.session_state.get(f"{prefix_key}_cp_val", ''),
+        'ville': st.session_state.get(f"{prefix_key}_ville_val", ''),
+        'departement': st.session_state.get(f"{prefix_key}_dept_val", ''),
+        'latitude': st.session_state.get(f"{prefix_key}_lat_val", 0) if st.session_state.get(f"{prefix_key}_lat_val", 0) != 0 else None,
+        'longitude': st.session_state.get(f"{prefix_key}_lng_val", 0) if st.session_state.get(f"{prefix_key}_lng_val", 0) != 0 else None
     }
 
 # ==========================================
