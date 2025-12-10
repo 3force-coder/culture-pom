@@ -15,7 +15,7 @@ if not is_authenticated():
     st.warning("⚠️ Veuillez vous connecter")
     st.stop()
 
-require_access("COMMERCIAL")
+require_access("CRM")
 
 # ✅ CSS CORRIGÉ - Cartes KPI uniformes avec hauteur fixe
 st.markdown("""
