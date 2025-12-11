@@ -504,9 +504,13 @@ def create_magasin(data):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ⭐ FIX V7: Ne pas envoyer commercial_id pour l'instant (FK cassée)
-        # commercial_id = int(data['commercial_id']) if data.get('commercial_id') else None
-        commercial_id = None  # Temporaire jusqu'à correction FK
+        # ⭐ FIX V7: Valider commercial_id existe dans users_app avant insertion
+        commercial_id = None
+        if data.get('commercial_id'):
+            cursor.execute("SELECT id FROM users_app WHERE id = %s", (int(data['commercial_id']),))
+            if cursor.fetchone():
+                commercial_id = int(data['commercial_id'])
+            # Si pas trouvé, on laisse NULL
         
         enseigne_id = int(data['enseigne_id']) if data.get('enseigne_id') else None
         type_client_id = int(data['type_client_id']) if data.get('type_client_id') else None
@@ -549,9 +553,14 @@ def update_magasin(magasin_id, data):
         cursor = conn.cursor()
         
         magasin_id = int(magasin_id)
-        # ⭐ FIX V7: Ne pas envoyer commercial_id pour l'instant (FK cassée)
-        # commercial_id = int(data['commercial_id']) if data.get('commercial_id') else None
-        commercial_id = None  # Temporaire jusqu'à correction FK
+        
+        # ⭐ FIX V7: Valider commercial_id existe dans users_app avant update
+        commercial_id = None
+        if data.get('commercial_id'):
+            cursor.execute("SELECT id FROM users_app WHERE id = %s", (int(data['commercial_id']),))
+            if cursor.fetchone():
+                commercial_id = int(data['commercial_id'])
+            # Si pas trouvé, on laisse NULL
         
         enseigne_id = int(data['enseigne_id']) if data.get('enseigne_id') else None
         type_client_id = int(data['type_client_id']) if data.get('type_client_id') else None
@@ -625,7 +634,7 @@ def delete_magasin(magasin_id):
 def adresse_autocomplete_v7(prefix_key, initial_values=None, client_id=None):
     """
     Composant de recherche d'adresse avec autocomplétion - VERSION V7
-    ⭐ FIX MAJEUR: Remplissage immédiat des champs après sélection API
+    ⭐ FIX MAJEUR: Remplissage immédiat des champs après sélection API avec st.rerun()
     """
     
     if initial_values is None:
@@ -636,33 +645,28 @@ def adresse_autocomplete_v7(prefix_key, initial_values=None, client_id=None):
     
     st.markdown("#### 🗺️ Adresse")
     
-    # ⭐ FIX V7: Clé pour détecter changement de client
+    # ⭐ Clé pour détecter changement de client
     client_key = f"{p}_client_id"
     if client_id and st.session_state.get(client_key) != client_id:
         # Nouveau client, réinitialiser toutes les valeurs
         st.session_state[client_key] = client_id
-        st.session_state[f"{p}_data"] = {
-            'adresse': safe_str(initial_values.get('adresse', '')),
-            'code_postal': safe_str(initial_values.get('code_postal', '')),
-            'ville': safe_str(initial_values.get('ville', '')),
-            'departement': safe_str(initial_values.get('departement', '')),
-            'latitude': initial_values.get('latitude'),
-            'longitude': initial_values.get('longitude')
-        }
+        st.session_state[f"{p}_adresse"] = safe_str(initial_values.get('adresse', ''))
+        st.session_state[f"{p}_cp"] = safe_str(initial_values.get('code_postal', ''))
+        st.session_state[f"{p}_ville"] = safe_str(initial_values.get('ville', ''))
+        st.session_state[f"{p}_dept"] = safe_str(initial_values.get('departement', ''))
+        st.session_state[f"{p}_lat"] = initial_values.get('latitude')
+        st.session_state[f"{p}_lng"] = initial_values.get('longitude')
+        st.session_state[f"{p}_api_selected"] = False
     
     # Initialiser si pas de données
-    if f"{p}_data" not in st.session_state:
-        st.session_state[f"{p}_data"] = {
-            'adresse': safe_str(initial_values.get('adresse', '')),
-            'code_postal': safe_str(initial_values.get('code_postal', '')),
-            'ville': safe_str(initial_values.get('ville', '')),
-            'departement': safe_str(initial_values.get('departement', '')),
-            'latitude': initial_values.get('latitude'),
-            'longitude': initial_values.get('longitude')
-        }
-    
-    # Raccourci
-    addr_data = st.session_state[f"{p}_data"]
+    if f"{p}_ville" not in st.session_state:
+        st.session_state[f"{p}_adresse"] = safe_str(initial_values.get('adresse', ''))
+        st.session_state[f"{p}_cp"] = safe_str(initial_values.get('code_postal', ''))
+        st.session_state[f"{p}_ville"] = safe_str(initial_values.get('ville', ''))
+        st.session_state[f"{p}_dept"] = safe_str(initial_values.get('departement', ''))
+        st.session_state[f"{p}_lat"] = initial_values.get('latitude')
+        st.session_state[f"{p}_lng"] = initial_values.get('longitude')
+        st.session_state[f"{p}_api_selected"] = False
     
     # Recherche d'adresse
     search_query = st.text_input(
@@ -671,53 +675,73 @@ def adresse_autocomplete_v7(prefix_key, initial_values=None, client_id=None):
         key=f"{p}_search"
     )
     
+    # ⭐ Stocker les résultats dans session_state pour le callback
     if search_query and len(search_query) >= 3:
         results = search_adresse(search_query)
+        st.session_state[f"{p}_results"] = results
         
         if results:
             options = ["-- Sélectionner --"] + [r['label'] for r in results]
             
-            # ⭐ FIX V7: Callback pour mise à jour immédiate
-            def on_select_address():
-                selected = st.session_state.get(f"{p}_select")
-                if selected and selected != "-- Sélectionner --":
-                    for r in results:
-                        if r['label'] == selected:
-                            # Mise à jour directe des données
-                            st.session_state[f"{p}_data"] = {
-                                'adresse': r.get('name', ''),
-                                'code_postal': r.get('postcode', ''),
-                                'ville': r.get('city', ''),
-                                'departement': r.get('departement', ''),
-                                'latitude': r.get('latitude'),
-                                'longitude': r.get('longitude')
-                            }
-                            break
-            
-            st.selectbox(
+            selected = st.selectbox(
                 "📍 Sélectionner une adresse", 
                 options, 
-                key=f"{p}_select",
-                on_change=on_select_address
+                key=f"{p}_select"
             )
             
-            # Afficher confirmation si adresse sélectionnée
-            if addr_data.get('latitude') and addr_data.get('longitude'):
-                st.success(f"✅ GPS: {addr_data['latitude']:.6f}, {addr_data['longitude']:.6f}")
+            # ⭐ FIX V7: Mise à jour immédiate + rerun quand une adresse est sélectionnée
+            if selected and selected != "-- Sélectionner --" and not st.session_state.get(f"{p}_api_selected"):
+                for r in results:
+                    if r['label'] == selected:
+                        # Mise à jour directe du session_state
+                        st.session_state[f"{p}_adresse"] = r.get('name', '')
+                        st.session_state[f"{p}_cp"] = r.get('postcode', '')
+                        st.session_state[f"{p}_ville"] = r.get('city', '')
+                        st.session_state[f"{p}_dept"] = r.get('departement', '')
+                        st.session_state[f"{p}_lat"] = r.get('latitude')
+                        st.session_state[f"{p}_lng"] = r.get('longitude')
+                        st.session_state[f"{p}_api_selected"] = True
+                        # ⭐ RERUN pour rafraîchir les champs immédiatement
+                        st.rerun()
+            
+            # Reset le flag si on change la sélection
+            if selected == "-- Sélectionner --":
+                st.session_state[f"{p}_api_selected"] = False
     
-    # ⭐ FIX V7: Champs avec valeurs depuis le dictionnaire centralisé
+    # ⭐ Afficher confirmation GPS si disponible
+    if st.session_state.get(f"{p}_lat") and st.session_state.get(f"{p}_lng"):
+        st.success(f"✅ GPS: {st.session_state[f'{p}_lat']:.6f}, {st.session_state[f'{p}_lng']:.6f}")
+    
+    # ⭐ Champs avec valeurs depuis session_state (pas de value=, uniquement key=)
     col1, col2 = st.columns(2)
     
     with col1:
-        new_adresse = st.text_input("Adresse", value=addr_data.get('adresse', ''), key=f"{p}_adresse_input")
-        new_cp = st.text_input("Code postal", value=addr_data.get('code_postal', ''), key=f"{p}_cp_input")
-        new_ville = st.text_input("Ville *", value=addr_data.get('ville', ''), key=f"{p}_ville_input")
+        # Utiliser des champs avec valeur par défaut depuis session_state
+        new_adresse = st.text_input(
+            "Adresse", 
+            value=st.session_state.get(f"{p}_adresse", ''),
+            key=f"{p}_adresse_input"
+        )
+        new_cp = st.text_input(
+            "Code postal", 
+            value=st.session_state.get(f"{p}_cp", ''),
+            key=f"{p}_cp_input"
+        )
+        new_ville = st.text_input(
+            "Ville *", 
+            value=st.session_state.get(f"{p}_ville", ''),
+            key=f"{p}_ville_input"
+        )
     
     with col2:
-        new_dept = st.text_input("Département", value=addr_data.get('departement', ''), key=f"{p}_dept_input")
+        new_dept = st.text_input(
+            "Département", 
+            value=st.session_state.get(f"{p}_dept", ''),
+            key=f"{p}_dept_input"
+        )
         
-        lat_val = addr_data.get('latitude')
-        lng_val = addr_data.get('longitude')
+        lat_val = st.session_state.get(f"{p}_lat")
+        lng_val = st.session_state.get(f"{p}_lng")
         
         new_lat = st.number_input(
             "Latitude", 
@@ -732,14 +756,24 @@ def adresse_autocomplete_v7(prefix_key, initial_values=None, client_id=None):
             key=f"{p}_lng_input"
         )
     
-    # ⭐ FIX V7: Retourner les valeurs des inputs (qui peuvent être modifiées manuellement)
+    # ⭐ Mettre à jour session_state depuis les inputs manuels
+    st.session_state[f"{p}_adresse"] = new_adresse
+    st.session_state[f"{p}_cp"] = new_cp
+    st.session_state[f"{p}_ville"] = new_ville
+    st.session_state[f"{p}_dept"] = new_dept
+    if new_lat != 0.0:
+        st.session_state[f"{p}_lat"] = new_lat
+    if new_lng != 0.0:
+        st.session_state[f"{p}_lng"] = new_lng
+    
+    # Retourner les valeurs
     return {
         'adresse': new_adresse,
         'code_postal': new_cp,
         'ville': new_ville,
         'departement': new_dept,
-        'latitude': new_lat if new_lat != 0.0 else addr_data.get('latitude'),
-        'longitude': new_lng if new_lng != 0.0 else addr_data.get('longitude')
+        'latitude': st.session_state.get(f"{p}_lat"),
+        'longitude': st.session_state.get(f"{p}_lng")
     }
 
 # ==========================================
@@ -1171,6 +1205,16 @@ with tab1:
 with tab2:
     st.subheader("➕ Nouveau client")
     
+    # ⭐ FIX V7: Reset les champs adresse pour nouveau client
+    if 'new_ville' not in st.session_state:
+        st.session_state['new_adresse'] = ''
+        st.session_state['new_cp'] = ''
+        st.session_state['new_ville'] = ''
+        st.session_state['new_dept'] = ''
+        st.session_state['new_lat'] = None
+        st.session_state['new_lng'] = None
+        st.session_state['new_api_selected'] = False
+    
     if can_edit("CRM"):
         commerciaux = get_commerciaux()
         centrales_list = get_centrales_achat()
@@ -1245,11 +1289,13 @@ with tab2:
                     
                     st.success(f"✅ Client créé (ID: {new_id})")
                     st.balloons()
-                    # Nettoyer le session_state
-                    st.session_state.pop("new_data", None)
-                    for k in list(st.session_state.keys()):
-                        if k.startswith('new_'):
-                            st.session_state.pop(k, None)
+                    
+                    # ⭐ FIX V7: Reset complet du formulaire
+                    keys_to_clear = [k for k in st.session_state.keys() if k.startswith('new_') or k.startswith('new')]
+                    for k in keys_to_clear:
+                        st.session_state.pop(k, None)
+                    
+                    st.rerun()
                 else:
                     st.error(f"❌ Erreur : {result}")
     else:
