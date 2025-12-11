@@ -145,17 +145,6 @@ def star_selector(key, current_value=None, label="Potentiel"):
     
     return options[selected]
 
-# ⭐ FIX V6: Fonction pour nettoyer le session_state d'adresse d'un client
-def clear_address_session_state(prefix):
-    """Nettoie toutes les clés d'adresse du session_state pour un prefix donné"""
-    keys_to_clear = [
-        f"{prefix}_adresse", f"{prefix}_cp", f"{prefix}_ville",
-        f"{prefix}_dept", f"{prefix}_lat", f"{prefix}_lng",
-        f"{prefix}_search", f"{prefix}_select", f"{prefix}_applied"
-    ]
-    for key in keys_to_clear:
-        st.session_state.pop(key, None)
-
 # ==========================================
 # FONCTIONS DB - RÉFÉRENTIELS
 # ==========================================
@@ -515,7 +504,10 @@ def create_magasin(data):
         conn = get_connection()
         cursor = conn.cursor()
         
-        commercial_id = int(data['commercial_id']) if data.get('commercial_id') else None
+        # ⭐ FIX V7: Ne pas envoyer commercial_id pour l'instant (FK cassée)
+        # commercial_id = int(data['commercial_id']) if data.get('commercial_id') else None
+        commercial_id = None  # Temporaire jusqu'à correction FK
+        
         enseigne_id = int(data['enseigne_id']) if data.get('enseigne_id') else None
         type_client_id = int(data['type_client_id']) if data.get('type_client_id') else None
         
@@ -557,7 +549,10 @@ def update_magasin(magasin_id, data):
         cursor = conn.cursor()
         
         magasin_id = int(magasin_id)
-        commercial_id = int(data['commercial_id']) if data.get('commercial_id') else None
+        # ⭐ FIX V7: Ne pas envoyer commercial_id pour l'instant (FK cassée)
+        # commercial_id = int(data['commercial_id']) if data.get('commercial_id') else None
+        commercial_id = None  # Temporaire jusqu'à correction FK
+        
         enseigne_id = int(data['enseigne_id']) if data.get('enseigne_id') else None
         type_client_id = int(data['type_client_id']) if data.get('type_client_id') else None
         
@@ -624,61 +619,56 @@ def delete_magasin(magasin_id):
         return False, f"❌ Erreur : {str(e)}"
 
 # ==========================================
-# ⭐ COMPOSANT ADRESSE AUTOCOMPLETE V6 (FIX COMPLET)
+# ⭐ COMPOSANT ADRESSE AUTOCOMPLETE V7 (FIX REMPLISSAGE IMMÉDIAT)
 # ==========================================
 
-def adresse_autocomplete_v6(prefix_key, initial_values=None, client_id=None):
+def adresse_autocomplete_v7(prefix_key, initial_values=None, client_id=None):
     """
-    Composant de recherche d'adresse avec autocomplétion - VERSION V6
-    ⭐ FIX: Utilise client_id unique pour isoler complètement le session_state
-    ⭐ FIX: Mise à jour directe du session_state lors de la sélection API
+    Composant de recherche d'adresse avec autocomplétion - VERSION V7
+    ⭐ FIX MAJEUR: Remplissage immédiat des champs après sélection API
     """
     
     if initial_values is None:
         initial_values = {}
     
-    # ⭐ FIX V6: Prefix unique par client pour éviter les mélanges
-    unique_prefix = f"{prefix_key}_{client_id}" if client_id else prefix_key
+    # Prefix unique pour ce formulaire
+    p = f"{prefix_key}_{client_id}" if client_id else prefix_key
     
     st.markdown("#### 🗺️ Adresse")
     
-    # ⭐ FIX V6: Détecter changement de client et réinitialiser
-    current_client_key = f"{prefix_key}_current_client"
-    if client_id and st.session_state.get(current_client_key) != client_id:
-        # Client différent, nettoyer le session_state de l'ancien client
-        old_client = st.session_state.get(current_client_key)
-        if old_client:
-            old_prefix = f"{prefix_key}_{old_client}"
-            clear_address_session_state(old_prefix)
-        
-        st.session_state[current_client_key] = client_id
-        
-        # Initialiser avec les valeurs du nouveau client
-        st.session_state[f"{unique_prefix}_adresse"] = safe_str(initial_values.get('adresse', ''))
-        st.session_state[f"{unique_prefix}_cp"] = safe_str(initial_values.get('code_postal', ''))
-        st.session_state[f"{unique_prefix}_ville"] = safe_str(initial_values.get('ville', ''))
-        st.session_state[f"{unique_prefix}_dept"] = safe_str(initial_values.get('departement', ''))
-        
-        init_lat = initial_values.get('latitude')
-        init_lng = initial_values.get('longitude')
-        st.session_state[f"{unique_prefix}_lat"] = float(init_lat) if init_lat is not None else None
-        st.session_state[f"{unique_prefix}_lng"] = float(init_lng) if init_lng is not None else None
+    # ⭐ FIX V7: Clé pour détecter changement de client
+    client_key = f"{p}_client_id"
+    if client_id and st.session_state.get(client_key) != client_id:
+        # Nouveau client, réinitialiser toutes les valeurs
+        st.session_state[client_key] = client_id
+        st.session_state[f"{p}_data"] = {
+            'adresse': safe_str(initial_values.get('adresse', '')),
+            'code_postal': safe_str(initial_values.get('code_postal', '')),
+            'ville': safe_str(initial_values.get('ville', '')),
+            'departement': safe_str(initial_values.get('departement', '')),
+            'latitude': initial_values.get('latitude'),
+            'longitude': initial_values.get('longitude')
+        }
     
-    # Pour nouveau client (pas de client_id), initialiser seulement si vide
-    if not client_id:
-        if f"{unique_prefix}_adresse" not in st.session_state:
-            st.session_state[f"{unique_prefix}_adresse"] = safe_str(initial_values.get('adresse', ''))
-            st.session_state[f"{unique_prefix}_cp"] = safe_str(initial_values.get('code_postal', ''))
-            st.session_state[f"{unique_prefix}_ville"] = safe_str(initial_values.get('ville', ''))
-            st.session_state[f"{unique_prefix}_dept"] = safe_str(initial_values.get('departement', ''))
-            st.session_state[f"{unique_prefix}_lat"] = None
-            st.session_state[f"{unique_prefix}_lng"] = None
+    # Initialiser si pas de données
+    if f"{p}_data" not in st.session_state:
+        st.session_state[f"{p}_data"] = {
+            'adresse': safe_str(initial_values.get('adresse', '')),
+            'code_postal': safe_str(initial_values.get('code_postal', '')),
+            'ville': safe_str(initial_values.get('ville', '')),
+            'departement': safe_str(initial_values.get('departement', '')),
+            'latitude': initial_values.get('latitude'),
+            'longitude': initial_values.get('longitude')
+        }
+    
+    # Raccourci
+    addr_data = st.session_state[f"{p}_data"]
     
     # Recherche d'adresse
     search_query = st.text_input(
         "🔍 Rechercher une adresse",
         placeholder="Tapez une adresse (ex: 12 rue de la Paix Paris)...",
-        key=f"{unique_prefix}_search"
+        key=f"{p}_search"
     )
     
     if search_query and len(search_query) >= 3:
@@ -686,117 +676,80 @@ def adresse_autocomplete_v6(prefix_key, initial_values=None, client_id=None):
         
         if results:
             options = ["-- Sélectionner --"] + [r['label'] for r in results]
-            selected_label = st.selectbox("📍 Sélectionner", options, key=f"{unique_prefix}_select")
             
-            if selected_label and selected_label != "-- Sélectionner --":
-                selected = next((r for r in results if r['label'] == selected_label), None)
-                
-                applied_key = f"{unique_prefix}_applied"
-                if selected and st.session_state.get(applied_key) != selected_label:
-                    # ⭐ FIX V6: Mise à jour DIRECTE du session_state
-                    st.session_state[f"{unique_prefix}_adresse"] = selected.get('name', '')
-                    st.session_state[f"{unique_prefix}_cp"] = selected.get('postcode', '')
-                    st.session_state[f"{unique_prefix}_ville"] = selected.get('city', '')
-                    st.session_state[f"{unique_prefix}_dept"] = selected.get('departement', '')
-                    
-                    lat = selected.get('latitude')
-                    lng = selected.get('longitude')
-                    st.session_state[f"{unique_prefix}_lat"] = float(lat) if lat is not None else None
-                    st.session_state[f"{unique_prefix}_lng"] = float(lng) if lng is not None else None
-                    
-                    st.session_state[applied_key] = selected_label
-                    st.rerun()
-                
-                if selected:
-                    lat = selected.get('latitude')
-                    lng = selected.get('longitude')
-                    if lat and lng:
-                        st.success(f"✅ {selected_label} (GPS: {lat:.6f}, {lng:.6f})")
+            # ⭐ FIX V7: Callback pour mise à jour immédiate
+            def on_select_address():
+                selected = st.session_state.get(f"{p}_select")
+                if selected and selected != "-- Sélectionner --":
+                    for r in results:
+                        if r['label'] == selected:
+                            # Mise à jour directe des données
+                            st.session_state[f"{p}_data"] = {
+                                'adresse': r.get('name', ''),
+                                'code_postal': r.get('postcode', ''),
+                                'ville': r.get('city', ''),
+                                'departement': r.get('departement', ''),
+                                'latitude': r.get('latitude'),
+                                'longitude': r.get('longitude')
+                            }
+                            break
+            
+            st.selectbox(
+                "📍 Sélectionner une adresse", 
+                options, 
+                key=f"{p}_select",
+                on_change=on_select_address
+            )
+            
+            # Afficher confirmation si adresse sélectionnée
+            if addr_data.get('latitude') and addr_data.get('longitude'):
+                st.success(f"✅ GPS: {addr_data['latitude']:.6f}, {addr_data['longitude']:.6f}")
     
+    # ⭐ FIX V7: Champs avec valeurs depuis le dictionnaire centralisé
     col1, col2 = st.columns(2)
     
     with col1:
-        # ⭐ FIX V6: Champs liés au session_state avec synchronisation bidirectionnelle
-        adresse_val = st.text_input(
-            "Adresse", 
-            value=st.session_state.get(f"{unique_prefix}_adresse", ''),
-            key=f"{unique_prefix}_adresse_input"
-        )
-        # Synchroniser la saisie manuelle
-        if adresse_val != st.session_state.get(f"{unique_prefix}_adresse", ''):
-            st.session_state[f"{unique_prefix}_adresse"] = adresse_val
-        
-        cp_val = st.text_input(
-            "Code postal", 
-            value=st.session_state.get(f"{unique_prefix}_cp", ''),
-            key=f"{unique_prefix}_cp_input"
-        )
-        if cp_val != st.session_state.get(f"{unique_prefix}_cp", ''):
-            st.session_state[f"{unique_prefix}_cp"] = cp_val
-        
-        ville_val = st.text_input(
-            "Ville *", 
-            value=st.session_state.get(f"{unique_prefix}_ville", ''),
-            key=f"{unique_prefix}_ville_input"
-        )
-        if ville_val != st.session_state.get(f"{unique_prefix}_ville", ''):
-            st.session_state[f"{unique_prefix}_ville"] = ville_val
+        new_adresse = st.text_input("Adresse", value=addr_data.get('adresse', ''), key=f"{p}_adresse_input")
+        new_cp = st.text_input("Code postal", value=addr_data.get('code_postal', ''), key=f"{p}_cp_input")
+        new_ville = st.text_input("Ville *", value=addr_data.get('ville', ''), key=f"{p}_ville_input")
     
     with col2:
-        dept_val = st.text_input(
-            "Département", 
-            value=st.session_state.get(f"{unique_prefix}_dept", ''),
-            key=f"{unique_prefix}_dept_input"
-        )
-        if dept_val != st.session_state.get(f"{unique_prefix}_dept", ''):
-            st.session_state[f"{unique_prefix}_dept"] = dept_val
+        new_dept = st.text_input("Département", value=addr_data.get('departement', ''), key=f"{p}_dept_input")
         
-        current_lat = st.session_state.get(f"{unique_prefix}_lat")
-        current_lng = st.session_state.get(f"{unique_prefix}_lng")
+        lat_val = addr_data.get('latitude')
+        lng_val = addr_data.get('longitude')
         
-        lat_display = float(current_lat) if current_lat is not None else 0.0
-        lng_display = float(current_lng) if current_lng is not None else 0.0
-        
-        lat_val = st.number_input(
+        new_lat = st.number_input(
             "Latitude", 
-            value=lat_display,
+            value=float(lat_val) if lat_val else 0.0,
             format="%.6f",
-            key=f"{unique_prefix}_lat_input"
+            key=f"{p}_lat_input"
         )
-        if lat_val != 0.0:
-            st.session_state[f"{unique_prefix}_lat"] = lat_val
-        
-        lng_val = st.number_input(
+        new_lng = st.number_input(
             "Longitude", 
-            value=lng_display,
+            value=float(lng_val) if lng_val else 0.0,
             format="%.6f",
-            key=f"{unique_prefix}_lng_input"
+            key=f"{p}_lng_input"
         )
-        if lng_val != 0.0:
-            st.session_state[f"{unique_prefix}_lng"] = lng_val
     
-    # Retourner les valeurs depuis le session_state
-    final_lat = st.session_state.get(f"{unique_prefix}_lat")
-    final_lng = st.session_state.get(f"{unique_prefix}_lng")
-    
+    # ⭐ FIX V7: Retourner les valeurs des inputs (qui peuvent être modifiées manuellement)
     return {
-        'adresse': st.session_state.get(f"{unique_prefix}_adresse", ''),
-        'code_postal': st.session_state.get(f"{unique_prefix}_cp", ''),
-        'ville': st.session_state.get(f"{unique_prefix}_ville", ''),
-        'departement': st.session_state.get(f"{unique_prefix}_dept", ''),
-        'latitude': final_lat if final_lat and final_lat != 0.0 else None,
-        'longitude': final_lng if final_lng and final_lng != 0.0 else None
+        'adresse': new_adresse,
+        'code_postal': new_cp,
+        'ville': new_ville,
+        'departement': new_dept,
+        'latitude': new_lat if new_lat != 0.0 else addr_data.get('latitude'),
+        'longitude': new_lng if new_lng != 0.0 else addr_data.get('longitude')
     }
 
 # ==========================================
-# ⭐ COMPOSANT PRÉSENCE PRODUIT V6 (SANS CHECKBOX MDD)
+# ⭐ COMPOSANT PRÉSENCE PRODUIT V7 (SANS CHECKBOX MDD)
 # ==========================================
 
-def presence_produit_component_v6(prefix_key, magasin_id=None):
+def presence_produit_component_v7(prefix_key, magasin_id=None):
     """
-    Composant pour gérer la présence produit - VERSION V6
+    Composant pour gérer la présence produit - VERSION V7
     ⭐ FIX: Suppression de la checkbox "Présence marque hors MDD"
-    Sélection directe des marques sans checkbox intermédiaire
     """
     
     st.markdown("#### 📦 Présence Produits")
@@ -816,7 +769,6 @@ def presence_produit_component_v6(prefix_key, magasin_id=None):
     with col1:
         st.markdown("##### 🏷️ Marques présentes")
         
-        # ⭐ FIX V6: Sélection directe des marques (plus de checkbox MDD)
         marques_options = {m[0]: m[1] for m in marques}
         selected_marques = st.multiselect(
             "Sélectionner les marques présentes",
@@ -868,14 +820,13 @@ def presence_produit_component_v6(prefix_key, magasin_id=None):
                         st.success(f"✅ Type '{new_type_lib}' ajouté")
                         st.rerun()
     
-    # ⭐ FIX V6: Retour simplifié sans presence_marque_hors_mdd
     return {
         'marques_ids': selected_marques,
         'produits_ids': selected_produits
     }
 
 # ==========================================
-# ⭐ COMPOSANT DROPDOWN DYNAMIQUE
+# COMPOSANTS DROPDOWNS
 # ==========================================
 
 def dropdown_dynamique(label, options_list, current_value, key_prefix, allow_new=True):
@@ -896,10 +847,6 @@ def dropdown_dynamique(label, options_list, current_value, key_prefix, allow_new
         return new_val if new_val else ""
     
     return selected if selected else ""
-
-# ==========================================
-# ⭐ COMPOSANT ENSEIGNE DROPDOWN
-# ==========================================
 
 def enseigne_dropdown(current_value, key_prefix):
     """Dropdown enseigne avec possibilité d'ajout"""
@@ -944,7 +891,7 @@ def enseigne_dropdown(current_value, key_prefix):
 tab1, tab2, tab3, tab4 = st.tabs(["📋 Liste clients", "➕ Nouveau client", "🗺️ Carte", "⚙️ Administration"])
 
 # ==========================================
-# TAB 1 : LISTE CLIENTS (⭐ FIX CHECKBOX SÉLECTION)
+# TAB 1 : LISTE CLIENTS
 # ==========================================
 
 with tab1:
@@ -1007,7 +954,6 @@ with tab1:
         
         st.markdown("---")
         
-        # ⭐ FIX V6: Recherche rapide
         search_text = st.text_input("🔍 Recherche rapide", placeholder="Nom client, ville...", key="search_client")
         
         df_filtered = df.copy()
@@ -1016,14 +962,12 @@ with tab1:
                    df_filtered['ville'].str.contains(search_text, case=False, na=False)
             df_filtered = df_filtered[mask]
         
-        # Préparer le DataFrame pour affichage
         df_display = df_filtered[['id', 'nom_client', 'ville', 'departement', 'commercial', 'enseigne_libelle', 'type_client_libelle', 'statut', 'potentiel_etoiles']].copy()
         df_display.columns = ['ID', 'Nom Client', 'Ville', 'Dép', 'Commercial', 'Enseigne', 'Type', 'Statut', 'Potentiel']
         df_display['Potentiel'] = df_display['Potentiel'].apply(lambda x: render_stars(x) if pd.notna(x) else '-')
         
         st.markdown(f"**{len(df_filtered)} client(s)** - 👆 Cliquez sur une ligne pour sélectionner")
         
-        # ⭐ FIX V6: Tableau avec sélection par clic (restauré)
         event = st.dataframe(
             df_display,
             use_container_width=True,
@@ -1033,7 +977,6 @@ with tab1:
             key="clients_table"
         )
         
-        # Récupérer la sélection
         selected_rows = event.selection.rows if hasattr(event, 'selection') and event.selection else []
         
         if selected_rows:
@@ -1050,6 +993,9 @@ with tab1:
                 with col_actions[0]:
                     if st.button("✏️ Modifier", type="primary", use_container_width=True):
                         st.session_state['edit_mode'] = selected_id
+                        # Reset les données d'adresse pour ce client
+                        st.session_state.pop(f"edit_{selected_id}_data", None)
+                        st.session_state.pop(f"edit_{selected_id}_client_id", None)
                         st.rerun()
                 
                 with col_actions[1]:
@@ -1115,8 +1061,8 @@ with tab1:
                                                    key="edit_stat")
                     
                     with col_edit2:
-                        # ⭐ FIX V6: Passer le client_id pour isoler les adresses
-                        adresse_data_edit = adresse_autocomplete_v6("edit", {
+                        # ⭐ FIX V7: Utiliser la nouvelle fonction avec client_id
+                        adresse_data_edit = adresse_autocomplete_v7("edit", {
                             'adresse': mag.get('adresse'),
                             'code_postal': mag.get('code_postal'),
                             'ville': mag.get('ville'),
@@ -1126,8 +1072,7 @@ with tab1:
                         }, client_id=selected_id)
                     
                     st.markdown("---")
-                    # ⭐ FIX V6: Utiliser le composant sans checkbox MDD
-                    presence_data = presence_produit_component_v6("edit", selected_id)
+                    presence_data = presence_produit_component_v7("edit", selected_id)
                     
                     edit_notes = st.text_area("Notes", value=safe_str(mag.get('notes')), key="edit_notes", height=80)
                     
@@ -1168,9 +1113,6 @@ with tab1:
                                     
                                     st.success(msg)
                                     st.session_state.pop('edit_mode', None)
-                                    # Nettoyer le session_state de l'adresse
-                                    clear_address_session_state(f"edit_{selected_id}")
-                                    st.session_state.pop('edit_current_client', None)
                                     st.rerun()
                                 else:
                                     st.error(msg)
@@ -1178,9 +1120,6 @@ with tab1:
                     with col_cancel:
                         if st.button("❌ Annuler", use_container_width=True, key="btn_cancel_edit"):
                             st.session_state.pop('edit_mode', None)
-                            # Nettoyer le session_state de l'adresse
-                            clear_address_session_state(f"edit_{selected_id}")
-                            st.session_state.pop('edit_current_client', None)
                             st.rerun()
                 
                 else:
@@ -1263,12 +1202,11 @@ with tab2:
             new_statut = st.selectbox("Statut", ['PROSPECT', 'ACTIF', 'INACTIF', 'EN_PAUSE', 'PERDU'], key="new_stat")
         
         with col2:
-            # ⭐ FIX V6: Pas de client_id pour nouveau client
-            adresse_data = adresse_autocomplete_v6("new", {})
+            # ⭐ FIX V7: Composant adresse
+            adresse_data = adresse_autocomplete_v7("new", {})
         
         st.markdown("---")
-        # ⭐ FIX V6: Sans checkbox MDD
-        presence_data = presence_produit_component_v6("new")
+        presence_data = presence_produit_component_v7("new")
         
         new_notes = st.text_area("Notes", key="new_notes", height=80)
         
@@ -1308,7 +1246,7 @@ with tab2:
                     st.success(f"✅ Client créé (ID: {new_id})")
                     st.balloons()
                     # Nettoyer le session_state
-                    clear_address_session_state("new")
+                    st.session_state.pop("new_data", None)
                     for k in list(st.session_state.keys()):
                         if k.startswith('new_'):
                             st.session_state.pop(k, None)
@@ -1339,7 +1277,6 @@ with tab3:
         
         st.markdown("---")
         
-        # Bouton Géocoder tous les clients sans GPS
         if can_edit("CRM"):
             df_sans_gps = df_all[df_all['latitude'].isna() | df_all['longitude'].isna()].copy()
             
