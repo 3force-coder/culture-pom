@@ -1489,7 +1489,8 @@ with tab3:
                     """
                     
                     # Infos pour le popup (clic)
-                    potentiel_stars = '⭐' * int(row.get('potentiel_etoiles') or 0)
+                    pot_val = row.get('potentiel_etoiles')
+                    potentiel_stars = '⭐' * int(pot_val) if pd.notna(pot_val) and pot_val else ''
                     popup_html = f"""
                     <div style="width:200px">
                         <h4>{row['nom_client']}</h4>
