@@ -207,7 +207,7 @@ def get_types_magasin():
         conn.close()
         return [r['type_magasin'] for r in rows]
     except:
-        return ['HYPER', 'SUPER', 'PROXIMITY', 'EXPRESS', 'CONTACT']
+        return ['HYPER', 'SUPER', 'PROXIMITY', 'EXPRESS', 'CONTACT', 'Grossiste']
 
 def get_centrales_achat():
     """Récupère les centrales d'achat existantes"""
@@ -234,6 +234,10 @@ def get_types_reseau():
         return [r['type_reseau'] for r in rows]
     except:
         return []
+
+def get_statuts():
+    """Retourne la liste des statuts possibles"""
+    return ['PROSPECT', 'ACTIF', 'INACTIF', 'EN_PAUSE', 'PERDU']
 
 # ==========================================
 # FONCTIONS DB - PRÉSENCE PRODUIT
@@ -299,7 +303,7 @@ def get_magasin_produits(magasin_id):
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        return [r['id'] for r in rows]
+        return [(r['id'], r['code'], r['libelle']) for r in rows]
     except:
         return []
 
@@ -504,13 +508,8 @@ def create_magasin(data):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ⭐ FIX V7: Valider commercial_id existe dans users_app avant insertion
+        # ⭐ V9: Commercial temporairement NULL jusqu'à correction FK
         commercial_id = None
-        if data.get('commercial_id'):
-            cursor.execute("SELECT id FROM users_app WHERE id = %s", (int(data['commercial_id']),))
-            if cursor.fetchone():
-                commercial_id = int(data['commercial_id'])
-            # Si pas trouvé, on laisse NULL
         
         enseigne_id = int(data['enseigne_id']) if data.get('enseigne_id') else None
         type_client_id = int(data['type_client_id']) if data.get('type_client_id') else None
@@ -553,14 +552,8 @@ def update_magasin(magasin_id, data):
         cursor = conn.cursor()
         
         magasin_id = int(magasin_id)
-        
-        # ⭐ FIX V7: Valider commercial_id existe dans users_app avant update
+        # ⭐ V9: Commercial temporairement NULL jusqu'à correction FK
         commercial_id = None
-        if data.get('commercial_id'):
-            cursor.execute("SELECT id FROM users_app WHERE id = %s", (int(data['commercial_id']),))
-            if cursor.fetchone():
-                commercial_id = int(data['commercial_id'])
-            # Si pas trouvé, on laisse NULL
         
         enseigne_id = int(data['enseigne_id']) if data.get('enseigne_id') else None
         type_client_id = int(data['type_client_id']) if data.get('type_client_id') else None
@@ -628,162 +621,126 @@ def delete_magasin(magasin_id):
         return False, f"❌ Erreur : {str(e)}"
 
 # ==========================================
-# ⭐ COMPOSANT ADRESSE AUTOCOMPLETE V7 (FIX REMPLISSAGE IMMÉDIAT)
+# ⭐⭐⭐ COMPOSANT ADRESSE V9 - FIX DÉFINITIF ⭐⭐⭐
 # ==========================================
 
-def adresse_autocomplete_v7(prefix_key, initial_values=None, client_id=None):
+def adresse_autocomplete_v9(prefix_key, initial_values=None, client_id=None):
     """
-    Composant de recherche d'adresse avec autocomplétion - VERSION V7
-    ⭐ FIX MAJEUR: Remplissage immédiat des champs après sélection API avec st.rerun()
+    Composant de recherche d'adresse avec autocomplétion - VERSION V9
+    ⭐ FIX DÉFINITIF: Utilisation d'un SEUL dictionnaire dans session_state
+    et mise à jour DIRECTE des clés des widgets
     """
     
     if initial_values is None:
         initial_values = {}
     
-    # Prefix unique pour ce formulaire
+    # Clé unique basée sur prefix et client_id
     p = f"{prefix_key}_{client_id}" if client_id else prefix_key
     
     st.markdown("#### 🗺️ Adresse")
     
     # ⭐ Clé pour détecter changement de client
-    client_key = f"{p}_client_id"
-    if client_id and st.session_state.get(client_key) != client_id:
-        # Nouveau client, réinitialiser toutes les valeurs
-        st.session_state[client_key] = client_id
-        st.session_state[f"{p}_adresse"] = safe_str(initial_values.get('adresse', ''))
-        st.session_state[f"{p}_cp"] = safe_str(initial_values.get('code_postal', ''))
-        st.session_state[f"{p}_ville"] = safe_str(initial_values.get('ville', ''))
-        st.session_state[f"{p}_dept"] = safe_str(initial_values.get('departement', ''))
-        st.session_state[f"{p}_lat"] = initial_values.get('latitude')
-        st.session_state[f"{p}_lng"] = initial_values.get('longitude')
-        st.session_state[f"{p}_api_selected"] = False
+    client_key = f"{p}_current_client"
     
-    # Initialiser si pas de données
-    if f"{p}_ville" not in st.session_state:
-        st.session_state[f"{p}_adresse"] = safe_str(initial_values.get('adresse', ''))
-        st.session_state[f"{p}_cp"] = safe_str(initial_values.get('code_postal', ''))
-        st.session_state[f"{p}_ville"] = safe_str(initial_values.get('ville', ''))
-        st.session_state[f"{p}_dept"] = safe_str(initial_values.get('departement', ''))
-        st.session_state[f"{p}_lat"] = initial_values.get('latitude')
-        st.session_state[f"{p}_lng"] = initial_values.get('longitude')
-        st.session_state[f"{p}_api_selected"] = False
+    # Réinitialiser si nouveau client
+    if client_id and st.session_state.get(client_key) != client_id:
+        st.session_state[client_key] = client_id
+        # Nettoyer TOUTES les anciennes clés
+        keys_to_clean = [k for k in st.session_state.keys() if k.startswith(p)]
+        for k in keys_to_clean:
+            if k != client_key:
+                del st.session_state[k]
+    
+    # ⭐ Définir les clés des widgets (celles que Streamlit utilise)
+    key_adresse = f"{p}_adresse_widget"
+    key_cp = f"{p}_cp_widget"
+    key_ville = f"{p}_ville_widget"
+    key_dept = f"{p}_dept_widget"
+    key_lat = f"{p}_lat_widget"
+    key_lng = f"{p}_lng_widget"
+    key_search = f"{p}_search_widget"
+    key_select = f"{p}_select_widget"
+    
+    # ⭐ Initialiser les widgets avec valeurs initiales (seulement si pas déjà défini)
+    if key_ville not in st.session_state:
+        st.session_state[key_adresse] = safe_str(initial_values.get('adresse', ''))
+        st.session_state[key_cp] = safe_str(initial_values.get('code_postal', ''))
+        st.session_state[key_ville] = safe_str(initial_values.get('ville', ''))
+        st.session_state[key_dept] = safe_str(initial_values.get('departement', ''))
+        st.session_state[key_lat] = float(initial_values.get('latitude')) if initial_values.get('latitude') else 0.0
+        st.session_state[key_lng] = float(initial_values.get('longitude')) if initial_values.get('longitude') else 0.0
     
     # Recherche d'adresse
     search_query = st.text_input(
         "🔍 Rechercher une adresse",
         placeholder="Tapez une adresse (ex: 12 rue de la Paix Paris)...",
-        key=f"{p}_search"
+        key=key_search
     )
     
-    # ⭐ Stocker les résultats dans session_state pour le callback
     if search_query and len(search_query) >= 3:
         results = search_adresse(search_query)
-        st.session_state[f"{p}_results"] = results
         
         if results:
-            options = ["-- Sélectionner --"] + [r['label'] for r in results]
+            options = ["-- Sélectionner une adresse --"] + [r['label'] for r in results]
             
-            selected = st.selectbox(
-                "📍 Sélectionner une adresse", 
-                options, 
-                key=f"{p}_select"
+            # ⭐ Utiliser on_change pour détecter la sélection
+            def on_address_selected():
+                selected = st.session_state.get(key_select)
+                if selected and selected != "-- Sélectionner une adresse --":
+                    # Trouver l'adresse sélectionnée
+                    for r in results:
+                        if r['label'] == selected:
+                            # ⭐⭐⭐ MISE À JOUR DIRECTE DES CLÉS DES WIDGETS ⭐⭐⭐
+                            st.session_state[key_adresse] = r.get('name', '')
+                            st.session_state[key_cp] = r.get('postcode', '')
+                            st.session_state[key_ville] = r.get('city', '')
+                            st.session_state[key_dept] = r.get('departement', '')
+                            st.session_state[key_lat] = float(r.get('latitude')) if r.get('latitude') else 0.0
+                            st.session_state[key_lng] = float(r.get('longitude')) if r.get('longitude') else 0.0
+                            break
+            
+            st.selectbox(
+                "📍 Sélectionner une adresse",
+                options,
+                key=key_select,
+                on_change=on_address_selected
             )
             
-            # ⭐ FIX V7: Mise à jour immédiate + rerun quand une adresse est sélectionnée
-            if selected and selected != "-- Sélectionner --" and not st.session_state.get(f"{p}_api_selected"):
-                for r in results:
-                    if r['label'] == selected:
-                        # Mise à jour directe du session_state
-                        st.session_state[f"{p}_adresse"] = r.get('name', '')
-                        st.session_state[f"{p}_cp"] = r.get('postcode', '')
-                        st.session_state[f"{p}_ville"] = r.get('city', '')
-                        st.session_state[f"{p}_dept"] = r.get('departement', '')
-                        st.session_state[f"{p}_lat"] = r.get('latitude')
-                        st.session_state[f"{p}_lng"] = r.get('longitude')
-                        st.session_state[f"{p}_api_selected"] = True
-                        # ⭐ RERUN pour rafraîchir les champs immédiatement
-                        st.rerun()
-            
-            # Reset le flag si on change la sélection
-            if selected == "-- Sélectionner --":
-                st.session_state[f"{p}_api_selected"] = False
+            # Confirmation visuelle si GPS disponible après sélection
+            if st.session_state.get(key_lat, 0) != 0 and st.session_state.get(key_lng, 0) != 0:
+                st.success(f"✅ Adresse sélectionnée - GPS: {st.session_state[key_lat]:.6f}, {st.session_state[key_lng]:.6f}")
     
-    # ⭐ Afficher confirmation GPS si disponible
-    if st.session_state.get(f"{p}_lat") and st.session_state.get(f"{p}_lng"):
-        st.success(f"✅ GPS: {st.session_state[f'{p}_lat']:.6f}, {st.session_state[f'{p}_lng']:.6f}")
-    
-    # ⭐ Champs avec valeurs depuis session_state (pas de value=, uniquement key=)
+    # ⭐ Champs - Streamlit va automatiquement utiliser les valeurs dans session_state[key]
     col1, col2 = st.columns(2)
     
     with col1:
-        # Utiliser des champs avec valeur par défaut depuis session_state
-        new_adresse = st.text_input(
-            "Adresse", 
-            value=st.session_state.get(f"{p}_adresse", ''),
-            key=f"{p}_adresse_input"
-        )
-        new_cp = st.text_input(
-            "Code postal", 
-            value=st.session_state.get(f"{p}_cp", ''),
-            key=f"{p}_cp_input"
-        )
-        new_ville = st.text_input(
-            "Ville *", 
-            value=st.session_state.get(f"{p}_ville", ''),
-            key=f"{p}_ville_input"
-        )
+        st.text_input("Adresse", key=key_adresse)
+        st.text_input("Code postal", key=key_cp)
+        st.text_input("Ville *", key=key_ville)
     
     with col2:
-        new_dept = st.text_input(
-            "Département", 
-            value=st.session_state.get(f"{p}_dept", ''),
-            key=f"{p}_dept_input"
-        )
-        
-        lat_val = st.session_state.get(f"{p}_lat")
-        lng_val = st.session_state.get(f"{p}_lng")
-        
-        new_lat = st.number_input(
-            "Latitude", 
-            value=float(lat_val) if lat_val else 0.0,
-            format="%.6f",
-            key=f"{p}_lat_input"
-        )
-        new_lng = st.number_input(
-            "Longitude", 
-            value=float(lng_val) if lng_val else 0.0,
-            format="%.6f",
-            key=f"{p}_lng_input"
-        )
+        st.text_input("Département", key=key_dept)
+        st.number_input("Latitude", format="%.6f", key=key_lat)
+        st.number_input("Longitude", format="%.6f", key=key_lng)
     
-    # ⭐ Mettre à jour session_state depuis les inputs manuels
-    st.session_state[f"{p}_adresse"] = new_adresse
-    st.session_state[f"{p}_cp"] = new_cp
-    st.session_state[f"{p}_ville"] = new_ville
-    st.session_state[f"{p}_dept"] = new_dept
-    if new_lat != 0.0:
-        st.session_state[f"{p}_lat"] = new_lat
-    if new_lng != 0.0:
-        st.session_state[f"{p}_lng"] = new_lng
-    
-    # Retourner les valeurs
+    # ⭐ Retourner les valeurs depuis session_state
     return {
-        'adresse': new_adresse,
-        'code_postal': new_cp,
-        'ville': new_ville,
-        'departement': new_dept,
-        'latitude': st.session_state.get(f"{p}_lat"),
-        'longitude': st.session_state.get(f"{p}_lng")
+        'adresse': st.session_state.get(key_adresse, ''),
+        'code_postal': st.session_state.get(key_cp, ''),
+        'ville': st.session_state.get(key_ville, ''),
+        'departement': st.session_state.get(key_dept, ''),
+        'latitude': st.session_state.get(key_lat) if st.session_state.get(key_lat, 0) != 0 else None,
+        'longitude': st.session_state.get(key_lng) if st.session_state.get(key_lng, 0) != 0 else None
     }
 
 # ==========================================
-# ⭐ COMPOSANT PRÉSENCE PRODUIT V7 (SANS CHECKBOX MDD)
+# ⭐ COMPOSANT PRÉSENCE PRODUIT V9
 # ==========================================
 
-def presence_produit_component_v7(prefix_key, magasin_id=None):
+def presence_produit_component_v9(prefix_key, magasin_id=None):
     """
-    Composant pour gérer la présence produit - VERSION V7
-    ⭐ FIX: Suppression de la checkbox "Présence marque hors MDD"
+    Composant pour gérer la présence produit - VERSION V9
+    ⭐ Marques et produits séparés
     """
     
     st.markdown("#### 📦 Présence Produits")
@@ -796,7 +753,7 @@ def presence_produit_component_v7(prefix_key, magasin_id=None):
     
     if magasin_id:
         current_marques = [m[0] for m in get_magasin_marques(magasin_id)]
-        current_produits = get_magasin_produits(magasin_id)
+        current_produits = [p[0] for p in get_magasin_produits(magasin_id)]
     
     col1, col2 = st.columns(2)
     
@@ -947,7 +904,7 @@ with tab1:
         filtre_comm = st.selectbox("Commercial", comm_options, format_func=lambda x: x[1], key="f_comm")
     
     with col_f3:
-        statuts = ["Tous", "PROSPECT", "ACTIF", "INACTIF", "EN_PAUSE", "PERDU"]
+        statuts = ["Tous"] + get_statuts()
         filtre_statut = st.selectbox("Statut", statuts, key="f_statut")
     
     with col_f4:
@@ -1028,8 +985,10 @@ with tab1:
                     if st.button("✏️ Modifier", type="primary", use_container_width=True):
                         st.session_state['edit_mode'] = selected_id
                         # Reset les données d'adresse pour ce client
-                        st.session_state.pop(f"edit_{selected_id}_data", None)
-                        st.session_state.pop(f"edit_{selected_id}_client_id", None)
+                        p = f"edit_{selected_id}"
+                        keys_to_clean = [k for k in st.session_state.keys() if k.startswith(p)]
+                        for k in keys_to_clean:
+                            del st.session_state[k]
                         st.rerun()
                 
                 with col_actions[1]:
@@ -1090,13 +1049,13 @@ with tab1:
                         edit_surface = st.number_input("Surface m²", min_value=0, value=safe_int(mag.get('surface_m2')), key="edit_surf")
                         edit_potentiel = star_selector("edit_pot_stars", mag.get('potentiel_etoiles'), "Potentiel")
                         edit_vente_directe = st.checkbox("Vente directe", value=mag.get('vente_directe', False), key="edit_vente_directe")
-                        edit_statut = st.selectbox("Statut", ['PROSPECT', 'ACTIF', 'INACTIF', 'EN_PAUSE', 'PERDU'], 
-                                                   index=['PROSPECT', 'ACTIF', 'INACTIF', 'EN_PAUSE', 'PERDU'].index(mag.get('statut', 'PROSPECT')) if mag.get('statut') in ['PROSPECT', 'ACTIF', 'INACTIF', 'EN_PAUSE', 'PERDU'] else 0,
+                        edit_statut = st.selectbox("Statut", get_statuts(), 
+                                                   index=get_statuts().index(mag.get('statut', 'PROSPECT')) if mag.get('statut') in get_statuts() else 0,
                                                    key="edit_stat")
                     
                     with col_edit2:
-                        # ⭐ FIX V7: Utiliser la nouvelle fonction avec client_id
-                        adresse_data_edit = adresse_autocomplete_v7("edit", {
+                        # ⭐ V9: Composant adresse avec client_id
+                        adresse_data_edit = adresse_autocomplete_v9("edit", {
                             'adresse': mag.get('adresse'),
                             'code_postal': mag.get('code_postal'),
                             'ville': mag.get('ville'),
@@ -1106,7 +1065,7 @@ with tab1:
                         }, client_id=selected_id)
                     
                     st.markdown("---")
-                    presence_data = presence_produit_component_v7("edit", selected_id)
+                    presence_data = presence_produit_component_v9("edit", selected_id)
                     
                     edit_notes = st.text_area("Notes", value=safe_str(mag.get('notes')), key="edit_notes", height=80)
                     
@@ -1157,17 +1116,18 @@ with tab1:
                             st.rerun()
                 
                 else:
+                    # ⭐ V9: Affichage récap avec marques ET produits
                     col1, col2 = st.columns(2)
                     
                     with col1:
                         st.markdown("#### 📋 Informations")
-                        st.write(f"**Adresse** : {mag.get('adresse', '-')}")
-                        st.write(f"**Ville** : {mag['ville']} ({mag.get('departement', '-')})")
+                        st.write(f"**Adresse** : {mag.get('adresse') or '-'}")
+                        st.write(f"**Ville** : {mag['ville']} ({mag.get('departement') or '-'})")
                         st.write(f"**Commercial** : {mag.get('commercial', 'Non assigné')}")
-                        st.write(f"**Enseigne** : {mag.get('enseigne_libelle', '-')}")
-                        st.write(f"**Type client** : {mag.get('type_client_libelle', '-')}")
-                        st.write(f"**Centrale/MIN** : {mag.get('centrale_achat', '-')}")
-                        st.write(f"**Type magasin** : {mag.get('type_magasin', '-')}")
+                        st.write(f"**Enseigne** : {mag.get('enseigne_libelle') or '-'}")
+                        st.write(f"**Type client** : {mag.get('type_client_libelle') or '-'}")
+                        st.write(f"**Centrale/MIN** : {mag.get('centrale_achat') or '-'}")
+                        st.write(f"**Type magasin** : {mag.get('type_magasin') or '-'}")
                         st.write(f"**Potentiel** : {render_stars(mag.get('potentiel_etoiles'))}")
                         st.write(f"**Vente directe** : {'Oui' if mag.get('vente_directe') else 'Non'}")
                         
@@ -1175,24 +1135,35 @@ with tab1:
                             st.write(f"**GPS** : {mag['latitude']:.6f}, {mag['longitude']:.6f}")
                         else:
                             st.write("**GPS** : Non renseigné")
-                        
-                        st.markdown("---")
-                        st.markdown("#### 📦 Présence Produits")
-                        
-                        marques_mag = get_magasin_marques(selected_id)
-                        if marques_mag:
-                            st.write("**Marques** : " + ", ".join([m[1] for m in marques_mag]))
-                        else:
-                            st.info("Aucune marque renseignée")
                     
                     with col2:
                         st.markdown("#### 📊 Statistiques")
-                        st.write(f"**Surface** : {mag.get('surface_m2', '-')} m²")
-                        st.write(f"**Statut** : {mag.get('statut', '-')}")
+                        st.write(f"**Surface** : {mag.get('surface_m2') or '-'} m²")
+                        st.write(f"**Statut** : {mag.get('statut') or '-'}")
                         
                         if mag.get('notes'):
                             st.markdown("#### 📝 Notes")
                             st.write(mag['notes'])
+                    
+                    # ⭐ V9: Section Présence Produits avec marques ET types de produits
+                    st.markdown("---")
+                    st.markdown("#### 📦 Présence Produits")
+                    
+                    col_p1, col_p2 = st.columns(2)
+                    
+                    with col_p1:
+                        marques_mag = get_magasin_marques(selected_id)
+                        if marques_mag:
+                            st.write("**🏷️ Marques** : " + ", ".join([m[1] for m in marques_mag]))
+                        else:
+                            st.info("Aucune marque renseignée")
+                    
+                    with col_p2:
+                        produits_mag = get_magasin_produits(selected_id)
+                        if produits_mag:
+                            st.write("**📋 Types produits** : " + ", ".join([p[2] for p in produits_mag]))
+                        else:
+                            st.info("Aucun type de produit renseigné")
         else:
             st.info("👆 Cliquez sur une ligne du tableau pour sélectionner un client")
     else:
@@ -1204,16 +1175,6 @@ with tab1:
 
 with tab2:
     st.subheader("➕ Nouveau client")
-    
-    # ⭐ FIX V7: Reset les champs adresse pour nouveau client
-    if 'new_ville' not in st.session_state:
-        st.session_state['new_adresse'] = ''
-        st.session_state['new_cp'] = ''
-        st.session_state['new_ville'] = ''
-        st.session_state['new_dept'] = ''
-        st.session_state['new_lat'] = None
-        st.session_state['new_lng'] = None
-        st.session_state['new_api_selected'] = False
     
     if can_edit("CRM"):
         commerciaux = get_commerciaux()
@@ -1243,14 +1204,14 @@ with tab2:
             new_surface = st.number_input("Surface m²", min_value=0, value=0, key="new_surf")
             new_potentiel = star_selector("new_pot_stars", None, "Potentiel")
             new_vente_directe = st.checkbox("Vente directe", value=False, key="new_vente_directe")
-            new_statut = st.selectbox("Statut", ['PROSPECT', 'ACTIF', 'INACTIF', 'EN_PAUSE', 'PERDU'], key="new_stat")
+            new_statut = st.selectbox("Statut", get_statuts(), key="new_stat")
         
         with col2:
-            # ⭐ FIX V7: Composant adresse
-            adresse_data = adresse_autocomplete_v7("new", {})
+            # ⭐ V9: Composant adresse pour nouveau client
+            adresse_data = adresse_autocomplete_v9("new", {})
         
         st.markdown("---")
-        presence_data = presence_produit_component_v7("new")
+        presence_data = presence_produit_component_v9("new")
         
         new_notes = st.text_area("Notes", key="new_notes", height=80)
         
@@ -1289,13 +1250,10 @@ with tab2:
                     
                     st.success(f"✅ Client créé (ID: {new_id})")
                     st.balloons()
-                    
-                    # ⭐ FIX V7: Reset complet du formulaire
-                    keys_to_clear = [k for k in st.session_state.keys() if k.startswith('new_') or k.startswith('new')]
-                    for k in keys_to_clear:
-                        st.session_state.pop(k, None)
-                    
-                    st.rerun()
+                    # Nettoyer le session_state
+                    for k in list(st.session_state.keys()):
+                        if k.startswith('new_'):
+                            st.session_state.pop(k, None)
                 else:
                     st.error(f"❌ Erreur : {result}")
     else:
@@ -1382,7 +1340,7 @@ with tab3:
         st.info("📭 Aucun client enregistré")
 
 # ==========================================
-# TAB 4 : ADMINISTRATION
+# TAB 4 : ADMINISTRATION - V9 COMPLET
 # ==========================================
 
 with tab4:
@@ -1390,13 +1348,21 @@ with tab4:
     
     if can_admin("CRM") or is_super_admin():
         
-        admin_tab1, admin_tab2, admin_tab3, admin_tab4 = st.tabs([
-            "🏷️ Enseignes", "📦 Types produits", "🏪 Types magasin", "🏷️ Marques"
+        # ⭐ V9: 8 onglets au lieu de 4
+        admin_tabs = st.tabs([
+            "🏷️ Enseignes", 
+            "📦 Types produits", 
+            "🏪 Types magasin",
+            "🏢 Centrales/MIN",
+            "🔗 Types réseau",
+            "📊 Statuts",
+            "🏷️ Marques",
+            "👥 Types client"
         ])
         
-        with admin_tab1:
+        # === ENSEIGNES ===
+        with admin_tabs[0]:
             st.markdown("### Gestion des enseignes")
-            st.info("Les enseignes peuvent être ajoutées par les utilisateurs. Ici vous pouvez les gérer.")
             
             enseignes = get_enseignes()
             
@@ -1426,7 +1392,8 @@ with tab4:
                         st.success("✅ Enseigne ajoutée")
                         st.rerun()
         
-        with admin_tab2:
+        # === TYPES PRODUITS ===
+        with admin_tabs[1]:
             st.markdown("### Gestion des types de produits CRM")
             
             types_produits = get_types_produits_crm()
@@ -1466,19 +1433,114 @@ with tab4:
                         st.success("✅ Type produit ajouté")
                         st.rerun()
         
-        with admin_tab3:
+        # === TYPES MAGASIN (V9: MODIFIABLE) ===
+        with admin_tabs[2]:
             st.markdown("### Gestion des types de magasin")
-            st.info("Types existants dans les données (ajoutés par les utilisateurs)")
             
             types_magasin = get_types_magasin()
             
             if types_magasin:
                 for tm in types_magasin:
-                    st.write(f"• {tm}")
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        st.write(f"• {tm}")
+                    with col2:
+                        if st.button("🗑️", key=f"del_tm_{tm}", help="Supprimer (met à NULL)"):
+                            try:
+                                conn = get_connection()
+                                cursor = conn.cursor()
+                                cursor.execute("UPDATE crm_magasins SET type_magasin = NULL WHERE type_magasin = %s", (tm,))
+                                conn.commit()
+                                cursor.close()
+                                conn.close()
+                                st.success(f"✅ Type '{tm}' supprimé")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erreur: {e}")
             else:
                 st.info("Aucun type de magasin défini")
+            
+            st.markdown("---")
+            st.info("💡 Les types de magasin sont ajoutés lors de la création/modification de clients. Vous pouvez supprimer un type (les clients concernés auront un type vide).")
+            
+            new_type_mag = st.text_input("Nouveau type de magasin", key="admin_new_type_mag")
+            if st.button("➕ Ajouter", key="admin_btn_add_type_mag"):
+                if new_type_mag:
+                    st.info(f"💡 Le type '{new_type_mag}' sera disponible lors de la prochaine création/modification de client.")
         
-        with admin_tab4:
+        # === CENTRALES / MIN (V9: NOUVEAU) ===
+        with admin_tabs[3]:
+            st.markdown("### Gestion des Centrales d'achat / MIN")
+            
+            centrales = get_centrales_achat()
+            
+            if centrales:
+                for ca in centrales:
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        st.write(f"• {ca}")
+                    with col2:
+                        if st.button("🗑️", key=f"del_ca_{ca}", help="Supprimer (met à NULL)"):
+                            try:
+                                conn = get_connection()
+                                cursor = conn.cursor()
+                                cursor.execute("UPDATE crm_magasins SET centrale_achat = NULL WHERE centrale_achat = %s", (ca,))
+                                conn.commit()
+                                cursor.close()
+                                conn.close()
+                                st.success(f"✅ Centrale '{ca}' supprimée")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erreur: {e}")
+            else:
+                st.info("Aucune centrale d'achat définie")
+            
+            st.markdown("---")
+            st.info("💡 Les centrales sont ajoutées lors de la création/modification de clients via '➕ Nouvelle valeur...'")
+        
+        # === TYPES RÉSEAU (V9: NOUVEAU) ===
+        with admin_tabs[4]:
+            st.markdown("### Gestion des types de réseau")
+            
+            types_reseau = get_types_reseau()
+            
+            if types_reseau:
+                for tr in types_reseau:
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        st.write(f"• {tr}")
+                    with col2:
+                        if st.button("🗑️", key=f"del_tr_{tr}", help="Supprimer (met à NULL)"):
+                            try:
+                                conn = get_connection()
+                                cursor = conn.cursor()
+                                cursor.execute("UPDATE crm_magasins SET type_reseau = NULL WHERE type_reseau = %s", (tr,))
+                                conn.commit()
+                                cursor.close()
+                                conn.close()
+                                st.success(f"✅ Type réseau '{tr}' supprimé")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erreur: {e}")
+            else:
+                st.info("Aucun type de réseau défini")
+            
+            st.markdown("---")
+            st.info("💡 Les types de réseau sont ajoutés lors de la création/modification de clients via '➕ Nouvelle valeur...'")
+        
+        # === STATUTS (V9: NOUVEAU) ===
+        with admin_tabs[5]:
+            st.markdown("### Gestion des statuts")
+            
+            statuts = get_statuts()
+            
+            st.info("ℹ️ Les statuts sont prédéfinis dans le système et ne peuvent pas être modifiés.")
+            
+            for s in statuts:
+                st.write(f"• {s}")
+        
+        # === MARQUES ===
+        with admin_tabs[6]:
             st.markdown("### Gestion des marques concurrentes")
             
             marques = get_marques_concurrentes()
@@ -1508,6 +1570,58 @@ with tab4:
                     if create_marque_concurrente(new_marque):
                         st.success("✅ Marque ajoutée")
                         st.rerun()
+        
+        # === TYPES CLIENT (V9: NOUVEAU) ===
+        with admin_tabs[7]:
+            st.markdown("### Gestion des types de client")
+            
+            types_client = get_types_client()
+            
+            st.info("ℹ️ Les types de client sont gérés dans la table ref_types_client.")
+            
+            if types_client:
+                for tcid, tclib in types_client:
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        st.write(f"• {tclib}")
+                    with col2:
+                        if st.button("🗑️", key=f"del_tc_{tcid}", help="Désactiver"):
+                            try:
+                                conn = get_connection()
+                                cursor = conn.cursor()
+                                cursor.execute("UPDATE ref_types_client SET is_active = FALSE WHERE id = %s", (tcid,))
+                                conn.commit()
+                                cursor.close()
+                                conn.close()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erreur: {e}")
+            
+            st.markdown("---")
+            col1, col2 = st.columns(2)
+            with col1:
+                new_tc_code = st.text_input("Code", key="admin_new_tc_code")
+            with col2:
+                new_tc_lib = st.text_input("Libellé", key="admin_new_tc_lib")
+            
+            if st.button("➕ Ajouter", key="admin_btn_add_tc"):
+                if new_tc_code and new_tc_lib:
+                    try:
+                        conn = get_connection()
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT COALESCE(MAX(ordre), 0) + 1 as next_ordre FROM ref_types_client")
+                        next_ordre = cursor.fetchone()['next_ordre']
+                        cursor.execute("""
+                            INSERT INTO ref_types_client (code, libelle, ordre) VALUES (%s, %s, %s)
+                            ON CONFLICT (code) DO UPDATE SET is_active = TRUE, libelle = EXCLUDED.libelle
+                        """, (new_tc_code.upper(), new_tc_lib, next_ordre))
+                        conn.commit()
+                        cursor.close()
+                        conn.close()
+                        st.success("✅ Type client ajouté")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erreur: {e}")
     
     else:
         st.warning("⚠️ Accès réservé aux administrateurs")
