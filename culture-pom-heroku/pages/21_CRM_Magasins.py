@@ -5,6 +5,8 @@ from datetime import datetime
 from database import get_connection
 from components import show_footer
 from auth import require_access, can_edit, can_admin, is_super_admin
+import folium
+from streamlit_folium import st_folium
 
 st.set_page_config(page_title="CRM Clients - Culture Pom", page_icon="🏪", layout="wide")
 
@@ -372,6 +374,32 @@ def create_marque_concurrente(nom):
         return new_id
     except:
         return None
+
+def get_magasins_produits_map():
+    """Récupère la relation magasins-produits pour la carte"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT magasin_id, type_produit_id 
+            FROM crm_magasin_produits 
+            WHERE is_active = TRUE
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        # Créer un dict magasin_id -> liste de produit_ids
+        result = {}
+        for row in rows:
+            mid = row['magasin_id']
+            pid = row['type_produit_id']
+            if mid not in result:
+                result[mid] = []
+            result[mid].append(pid)
+        return result
+    except:
+        return {}
 
 def create_type_produit_crm(code, libelle, categorie='AUTRE'):
     """Crée un nouveau type de produit"""
@@ -1145,25 +1173,51 @@ with tab1:
                             st.markdown("#### 📝 Notes")
                             st.write(mag['notes'])
                     
-                    # ⭐ V9: Section Présence Produits avec marques ET types de produits
+                    # ⭐ V9.1: Section Présence Produits avec checkboxes pour upsell
                     st.markdown("---")
                     st.markdown("#### 📦 Présence Produits")
                     
                     col_p1, col_p2 = st.columns(2)
                     
                     with col_p1:
+                        st.markdown("##### 🏷️ Marques présentes")
                         marques_mag = get_magasin_marques(selected_id)
                         if marques_mag:
-                            st.write("**🏷️ Marques** : " + ", ".join([m[1] for m in marques_mag]))
+                            for m in marques_mag:
+                                st.write(f"✅ {m[1]}")
                         else:
                             st.info("Aucune marque renseignée")
                     
                     with col_p2:
+                        st.markdown("##### 📋 Types produits")
+                        # Récupérer TOUS les types de produits
+                        all_types_produits = get_types_produits_crm()
+                        # Récupérer ceux du magasin
                         produits_mag = get_magasin_produits(selected_id)
-                        if produits_mag:
-                            st.write("**📋 Types produits** : " + ", ".join([p[2] for p in produits_mag]))
+                        produits_mag_ids = [p[0] for p in produits_mag]
+                        
+                        if all_types_produits:
+                            # Grouper par catégorie
+                            categories = {}
+                            for tp in all_types_produits:
+                                cat = tp[3] if tp[3] else 'AUTRE'
+                                if cat not in categories:
+                                    categories[cat] = []
+                                categories[cat].append(tp)
+                            
+                            for cat, prods in categories.items():
+                                st.markdown(f"**{cat}**")
+                                for prod in prods:
+                                    is_selected = prod[0] in produits_mag_ids
+                                    # Checkbox désactivée (lecture seule)
+                                    st.checkbox(
+                                        prod[2],
+                                        value=is_selected,
+                                        disabled=True,
+                                        key=f"recap_prod_{selected_id}_{prod[0]}"
+                                    )
                         else:
-                            st.info("Aucun type de produit renseigné")
+                            st.info("Aucun type de produit défini")
         else:
             st.info("👆 Cliquez sur une ligne du tableau pour sélectionner un client")
     else:
@@ -1329,11 +1383,152 @@ with tab3:
         if not df_geo.empty:
             st.markdown("### 📍 Carte des clients géolocalisés")
             
-            map_df = pd.DataFrame({
-                'lat': df_geo['latitude'].astype(float),
-                'lon': df_geo['longitude'].astype(float)
-            })
-            st.map(map_df, zoom=5)
+            # ⭐ V9.2: FILTRES AVANCÉS
+            st.markdown("#### 🔍 Filtres")
+            
+            col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+            
+            with col_f1:
+                # Filtre enseignes
+                enseignes_list = get_enseignes()
+                enseigne_options = ['Toutes'] + [e[1] for e in enseignes_list]
+                filtre_enseignes = st.multiselect("Enseignes", enseigne_options, default=['Toutes'], key="map_enseigne")
+            
+            with col_f2:
+                # Filtre commerciaux
+                commerciaux_list = get_commerciaux()
+                commercial_options = ['Tous'] + [c[1] for c in commerciaux_list]
+                filtre_commerciaux = st.multiselect("Commerciaux", commercial_options, default=['Tous'], key="map_commercial")
+            
+            with col_f3:
+                # Filtre statuts
+                statut_options = ['Tous'] + get_statuts()
+                filtre_statuts = st.multiselect("Statuts", statut_options, default=['Tous'], key="map_statut")
+            
+            with col_f4:
+                # Filtre types client
+                types_client = get_types_client()
+                type_client_options = ['Tous'] + [t[1] for t in types_client]
+                filtre_types_client = st.multiselect("Types client", type_client_options, default=['Tous'], key="map_type_client")
+            
+            # Filtre produits (ligne séparée pour plus de place)
+            types_produits = get_types_produits_crm()
+            produit_options = [(tp[0], tp[2]) for tp in types_produits]  # (id, libelle)
+            filtre_produits = st.multiselect(
+                "📦 Filtrer par produits présents", 
+                options=[p[0] for p in produit_options],
+                format_func=lambda x: next((p[1] for p in produit_options if p[0] == x), str(x)),
+                key="map_produits"
+            )
+            
+            st.markdown("---")
+            
+            # Appliquer les filtres
+            df_filtered = df_geo.copy()
+            
+            # Filtre enseignes
+            if 'Toutes' not in filtre_enseignes and filtre_enseignes:
+                df_filtered = df_filtered[df_filtered['enseigne_libelle'].isin(filtre_enseignes)]
+            
+            # Filtre commerciaux
+            if 'Tous' not in filtre_commerciaux and filtre_commerciaux:
+                df_filtered = df_filtered[df_filtered['commercial'].isin(filtre_commerciaux)]
+            
+            # Filtre statuts
+            if 'Tous' not in filtre_statuts and filtre_statuts:
+                df_filtered = df_filtered[df_filtered['statut'].isin(filtre_statuts)]
+            
+            # Filtre types client
+            if 'Tous' not in filtre_types_client and filtre_types_client:
+                df_filtered = df_filtered[df_filtered['type_client_libelle'].isin(filtre_types_client)]
+            
+            # Filtre produits (magasins ayant AU MOINS UN des produits sélectionnés)
+            if filtre_produits:
+                magasins_produits = get_magasins_produits_map()
+                magasins_avec_produits = [
+                    mid for mid, pids in magasins_produits.items() 
+                    if any(p in pids for p in filtre_produits)
+                ]
+                df_filtered = df_filtered[df_filtered['id'].isin(magasins_avec_produits)]
+            
+            st.info(f"📊 **{len(df_filtered)}** clients affichés sur **{len(df_geo)}** géolocalisés")
+            
+            if not df_filtered.empty:
+                # ⭐ V9.2: CARTE FOLIUM INTERACTIVE
+                # Centre de la carte
+                center_lat = df_filtered['latitude'].astype(float).mean()
+                center_lon = df_filtered['longitude'].astype(float).mean()
+                
+                # Créer la carte
+                m = folium.Map(
+                    location=[center_lat, center_lon], 
+                    zoom_start=6,
+                    tiles='OpenStreetMap'
+                )
+                
+                # Couleurs par statut
+                statut_colors = {
+                    'PROSPECT': 'blue',
+                    'CLIENT_ACTIF': 'green',
+                    'CLIENT_INACTIF': 'orange',
+                    'PERDU': 'red',
+                    'EN_NEGOCIATION': 'purple'
+                }
+                
+                # Ajouter les marqueurs
+                for _, row in df_filtered.iterrows():
+                    lat = float(row['latitude'])
+                    lon = float(row['longitude'])
+                    
+                    # Infos pour le tooltip (survol)
+                    tooltip_text = f"""
+                    <b>{row['nom_client']}</b><br>
+                    🏷️ {row.get('enseigne_libelle') or 'Sans enseigne'}<br>
+                    👤 {row.get('commercial') or 'Non assigné'}<br>
+                    📍 {row.get('ville')}
+                    """
+                    
+                    # Infos pour le popup (clic)
+                    popup_html = f"""
+                    <div style="width:200px">
+                        <h4>{row['nom_client']}</h4>
+                        <p><b>Enseigne:</b> {row.get('enseigne_libelle') or '-'}</p>
+                        <p><b>Commercial:</b> {row.get('commercial') or 'Non assigné'}</p>
+                        <p><b>Ville:</b> {row.get('ville')}</p>
+                        <p><b>Statut:</b> {row.get('statut') or '-'}</p>
+                        <p><b>Potentiel:</b> {'⭐' * (row.get('potentiel_etoiles') or 0)}</p>
+                        <p><b>Type:</b> {row.get('type_client_libelle') or '-'}</p>
+                    </div>
+                    """
+                    
+                    # Couleur du marqueur
+                    color = statut_colors.get(row.get('statut'), 'gray')
+                    
+                    folium.Marker(
+                        location=[lat, lon],
+                        popup=folium.Popup(popup_html, max_width=250),
+                        tooltip=tooltip_text,
+                        icon=folium.Icon(color=color, icon='info-sign')
+                    ).add_to(m)
+                
+                # Légende
+                legend_html = """
+                <div style="position: fixed; bottom: 50px; left: 50px; z-index: 1000; 
+                            background: white; padding: 10px; border-radius: 5px; border: 2px solid grey;">
+                    <b>Légende</b><br>
+                    🔵 Prospect<br>
+                    🟢 Client Actif<br>
+                    🟠 Client Inactif<br>
+                    🔴 Perdu<br>
+                    🟣 En négociation
+                </div>
+                """
+                m.get_root().html.add_child(folium.Element(legend_html))
+                
+                # Afficher la carte
+                st_folium(m, width=None, height=600, use_container_width=True)
+            else:
+                st.warning("⚠️ Aucun client ne correspond aux filtres sélectionnés")
         else:
             st.info("📭 Aucun client géolocalisé à afficher")
     else:
