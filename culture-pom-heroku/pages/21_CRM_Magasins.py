@@ -508,8 +508,8 @@ def create_magasin(data):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ⭐ V9: Commercial temporairement NULL jusqu'à correction FK
-        commercial_id = None
+        # ⭐ V9.1: FK commercial_id corrigée - réactivé
+        commercial_id = int(data['commercial_id']) if data.get('commercial_id') else None
         
         enseigne_id = int(data['enseigne_id']) if data.get('enseigne_id') else None
         type_client_id = int(data['type_client_id']) if data.get('type_client_id') else None
@@ -552,8 +552,8 @@ def update_magasin(magasin_id, data):
         cursor = conn.cursor()
         
         magasin_id = int(magasin_id)
-        # ⭐ V9: Commercial temporairement NULL jusqu'à correction FK
-        commercial_id = None
+        # ⭐ V9.1: FK commercial_id corrigée - réactivé
+        commercial_id = int(data['commercial_id']) if data.get('commercial_id') else None
         
         enseigne_id = int(data['enseigne_id']) if data.get('enseigne_id') else None
         type_client_id = int(data['type_client_id']) if data.get('type_client_id') else None
