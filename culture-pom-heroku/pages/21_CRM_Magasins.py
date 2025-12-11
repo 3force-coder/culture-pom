@@ -1489,6 +1489,7 @@ with tab3:
                     """
                     
                     # Infos pour le popup (clic)
+                    potentiel_stars = '⭐' * int(row.get('potentiel_etoiles') or 0)
                     popup_html = f"""
                     <div style="width:200px">
                         <h4>{row['nom_client']}</h4>
@@ -1496,7 +1497,7 @@ with tab3:
                         <p><b>Commercial:</b> {row.get('commercial') or 'Non assigné'}</p>
                         <p><b>Ville:</b> {row.get('ville')}</p>
                         <p><b>Statut:</b> {row.get('statut') or '-'}</p>
-                        <p><b>Potentiel:</b> {'⭐' * (row.get('potentiel_etoiles') or 0)}</p>
+                        <p><b>Potentiel:</b> {potentiel_stars or '-'}</p>
                         <p><b>Type:</b> {row.get('type_client_libelle') or '-'}</p>
                     </div>
                     """
