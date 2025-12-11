@@ -72,15 +72,19 @@ def get_magasins_dropdown():
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, enseigne || ' - ' || ville || ' (' || COALESCE(departement, '??') || ')' as label
-            FROM crm_magasins WHERE is_active = TRUE
-            ORDER BY enseigne, ville
+            SELECT m.id, 
+                   COALESCE(e.libelle, m.nom_client) || ' - ' || m.ville || ' (' || COALESCE(m.departement, '??') || ')' as label
+            FROM crm_magasins m
+            LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
+            WHERE m.is_active = TRUE
+            ORDER BY COALESCE(e.libelle, m.nom_client), m.ville
         """)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
         return [(r['id'], r['label']) for r in rows]
-    except:
+    except Exception as e:
+        st.error(f"Erreur magasins: {e}")
         return []
 
 def get_marques_for_magasin(magasin_id):
@@ -88,10 +92,11 @@ def get_marques_for_magasin(magasin_id):
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        # Table renommée : crm_magasin_marques (sans 's' à magasin)
         cursor.execute("""
             SELECT DISTINCT m.id, m.nom
             FROM ref_marques_concurrentes m
-            LEFT JOIN crm_magasins_marques mm ON m.id = mm.marque_id AND mm.is_active = TRUE
+            LEFT JOIN crm_magasin_marques mm ON m.id = mm.marque_id AND mm.is_active = TRUE
             WHERE m.is_active = TRUE
             AND (mm.magasin_id = %s OR m.nom IN ('La Championne', 'MDD'))
             ORDER BY 
@@ -104,7 +109,8 @@ def get_marques_for_magasin(magasin_id):
         cursor.close()
         conn.close()
         return [(r['id'], r['nom']) for r in rows]
-    except:
+    except Exception as e:
+        st.error(f"Erreur marques: {e}")
         return []
 
 def get_types_conditionnement():
@@ -282,14 +288,16 @@ def get_historique_releves(limit=50):
         cursor.execute("""
             SELECT 
                 rp.id, rp.date_releve, 
-                m.enseigne, m.ville, m.departement,
+                COALESCE(e.libelle, m.nom_client) as enseigne, 
+                m.ville, m.departement,
                 COUNT(rpl.id) as nb_lignes,
                 rp.created_by, rp.created_at
             FROM crm_releves_prix rp
             JOIN crm_magasins m ON rp.magasin_id = m.id
+            LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
             LEFT JOIN crm_releves_prix_lignes rpl ON rp.id = rpl.releve_id
             WHERE rp.is_active = TRUE
-            GROUP BY rp.id, rp.date_releve, m.enseigne, m.ville, m.departement, rp.created_by, rp.created_at
+            GROUP BY rp.id, rp.date_releve, e.libelle, m.nom_client, m.ville, m.departement, rp.created_by, rp.created_at
             ORDER BY rp.date_releve DESC, rp.created_at DESC
             LIMIT %s
         """, (limit,))
@@ -297,7 +305,8 @@ def get_historique_releves(limit=50):
         cursor.close()
         conn.close()
         return pd.DataFrame(rows) if rows else pd.DataFrame()
-    except:
+    except Exception as e:
+        st.error(f"Erreur historique: {e}")
         return pd.DataFrame()
 
 # ==========================================
