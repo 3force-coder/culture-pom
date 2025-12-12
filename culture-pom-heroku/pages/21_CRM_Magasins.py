@@ -385,7 +385,7 @@ def get_magasins_produits_map():
         cursor = conn.cursor()
         cursor.execute("""
             SELECT magasin_id, type_produit_id 
-            FROM crm_magasin_produits 
+            FROM crm_magasins_produits 
             WHERE is_active = TRUE
         """)
         rows = cursor.fetchall()
@@ -1451,7 +1451,7 @@ with tab3:
                 magasins_produits = get_magasins_produits_map()
                 # Debug: afficher le nombre d'associations trouvées
                 if not magasins_produits:
-                    st.warning("⚠️ Aucune association magasin-produit trouvée dans crm_magasin_produits")
+                    st.warning("⚠️ Aucune association magasin-produit trouvée dans crm_magasins_produits")
                 magasins_avec_produits = [
                     mid for mid, pids in magasins_produits.items() 
                     if any(p in pids for p in filtre_produits)
