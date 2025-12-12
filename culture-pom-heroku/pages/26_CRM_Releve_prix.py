@@ -88,22 +88,19 @@ def get_magasins_dropdown():
         return []
 
 def get_marques_for_magasin(magasin_id):
-    """Marques du magasin + La Championne + MDD"""
+    """Marques associées au magasin (configurées dans page Magasins)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        # Correction: crm_magasins_marques (avec 's' à magasins)
+        # Table: crm_magasins_marques (avec 's')
         cursor.execute("""
-            SELECT DISTINCT m.id, m.nom
+            SELECT m.id, m.nom
             FROM ref_marques_concurrentes m
-            LEFT JOIN crm_magasins_marques mm ON m.id = mm.marque_id AND mm.is_active = TRUE
-            WHERE m.is_active = TRUE
-            AND (mm.magasin_id = %s OR m.nom IN ('La Championne', 'MDD'))
-            ORDER BY 
-                CASE WHEN m.nom = 'La Championne' THEN 0
-                     WHEN m.nom = 'MDD' THEN 1
-                     ELSE 2 END,
-                m.nom
+            JOIN crm_magasins_marques mm ON m.id = mm.marque_id
+            WHERE mm.magasin_id = %s 
+              AND mm.is_active = TRUE 
+              AND m.is_active = TRUE
+            ORDER BY m.nom
         """, (int(magasin_id),))
         rows = cursor.fetchall()
         cursor.close()
