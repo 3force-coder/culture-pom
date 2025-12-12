@@ -34,26 +34,37 @@ def get_magasins_dropdown():
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        # CORRECTION: Supprimé is_active (peut ne pas exister)
-        cursor.execute("SELECT id, enseigne || ' - ' || ville as nom FROM crm_magasins ORDER BY enseigne, ville")
+        cursor.execute("""
+            SELECT m.id, COALESCE(e.libelle, m.nom_client) || ' - ' || m.ville as nom 
+            FROM crm_magasins m
+            LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
+            WHERE m.is_active = TRUE
+            ORDER BY e.libelle, m.ville
+        """)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
         return [(r['id'], r['nom']) for r in rows]
-    except:
+    except Exception as e:
+        st.error(f"❌ Erreur get_magasins_dropdown: {str(e)}")
         return []
 
 def get_commerciaux():
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        # CORRECTION: Supprimé is_active (peut ne pas exister)
-        cursor.execute("SELECT id, prenom || ' ' || nom as nom FROM crm_commerciaux ORDER BY nom")
+        cursor.execute("""
+            SELECT id, prenom || ' ' || nom as nom 
+            FROM users_app 
+            WHERE is_active = TRUE AND role IN ('COMMERCIAL', 'ADMIN', 'SUPER_ADMIN')
+            ORDER BY nom
+        """)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
         return [(r['id'], r['nom']) for r in rows]
-    except:
+    except Exception as e:
+        st.error(f"❌ Erreur get_commerciaux: {str(e)}")
         return []
 
 def get_types_visite():
@@ -101,17 +112,17 @@ def get_visites(filtres=None):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # CORRECTION: Supprimé v.is_active = TRUE
         query = """
             SELECT 
                 v.id, v.date_visite, v.statut,
-                m.id as magasin_id, m.enseigne, m.ville,
-                c.id as commercial_id, c.prenom || ' ' || c.nom as commercial,
+                m.id as magasin_id, COALESCE(e.libelle, m.nom_client) as enseigne, m.ville,
+                u.id as commercial_id, COALESCE(u.prenom || ' ' || u.nom, 'Non assigné') as commercial,
                 tv.id as type_visite_id, tv.libelle as type_visite,
                 v.compte_rendu, v.note_satisfaction, v.prochaine_visite_date, v.actions_suivre
             FROM crm_visites v
             JOIN crm_magasins m ON v.magasin_id = m.id
-            LEFT JOIN crm_commerciaux c ON v.commercial_id = c.id
+            LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
+            LEFT JOIN users_app u ON v.commercial_id = u.id
             LEFT JOIN crm_types_visite tv ON v.type_visite_id = tv.id
             WHERE 1=1
         """
@@ -153,20 +164,20 @@ def get_planning_semaine():
         conn = get_connection()
         cursor = conn.cursor()
         
-        # CORRECTION: Supprimé v.is_active = TRUE
         cursor.execute("""
             SELECT 
                 v.id, v.date_visite,
-                m.enseigne, m.ville,
-                c.prenom || ' ' || c.nom as commercial,
+                COALESCE(e.libelle, m.nom_client) as enseigne, m.ville,
+                COALESCE(u.prenom || ' ' || u.nom, 'Non assigné') as commercial,
                 tv.libelle as type_visite,
                 v.statut
             FROM crm_visites v
             JOIN crm_magasins m ON v.magasin_id = m.id
-            LEFT JOIN crm_commerciaux c ON v.commercial_id = c.id
+            LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
+            LEFT JOIN users_app u ON v.commercial_id = u.id
             LEFT JOIN crm_types_visite tv ON v.type_visite_id = tv.id
             WHERE v.date_visite BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
-            ORDER BY v.date_visite, c.nom
+            ORDER BY v.date_visite, u.nom
         """)
         
         rows = cursor.fetchall()
