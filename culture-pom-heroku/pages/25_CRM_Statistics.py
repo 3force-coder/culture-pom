@@ -4,9 +4,6 @@ from datetime import datetime, timedelta
 from database import get_connection
 from components import show_footer
 from auth import is_authenticated, require_access
-import plotly.express as px
-import plotly.graph_objects as go
-import requests
 import io
 
 st.set_page_config(page_title="CRM Statistiques - Culture Pom", page_icon="📈", layout="wide")
@@ -17,41 +14,13 @@ if not is_authenticated():
 
 require_access("CRM")
 
-# ✅ CSS CORRIGÉ - Cartes KPI uniformes avec hauteur fixe
 st.markdown("""
 <style>
     .block-container { padding-top: 1.5rem !important; padding-bottom: 0.5rem !important; }
     h1, h2, h3, h4 { margin-top: 0.3rem !important; margin-bottom: 0.3rem !important; }
-    
-    /* Cartes KPI uniformes */
-    .kpi-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        padding: 1rem 0.8rem;
-        border-radius: 10px;
-        text-align: center;
-        margin: 0.3rem;
-        min-height: 100px;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-    }
-    .kpi-card h2 {
-        color: white !important;
-        margin: 0 !important;
-        font-size: 1.8rem;
-        line-height: 1.2;
-    }
-    .kpi-card p {
-        color: rgba(255,255,255,0.9) !important;
-        margin: 0.3rem 0 0 0 !important;
-        font-size: 0.85rem;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        max-width: 100%;
-    }
+    .kpi-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 1.2rem; border-radius: 10px; text-align: center; margin: 0.3rem; }
+    .kpi-card h2 { color: white !important; margin: 0 !important; font-size: 2rem; }
+    .kpi-card p { color: rgba(255,255,255,0.9) !important; margin: 0.3rem 0 0 0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -61,20 +30,6 @@ st.markdown("---")
 # ==========================================
 # FONCTIONS
 # ==========================================
-
-@st.cache_data(ttl=3600)
-def get_france_geojson():
-    """Charge le GeoJSON des départements français (avec cache)"""
-    try:
-        # GeoJSON officiel des départements français
-        url = "https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/departements.geojson"
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            return response.json()
-        return None
-    except Exception as e:
-        st.warning(f"⚠️ Impossible de charger la carte : {e}")
-        return None
 
 def get_stats_globales():
     try:
@@ -86,7 +41,7 @@ def get_stats_globales():
         cursor.execute("SELECT COUNT(*) as nb FROM crm_magasins WHERE is_active = TRUE")
         stats['total_magasins'] = cursor.fetchone()['nb']
         
-        cursor.execute("SELECT COUNT(*) as nb FROM crm_magasins WHERE is_active = TRUE AND statut = 'ACTIF'")
+        cursor.execute("SELECT COUNT(*) as nb FROM crm_magasins WHERE statut = 'CLIENT_ACTIF' AND is_active = TRUE")
         stats['magasins_actifs'] = cursor.fetchone()['nb']
         
         cursor.execute("""
@@ -98,7 +53,7 @@ def get_stats_globales():
         
         cursor.execute("""
             SELECT COUNT(*) as nb FROM crm_magasins 
-            WHERE is_active = TRUE AND statut = 'ACTIF'
+            WHERE statut = 'CLIENT_ACTIF' AND is_active = TRUE
             AND date_derniere_visite >= CURRENT_DATE - INTERVAL '30 days'
         """)
         couverts = cursor.fetchone()['nb']
@@ -116,25 +71,27 @@ def get_stats_globales():
         return None
 
 def get_stats_par_commercial():
+    """Stats par commercial - utilise users_app"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
         cursor.execute("""
             SELECT 
-                c.id,
-                c.prenom || ' ' || c.nom as commercial,
+                u.id,
+                u.prenom || ' ' || u.nom as commercial,
                 COUNT(DISTINCT m.id) as nb_magasins,
-                COUNT(DISTINCT CASE WHEN m.statut = 'ACTIF' THEN m.id END) as nb_actifs,
+                COUNT(DISTINCT CASE WHEN m.statut = 'CLIENT_ACTIF' THEN m.id END) as nb_actifs,
                 COUNT(DISTINCT v.id) FILTER (WHERE v.statut = 'EFFECTUEE' AND v.date_visite >= DATE_TRUNC('month', CURRENT_DATE)) as visites_mois,
                 COUNT(DISTINCT v.id) FILTER (WHERE v.statut = 'EFFECTUEE' AND v.date_visite >= CURRENT_DATE - INTERVAL '30 days') as visites_30j,
                 COUNT(DISTINCT a.id) FILTER (WHERE a.statut = 'TERMINEE') as animations
-            FROM crm_commerciaux c
-            LEFT JOIN crm_magasins m ON c.id = m.commercial_id AND m.is_active = TRUE
-            LEFT JOIN crm_visites v ON c.id = v.commercial_id
-            LEFT JOIN crm_animations a ON c.id = a.commercial_id
-            WHERE c.is_active = TRUE
-            GROUP BY c.id, c.prenom, c.nom
+            FROM users_app u
+            LEFT JOIN crm_magasins m ON u.id = m.commercial_id AND m.is_active = TRUE
+            LEFT JOIN crm_visites v ON u.id = v.commercial_id
+            LEFT JOIN crm_animations a ON u.id = a.commercial_id
+            WHERE u.is_active = TRUE
+            GROUP BY u.id, u.prenom, u.nom
+            HAVING COUNT(DISTINCT m.id) > 0 OR COUNT(DISTINCT v.id) > 0 OR COUNT(DISTINCT a.id) > 0
             ORDER BY visites_mois DESC
         """)
         
@@ -143,8 +100,9 @@ def get_stats_par_commercial():
         conn.close()
         
         if rows:
+            # Créer DataFrame depuis liste de dicts
             df = pd.DataFrame(rows)
-            df.columns = ['id', 'Commercial', 'Clients', 'Actifs', 'Visites Mois', 'Visites 30j', 'Animations']
+            df.columns = ['id', 'Commercial', 'Magasins', 'Actifs', 'Visites Mois', 'Visites 30j', 'Animations']
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -152,20 +110,22 @@ def get_stats_par_commercial():
         return pd.DataFrame()
 
 def get_stats_par_enseigne():
+    """⭐ V2: Stats par enseigne avec JOIN ref_enseignes"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
         cursor.execute("""
             SELECT 
-                m.enseigne,
+                COALESCE(e.libelle, 'Sans enseigne') as enseigne,
                 COUNT(DISTINCT m.id) as nb_magasins,
-                COUNT(DISTINCT CASE WHEN m.statut = 'ACTIF' THEN m.id END) as nb_actifs,
+                COUNT(DISTINCT CASE WHEN m.statut = 'CLIENT_ACTIF' THEN m.id END) as nb_actifs,
                 COUNT(DISTINCT v.id) FILTER (WHERE v.statut = 'EFFECTUEE') as nb_visites
             FROM crm_magasins m
+            LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
             LEFT JOIN crm_visites v ON m.id = v.magasin_id
             WHERE m.is_active = TRUE
-            GROUP BY m.enseigne
+            GROUP BY e.libelle
             ORDER BY nb_magasins DESC
             LIMIT 15
         """)
@@ -176,7 +136,7 @@ def get_stats_par_enseigne():
         
         if rows:
             df = pd.DataFrame(rows)
-            df.columns = ['Enseigne', 'Clients', 'Actifs', 'Visites']
+            df.columns = ['Enseigne', 'Magasins', 'Actifs', 'Visites']
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -184,7 +144,6 @@ def get_stats_par_enseigne():
         return pd.DataFrame()
 
 def get_stats_par_departement():
-    """Récupère les stats par département avec le code pour la carte"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -193,11 +152,11 @@ def get_stats_par_departement():
             SELECT 
                 m.departement,
                 COUNT(DISTINCT m.id) as nb_magasins,
-                COUNT(DISTINCT CASE WHEN m.statut = 'ACTIF' THEN m.id END) as nb_actifs,
+                COUNT(DISTINCT CASE WHEN m.statut = 'CLIENT_ACTIF' THEN m.id END) as nb_actifs,
                 COUNT(DISTINCT v.id) FILTER (WHERE v.statut = 'EFFECTUEE' AND v.date_visite >= CURRENT_DATE - INTERVAL '30 days') as visites_30j
             FROM crm_magasins m
             LEFT JOIN crm_visites v ON m.id = v.magasin_id
-            WHERE m.is_active = TRUE AND m.departement IS NOT NULL AND m.departement != ''
+            WHERE m.departement IS NOT NULL AND m.is_active = TRUE
             GROUP BY m.departement
             ORDER BY nb_magasins DESC
         """)
@@ -208,9 +167,7 @@ def get_stats_par_departement():
         
         if rows:
             df = pd.DataFrame(rows)
-            df.columns = ['Département', 'Clients', 'Actifs', 'Visites 30j']
-            # Normaliser les codes département (ajouter 0 devant si nécessaire)
-            df['code'] = df['Département'].apply(lambda x: str(x).zfill(2) if x else '')
+            df.columns = ['Département', 'Magasins', 'Actifs', 'Visites 30j']
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -273,18 +230,20 @@ def get_repartition_statuts():
         return pd.DataFrame()
 
 def get_top_magasins():
+    """⭐ V2: Top magasins avec JOIN ref_enseignes"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
         cursor.execute("""
             SELECT 
-                m.enseigne || ' - ' || m.ville as magasin,
+                COALESCE(e.libelle, m.nom_client) || ' - ' || m.ville as magasin,
                 COUNT(v.id) as nb_visites
             FROM crm_magasins m
+            LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
             LEFT JOIN crm_visites v ON m.id = v.magasin_id AND v.statut = 'EFFECTUEE'
             WHERE m.is_active = TRUE
-            GROUP BY m.id, m.enseigne, m.ville
+            GROUP BY m.id, e.libelle, m.nom_client, m.ville
             HAVING COUNT(v.id) > 0
             ORDER BY nb_visites DESC
             LIMIT 10
@@ -296,69 +255,12 @@ def get_top_magasins():
         
         if rows:
             df = pd.DataFrame(rows)
-            df.columns = ['Client', 'Visites']
+            df.columns = ['Magasin', 'Visites']
             return df
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Erreur top magasins: {e}")
         return pd.DataFrame()
-
-def create_france_map(df_dept, geojson, metric='Clients'):
-    """Crée une carte choroplèthe de France par département"""
-    
-    if geojson is None or df_dept.empty:
-        return None
-    
-    # Créer la carte
-    fig = px.choropleth(
-        df_dept,
-        geojson=geojson,
-        locations='code',
-        featureidkey="properties.code",
-        color=metric,
-        color_continuous_scale="YlOrRd",  # Jaune -> Orange -> Rouge
-        hover_name='Département',
-        hover_data={
-            'code': False,
-            'Clients': True,
-            'Actifs': True,
-            'Visites 30j': True
-        },
-        labels={
-            'Clients': 'Clients',
-            'Actifs': 'Actifs',
-            'Visites 30j': 'Visites 30j'
-        }
-    )
-    
-    # Centrer sur la France
-    fig.update_geos(
-        fitbounds="locations",
-        visible=False,
-        bgcolor='rgba(0,0,0,0)'
-    )
-    
-    # Style
-    fig.update_layout(
-        title=dict(
-            text=f"🗺️ Répartition des clients par département ({metric})",
-            font=dict(size=16)
-        ),
-        margin={"r": 0, "t": 40, "l": 0, "b": 0},
-        height=500,
-        coloraxis_colorbar=dict(
-            title=metric,
-            tickfont=dict(size=10)
-        ),
-        paper_bgcolor='rgba(0,0,0,0)',
-        geo=dict(
-            showframe=False,
-            showcoastlines=False,
-            projection_type='mercator'
-        )
-    )
-    
-    return fig
 
 # ==========================================
 # KPIs GLOBAUX
@@ -373,7 +275,7 @@ if stats:
         st.markdown(f"""
         <div class="kpi-card">
             <h2>{stats['total_magasins']}</h2>
-            <p>🏪 Total Clients</p>
+            <p>🏪 Total Magasins</p>
         </div>
         """, unsafe_allow_html=True)
     
@@ -381,7 +283,7 @@ if stats:
         st.markdown(f"""
         <div class="kpi-card">
             <h2>{stats['magasins_actifs']}</h2>
-            <p>✅ Clients Actifs</p>
+            <p>✅ Magasins Actifs</p>
         </div>
         """, unsafe_allow_html=True)
     
@@ -397,7 +299,7 @@ if stats:
         st.markdown(f"""
         <div class="kpi-card">
             <h2>{stats['taux_couverture']}%</h2>
-            <p>📊 Couverture 30j</p>
+            <p>📊 Taux Couverture</p>
         </div>
         """, unsafe_allow_html=True)
     
@@ -405,7 +307,7 @@ if stats:
         st.markdown(f"""
         <div class="kpi-card">
             <h2>{stats['animations_terminees']}</h2>
-            <p>🎉 Animations</p>
+            <p>🎉 Animations terminées</p>
         </div>
         """, unsafe_allow_html=True)
 else:
@@ -417,7 +319,7 @@ st.markdown("---")
 # ONGLETS
 # ==========================================
 
-tab1, tab2, tab3, tab4 = st.tabs(["👥 Par Commercial", "🏪 Par Enseigne", "🗺️ Par Département", "📈 Évolutions"])
+tab1, tab2, tab3, tab4 = st.tabs(["👥 Par Commercial", "🏪 Par Enseigne", "📍 Par Département", "📈 Évolutions"])
 
 with tab1:
     st.subheader("👥 Performance par Commercial")
@@ -430,24 +332,10 @@ with tab1:
         st.markdown("---")
         st.markdown("**📊 Visites du mois par commercial**")
         
-        # Graphique Plotly plus joli
-        fig = px.bar(
-            df_comm, 
-            x='Commercial', 
-            y='Visites Mois',
-            color='Visites Mois',
-            color_continuous_scale='Blues',
-            text='Visites Mois'
-        )
-        fig.update_traces(textposition='outside')
-        fig.update_layout(
-            showlegend=False,
-            coloraxis_showscale=False,
-            height=400
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        chart_data = df_comm[['Commercial', 'Visites Mois']].copy()
+        st.bar_chart(chart_data.set_index('Commercial'))
         
-        # Commercial du mois
+        # Commercial du mois (avec vérification des données valides)
         if len(df_comm) > 0 and df_comm['Visites Mois'].notna().any():
             max_visites = df_comm['Visites Mois'].max()
             if pd.notna(max_visites) and max_visites > 0:
@@ -469,25 +357,10 @@ with tab2:
         st.dataframe(df_enseigne, use_container_width=True, hide_index=True)
         
         st.markdown("---")
-        st.markdown("**📊 Top 10 enseignes par nombre de clients**")
+        st.markdown("**📊 Top 10 enseignes par nombre de magasins**")
         
-        # Graphique Plotly
-        fig = px.bar(
-            df_enseigne.head(10), 
-            x='Enseigne', 
-            y='Clients',
-            color='Clients',
-            color_continuous_scale='Greens',
-            text='Clients'
-        )
-        fig.update_traces(textposition='outside')
-        fig.update_layout(
-            showlegend=False,
-            coloraxis_showscale=False,
-            height=400,
-            xaxis_tickangle=-45
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        chart_data = df_enseigne.head(10)[['Enseigne', 'Magasins']].copy()
+        st.bar_chart(chart_data.set_index('Enseigne'))
         
         # Export
         csv = df_enseigne.to_csv(index=False).encode('utf-8')
@@ -496,82 +369,24 @@ with tab2:
         st.info("Aucune donnée")
 
 with tab3:
-    st.subheader("🗺️ Répartition Géographique par Département")
+    st.subheader("📍 Statistiques par Département")
     
     df_dept = get_stats_par_departement()
     
     if not df_dept.empty:
-        # ⭐ CARTE DE FRANCE
-        st.markdown("### 🗺️ Carte de France")
-        
-        # Sélecteur de métrique pour la carte
-        col_metric, col_info = st.columns([1, 3])
-        with col_metric:
-            metric_carte = st.selectbox(
-                "Colorier par",
-                ['Clients', 'Actifs', 'Visites 30j'],
-                key="metric_carte"
-            )
-        with col_info:
-            st.info(f"💡 Survolez les départements pour voir les détails")
-        
-        # Charger GeoJSON
-        geojson = get_france_geojson()
-        
-        if geojson:
-            fig_map = create_france_map(df_dept, geojson, metric_carte)
-            if fig_map:
-                st.plotly_chart(fig_map, use_container_width=True)
-            else:
-                st.warning("⚠️ Impossible de générer la carte")
-        else:
-            st.warning("⚠️ Carte non disponible (vérifiez votre connexion internet)")
+        st.dataframe(df_dept, use_container_width=True, hide_index=True)
         
         st.markdown("---")
-        
-        # Tableau des départements
-        st.markdown("### 📊 Détail par département")
-        
-        # Afficher sans la colonne 'code' technique
-        df_display = df_dept[['Département', 'Clients', 'Actifs', 'Visites 30j']].copy()
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
-        
-        st.markdown("---")
-        
-        # Top 10 départements en graphique
         st.markdown("**📊 Top 10 départements**")
         
-        fig = px.bar(
-            df_dept.head(10), 
-            x='Département', 
-            y='Clients',
-            color='Clients',
-            color_continuous_scale='Oranges',
-            text='Clients'
-        )
-        fig.update_traces(textposition='outside')
-        fig.update_layout(
-            showlegend=False,
-            coloraxis_showscale=False,
-            height=350
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Stats résumé
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("📍 Départements couverts", len(df_dept))
-        with col2:
-            st.metric("🏆 Dept. le plus dense", df_dept.iloc[0]['Département'] if len(df_dept) > 0 else "N/A")
-        with col3:
-            total_clients = df_dept['Clients'].sum()
-            st.metric("📊 Total clients", int(total_clients))
+        chart_data = df_dept.head(10)[['Département', 'Magasins']].copy()
+        st.bar_chart(chart_data.set_index('Département'))
         
         # Export
         csv = df_dept.to_csv(index=False).encode('utf-8')
         st.download_button("📥 Exporter CSV", csv, "stats_departements.csv", "text/csv")
     else:
-        st.info("Aucune donnée de département disponible")
+        st.info("Aucune donnée")
 
 with tab4:
     st.subheader("📈 Évolutions et Répartitions")
@@ -583,19 +398,7 @@ with tab4:
         df_evol = get_evolution_visites()
         
         if not df_evol.empty:
-            fig = px.line(
-                df_evol, 
-                x='Mois', 
-                y='Visites',
-                markers=True,
-                line_shape='spline'
-            )
-            fig.update_traces(
-                line=dict(color='#667eea', width=3),
-                marker=dict(size=10)
-            )
-            fig.update_layout(height=300)
-            st.plotly_chart(fig, use_container_width=True)
+            st.line_chart(df_evol.set_index('Mois'))
         else:
             st.info("Pas assez de données")
     
@@ -604,52 +407,21 @@ with tab4:
         df_statuts = get_repartition_statuts()
         
         if not df_statuts.empty:
-            # Camembert
-            colors = {
-                'ACTIF': '#2ca02c',
-                'PROSPECT': '#1f77b4',
-                'EN_PAUSE': '#ff7f0e',
-                'INACTIF': '#7f7f7f',
-                'PERDU': '#d62728'
-            }
-            df_statuts['color'] = df_statuts['Statut'].map(colors).fillna('#999999')
-            
-            fig = px.pie(
-                df_statuts, 
-                values='Nombre', 
-                names='Statut',
-                color='Statut',
-                color_discrete_map=colors,
-                hole=0.4
-            )
-            fig.update_layout(height=300)
-            st.plotly_chart(fig, use_container_width=True)
+            for _, row in df_statuts.iterrows():
+                statut = row['Statut']
+                nb = row['Nombre']
+                icon = "🟢" if statut == 'CLIENT_ACTIF' else ("🔵" if statut == 'PROSPECT' else ("🟡" if statut == 'EN_NEGOCIATION' else ("⚪" if statut == 'CLIENT_INACTIF' else "🔴")))
+                st.markdown(f"{icon} **{statut}** : {nb}")
         else:
             st.info("Aucune donnée")
     
     st.markdown("---")
-    st.markdown("**🏆 Top 10 clients les plus visités**")
+    st.markdown("**🏆 Top 10 magasins les plus visités**")
     
     df_top = get_top_magasins()
     
     if not df_top.empty:
-        fig = px.bar(
-            df_top, 
-            x='Visites', 
-            y='Client',
-            orientation='h',
-            color='Visites',
-            color_continuous_scale='Purples',
-            text='Visites'
-        )
-        fig.update_traces(textposition='outside')
-        fig.update_layout(
-            showlegend=False,
-            coloraxis_showscale=False,
-            height=400,
-            yaxis=dict(autorange="reversed")
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(df_top, use_container_width=True, hide_index=True)
     else:
         st.info("Aucune donnée")
 
