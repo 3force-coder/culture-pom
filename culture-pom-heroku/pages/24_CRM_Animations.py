@@ -89,10 +89,12 @@ def get_commerciaux():
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, prenom || ' ' || nom as nom 
-            FROM users_app 
-            WHERE is_active = TRUE AND role IN ('COMMERCIAL', 'ADMIN', 'SUPER_ADMIN')
-            ORDER BY nom
+            SELECT u.id, u.prenom || ' ' || u.nom as nom 
+            FROM users_app u
+            JOIN roles r ON u.role_id = r.id
+            WHERE u.is_active = TRUE 
+            AND r.code IN ('SUPER_ADMIN', 'ADMIN_GENERAL', 'ADMIN_COMMERCIAL', 'USER_COMMERCIAL')
+            ORDER BY u.nom, u.prenom
         """)
         rows = cursor.fetchall()
         cursor.close()
