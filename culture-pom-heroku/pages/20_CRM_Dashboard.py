@@ -42,11 +42,11 @@ def get_kpis_globaux():
         kpis = {}
         
         # Total magasins
-        cursor.execute("SELECT COUNT(*) as nb FROM crm_magasins")
+        cursor.execute("SELECT COUNT(*) as nb FROM crm_magasins WHERE is_active = TRUE")
         kpis['total_magasins'] = cursor.fetchone()['nb']
         
         # Magasins statut ACTIF
-        cursor.execute("SELECT COUNT(*) as nb FROM crm_magasins WHERE statut = 'ACTIF'")
+        cursor.execute("SELECT COUNT(*) as nb FROM crm_magasins WHERE statut = 'CLIENT_ACTIF' AND is_active = TRUE")
         kpis['magasins_actifs'] = cursor.fetchone()['nb']
         
         # Visites ce mois
@@ -60,7 +60,7 @@ def get_kpis_globaux():
         # Taux couverture 30 jours
         cursor.execute("""
             SELECT COUNT(*) as nb FROM crm_magasins 
-            WHERE statut = 'ACTIF'
+            WHERE statut = 'CLIENT_ACTIF' AND is_active = TRUE
             AND date_derniere_visite >= CURRENT_DATE - INTERVAL '30 days'
         """)
         couverts = cursor.fetchone()['nb']
@@ -86,33 +86,36 @@ def get_alertes():
         
         alertes = {'rouge': [], 'orange': [], 'jaune': []}
         
-        # ROUGE : Magasins sans visite > 30 jours
+        # ⭐ V2: ROUGE : Magasins sans visite > 30 jours - JOIN ref_enseignes
         cursor.execute("""
-            SELECT m.id, m.enseigne, m.ville, m.date_derniere_visite,
+            SELECT m.id, COALESCE(e.libelle, m.nom_client) as enseigne, m.ville, m.date_derniere_visite,
                    CURRENT_DATE - m.date_derniere_visite as jours_sans_visite
             FROM crm_magasins m
-            WHERE m.statut = 'ACTIF'
+            LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
+            WHERE m.statut = 'CLIENT_ACTIF' AND m.is_active = TRUE
             AND (m.date_derniere_visite IS NULL OR m.date_derniere_visite < CURRENT_DATE - INTERVAL '30 days')
             ORDER BY m.date_derniere_visite ASC NULLS FIRST
             LIMIT 5
         """)
         alertes['rouge'] = cursor.fetchall()
         
-        # ORANGE : Visites prévues en retard
+        # ⭐ V2: ORANGE : Visites prévues en retard - JOIN ref_enseignes
         cursor.execute("""
-            SELECT m.id, m.enseigne, m.ville, m.date_prochaine_visite
+            SELECT m.id, COALESCE(e.libelle, m.nom_client) as enseigne, m.ville, m.date_prochaine_visite
             FROM crm_magasins m
-            WHERE m.date_prochaine_visite < CURRENT_DATE
+            LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
+            WHERE m.date_prochaine_visite < CURRENT_DATE AND m.is_active = TRUE
             ORDER BY m.date_prochaine_visite ASC
             LIMIT 5
         """)
         alertes['orange'] = cursor.fetchall()
         
-        # JAUNE : Animations dans 14 jours
+        # ⭐ V2: JAUNE : Animations dans 14 jours - JOIN ref_enseignes
         cursor.execute("""
-            SELECT a.id, m.enseigne, m.ville, a.date_animation, ta.libelle as type
+            SELECT a.id, COALESCE(e.libelle, m.nom_client) as enseigne, m.ville, a.date_animation, ta.libelle as type
             FROM crm_animations a
             JOIN crm_magasins m ON a.magasin_id = m.id
+            LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
             LEFT JOIN crm_types_animation ta ON a.type_animation_id = ta.id
             WHERE a.statut = 'PLANIFIEE'
             AND a.date_animation BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '14 days'
@@ -130,23 +133,25 @@ def get_alertes():
         return None
 
 def get_stats_commerciaux():
-    """Stats par commercial"""
+    """Stats par commercial - utilise users_app au lieu de crm_commerciaux"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
         cursor.execute("""
             SELECT 
-                c.id,
-                c.prenom || ' ' || c.nom as commercial,
+                u.id,
+                u.prenom || ' ' || u.nom as commercial,
                 COUNT(DISTINCT m.id) as nb_magasins,
-                COUNT(DISTINCT CASE WHEN m.statut = 'ACTIF' THEN m.id END) as nb_actifs,
+                COUNT(DISTINCT CASE WHEN m.statut = 'CLIENT_ACTIF' THEN m.id END) as nb_actifs,
                 COUNT(DISTINCT v.id) FILTER (WHERE v.statut = 'EFFECTUEE' AND v.date_visite >= DATE_TRUNC('month', CURRENT_DATE)) as visites_mois,
                 COUNT(DISTINCT v.id) FILTER (WHERE v.statut = 'EFFECTUEE' AND v.date_visite >= CURRENT_DATE - INTERVAL '30 days') as visites_30j
-            FROM crm_commerciaux c
-            LEFT JOIN crm_magasins m ON c.id = m.commercial_id
-            LEFT JOIN crm_visites v ON c.id = v.commercial_id
-            GROUP BY c.id, c.prenom, c.nom
+            FROM users_app u
+            LEFT JOIN crm_magasins m ON u.id = m.commercial_id AND m.is_active = TRUE
+            LEFT JOIN crm_visites v ON u.id = v.commercial_id
+            WHERE u.is_active = TRUE
+            GROUP BY u.id, u.prenom, u.nom
+            HAVING COUNT(DISTINCT m.id) > 0 OR COUNT(DISTINCT v.id) > 0
             ORDER BY visites_mois DESC
         """)
         
@@ -169,16 +174,18 @@ def get_agenda_semaine():
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ⭐ V2: JOIN ref_enseignes pour récupérer l'enseigne
         cursor.execute("""
             SELECT 
                 v.date_visite,
-                m.enseigne,
+                COALESCE(e.libelle, m.nom_client) as enseigne,
                 m.ville,
-                c.prenom || ' ' || c.nom as commercial,
+                u.prenom || ' ' || u.nom as commercial,
                 tv.libelle as type_visite
             FROM crm_visites v
             JOIN crm_magasins m ON v.magasin_id = m.id
-            LEFT JOIN crm_commerciaux c ON v.commercial_id = c.id
+            LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
+            LEFT JOIN users_app u ON v.commercial_id = u.id
             LEFT JOIN crm_types_visite tv ON v.type_visite_id = tv.id
             WHERE v.statut = 'PLANIFIEE'
             AND v.date_visite BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
@@ -200,16 +207,18 @@ def get_dernieres_visites():
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ⭐ V2: JOIN ref_enseignes pour récupérer l'enseigne
         cursor.execute("""
             SELECT 
                 v.date_visite,
-                m.enseigne,
+                COALESCE(e.libelle, m.nom_client) as enseigne,
                 m.ville,
-                c.prenom || ' ' || c.nom as commercial,
+                u.prenom || ' ' || u.nom as commercial,
                 tv.libelle as type_visite
             FROM crm_visites v
             JOIN crm_magasins m ON v.magasin_id = m.id
-            LEFT JOIN crm_commerciaux c ON v.commercial_id = c.id
+            LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
+            LEFT JOIN users_app u ON v.commercial_id = u.id
             LEFT JOIN crm_types_visite tv ON v.type_visite_id = tv.id
             WHERE v.statut = 'EFFECTUEE'
             ORDER BY v.date_visite DESC
