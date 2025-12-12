@@ -1177,11 +1177,13 @@ with tab2:
                 st.markdown("---")
                 st.markdown("#### 📋 Prévisualisation")
                 
-                df_display = df_val[[
-                    'code_lot_interne', 'nom_usage', 'code_variete', '_variete_corrected',
-                    'code_producteur', '_producteur_corrected', 'nombre_unites',
-                    '_status', '_errors', '_warnings'
-                ]].copy()
+                # Colonnes à afficher (seulement celles qui existent)
+                preview_cols = ['code_lot_interne', 'nom_usage', 'code_variete', '_variete_corrected',
+                    'code_producteur', '_producteur_corrected', 'poids_total_brut_kg',
+                    '_status', '_errors', '_warnings']
+                # Filtrer pour ne garder que les colonnes existantes
+                available_cols = [c for c in preview_cols if c in df_val.columns]
+                df_display = df_val[available_cols].copy()
                 
                 st.dataframe(df_display, use_container_width=True, hide_index=True)
                 
