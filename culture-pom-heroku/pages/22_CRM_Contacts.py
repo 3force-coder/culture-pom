@@ -30,32 +30,42 @@ st.markdown("---")
 # ==========================================
 
 def get_magasins_dropdown():
+    """⭐ V2: Récupère la liste des magasins avec JOIN ref_enseignes"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, code_magasin, enseigne || ' - ' || ville as nom 
-            FROM crm_magasins WHERE is_active = TRUE ORDER BY enseigne, ville
+            SELECT m.id, m.code_magasin, 
+                   COALESCE(e.libelle, m.nom_client) || ' - ' || m.ville as nom 
+            FROM crm_magasins m
+            LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
+            WHERE m.is_active = TRUE 
+            ORDER BY e.libelle, m.ville
         """)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
         return [(r['id'], r['code_magasin'], r['nom']) for r in rows]
-    except:
+    except Exception as e:
+        st.error(f"❌ Erreur magasins : {str(e)}")
         return []
 
 def get_contacts(filtres=None):
+    """⭐ V2: Récupère les contacts avec JOIN ref_enseignes"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
         query = """
             SELECT 
-                c.id, c.magasin_id, m.enseigne, m.ville,
+                c.id, c.magasin_id, 
+                COALESCE(e.libelle, m.nom_client) as enseigne, 
+                m.ville,
                 c.nom, c.prenom, c.fonction, c.telephone, c.email,
                 c.is_principal, c.commentaires
             FROM crm_contacts c
             JOIN crm_magasins m ON c.magasin_id = m.id
+            LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
             WHERE c.is_active = TRUE AND m.is_active = TRUE
         """
         params = []
@@ -68,11 +78,13 @@ def get_contacts(filtres=None):
                 query += " AND c.fonction = %s"
                 params.append(filtres['fonction'])
             if filtres.get('search'):
-                query += " AND (LOWER(c.nom) LIKE %s OR LOWER(c.prenom) LIKE %s OR LOWER(m.enseigne) LIKE %s)"
+                # ⭐ V2: Recherche sur e.libelle au lieu de m.enseigne
+                query += " AND (LOWER(c.nom) LIKE %s OR LOWER(c.prenom) LIKE %s OR LOWER(COALESCE(e.libelle, m.nom_client)) LIKE %s)"
                 search = f"%{filtres['search'].lower()}%"
                 params.extend([search, search, search])
         
-        query += " ORDER BY m.enseigne, c.is_principal DESC, c.nom"
+        # ⭐ V2: ORDER BY avec COALESCE
+        query += " ORDER BY COALESCE(e.libelle, m.nom_client), c.is_principal DESC, c.nom"
         
         cursor.execute(query, params)
         rows = cursor.fetchall()
