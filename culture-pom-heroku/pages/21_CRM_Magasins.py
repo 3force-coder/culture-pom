@@ -379,6 +379,9 @@ def get_magasins_produits_map():
     """Récupère la relation magasins-produits pour la carte"""
     try:
         conn = get_connection()
+        if not conn:
+            st.error("❌ Erreur connexion DB dans get_magasins_produits_map")
+            return {}
         cursor = conn.cursor()
         cursor.execute("""
             SELECT magasin_id, type_produit_id 
@@ -398,7 +401,8 @@ def get_magasins_produits_map():
                 result[mid] = []
             result[mid].append(pid)
         return result
-    except:
+    except Exception as e:
+        st.error(f"❌ Erreur get_magasins_produits_map: {str(e)}")
         return {}
 
 def create_type_produit_crm(code, libelle, categorie='AUTRE'):
@@ -1445,6 +1449,9 @@ with tab3:
             # Filtre produits (magasins ayant AU MOINS UN des produits sélectionnés)
             if filtre_produits:
                 magasins_produits = get_magasins_produits_map()
+                # Debug: afficher le nombre d'associations trouvées
+                if not magasins_produits:
+                    st.warning("⚠️ Aucune association magasin-produit trouvée dans crm_magasin_produits")
                 magasins_avec_produits = [
                     mid for mid, pids in magasins_produits.items() 
                     if any(p in pids for p in filtre_produits)
