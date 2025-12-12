@@ -69,24 +69,37 @@ def get_magasins_dropdown():
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, enseigne || ' - ' || ville as nom FROM crm_magasins WHERE is_active = TRUE ORDER BY enseigne, ville")
+        cursor.execute("""
+            SELECT m.id, COALESCE(e.libelle, m.nom_client) || ' - ' || m.ville as nom 
+            FROM crm_magasins m
+            LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
+            WHERE m.is_active = TRUE 
+            ORDER BY e.libelle, m.ville
+        """)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
         return [(r['id'], r['nom']) for r in rows]
-    except:
+    except Exception as e:
+        st.error(f"❌ Erreur get_magasins_dropdown: {str(e)}")
         return []
 
 def get_commerciaux():
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, prenom || ' ' || nom as nom FROM crm_commerciaux WHERE is_active = TRUE ORDER BY nom")
+        cursor.execute("""
+            SELECT id, prenom || ' ' || nom as nom 
+            FROM users_app 
+            WHERE is_active = TRUE AND role IN ('COMMERCIAL', 'ADMIN', 'SUPER_ADMIN')
+            ORDER BY nom
+        """)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
         return [(r['id'], r['nom']) for r in rows]
-    except:
+    except Exception as e:
+        st.error(f"❌ Erreur get_commerciaux: {str(e)}")
         return []
 
 def get_types_animation():
@@ -141,13 +154,14 @@ def get_animations(filtres=None):
         query = """
             SELECT 
                 a.id, a.date_animation, a.date_fin, a.statut,
-                m.id as magasin_id, m.enseigne, m.ville,
-                c.id as commercial_id, c.prenom || ' ' || c.nom as commercial,
+                m.id as magasin_id, COALESCE(e.libelle, m.nom_client) as enseigne, m.ville,
+                u.id as commercial_id, COALESCE(u.prenom || ' ' || u.nom, 'Non assigné') as commercial,
                 ta.id as type_animation_id, ta.libelle as type_animation,
                 a.description, a.resultats, a.prochaine_animation_date
             FROM crm_animations a
             JOIN crm_magasins m ON a.magasin_id = m.id
-            LEFT JOIN crm_commerciaux c ON a.commercial_id = c.id
+            LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
+            LEFT JOIN users_app u ON a.commercial_id = u.id
             LEFT JOIN crm_types_animation ta ON a.type_animation_id = ta.id
             WHERE a.is_active = TRUE
         """
