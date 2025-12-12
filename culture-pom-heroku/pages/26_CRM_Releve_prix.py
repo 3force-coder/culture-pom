@@ -92,11 +92,11 @@ def get_marques_for_magasin(magasin_id):
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        # Table renommée : crm_magasin_marques (sans 's' à magasin)
+        # Correction: crm_magasins_marques (avec 's' à magasins)
         cursor.execute("""
             SELECT DISTINCT m.id, m.nom
             FROM ref_marques_concurrentes m
-            LEFT JOIN crm_magasin_marques mm ON m.id = mm.marque_id AND mm.is_active = TRUE
+            LEFT JOIN crm_magasins_marques mm ON m.id = mm.marque_id AND mm.is_active = TRUE
             WHERE m.is_active = TRUE
             AND (mm.magasin_id = %s OR m.nom IN ('La Championne', 'MDD'))
             ORDER BY 
