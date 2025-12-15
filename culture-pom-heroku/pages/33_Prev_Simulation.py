@@ -9,6 +9,7 @@ Outil de pilotage financier :
 
 import streamlit as st
 import pandas as pd
+import traceback
 from datetime import datetime, date, timedelta
 from database import get_connection
 from components import show_footer
@@ -91,6 +92,20 @@ def get_prix_ventes_previsions():
         conn = get_connection()
         cursor = conn.cursor()
         
+        # Vérifier si la table existe
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'prix_ventes_previsions'
+            )
+        """)
+        table_exists = cursor.fetchone()['exists']
+        
+        if not table_exists:
+            cursor.close()
+            conn.close()
+            return pd.DataFrame()
+        
         cursor.execute("""
             SELECT 
                 code_produit_commercial,
@@ -132,7 +147,36 @@ def get_produits_avec_affectations():
         semaine_courante = today.isocalendar()[1]
         annee_courante = today.year
         
+        # Vérifier si la table previsions_affectations existe et a des données
         cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'previsions_affectations'
+            )
+        """)
+        table_exists = cursor.fetchone()['exists']
+        
+        if not table_exists:
+            cursor.close()
+            conn.close()
+            return pd.DataFrame()
+        
+        # Vérifier si la colonne tare_theorique_pct existe
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.columns 
+                WHERE table_name = 'lots_bruts' AND column_name = 'tare_theorique_pct'
+            )
+        """)
+        tare_col_exists = cursor.fetchone()['exists']
+        
+        # Construire la requête selon les colonnes disponibles
+        if tare_col_exists:
+            tare_expr = "COALESCE(l.tare_lavage_totale_pct, l.tare_theorique_pct, 22)"
+        else:
+            tare_expr = "COALESCE(l.tare_lavage_totale_pct, 22)"
+        
+        query = f"""
             WITH conso_hebdo AS (
                 SELECT 
                     code_produit_commercial,
@@ -154,13 +198,10 @@ def get_produits_avec_affectations():
                     COUNT(*) as nb_lots,
                     SUM(pa.quantite_affectee_tonnes) as total_brut,
                     SUM(pa.poids_net_estime_tonnes) as total_net,
-                    -- Prix achat moyen pondéré
                     SUM(pa.quantite_affectee_tonnes * COALESCE(l.prix_achat_euro_tonne, 0)) / 
                         NULLIF(SUM(pa.quantite_affectee_tonnes), 0) as prix_achat_moyen,
-                    -- Tare moyenne pondérée (réelle > théorique > 22%)
-                    SUM(pa.quantite_affectee_tonnes * 
-                        COALESCE(l.tare_lavage_totale_pct, l.tare_theorique_pct, 22)
-                    ) / NULLIF(SUM(pa.quantite_affectee_tonnes), 0) as tare_moyenne
+                    SUM(pa.quantite_affectee_tonnes * {tare_expr}) / 
+                        NULLIF(SUM(pa.quantite_affectee_tonnes), 0) as tare_moyenne
                 FROM previsions_affectations pa
                 JOIN lots_bruts l ON pa.lot_id = l.id
                 WHERE pa.is_active = TRUE
@@ -186,7 +227,9 @@ def get_produits_avec_affectations():
             WHERE pc.is_active = TRUE
               AND (ch.conso_hebdo > 0 OR ad.total_net > 0)
             ORDER BY pc.marque, pc.libelle
-        """, (annee_courante, semaine_courante, annee_courante, nb_semaines, nb_semaines))
+        """
+        
+        cursor.execute(query, (annee_courante, semaine_courante, annee_courante, nb_semaines, nb_semaines))
         
         rows = cursor.fetchall()
         cursor.close()
@@ -204,6 +247,8 @@ def get_produits_avec_affectations():
         
     except Exception as e:
         st.error(f"Erreur produits: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
         return pd.DataFrame()
 
 def get_lots_pour_tare():
@@ -212,29 +257,62 @@ def get_lots_pour_tare():
         conn = get_connection()
         cursor = conn.cursor()
         
+        # Vérifier si la colonne tare_theorique_pct existe
         cursor.execute("""
-            SELECT 
-                l.id,
-                l.code_lot_interne,
-                l.nom_usage,
-                v.nom_variete,
-                l.poids_total_brut_kg / 1000 as poids_brut_tonnes,
-                l.tare_lavage_totale_pct as tare_reelle,
-                l.tare_theorique_pct as tare_theorique,
-                CASE 
-                    WHEN l.tare_lavage_totale_pct IS NOT NULL THEN 'RÉELLE'
-                    WHEN l.tare_theorique_pct IS NOT NULL THEN 'THÉORIQUE'
-                    ELSE 'DÉFAUT (22%)'
-                END as source_tare,
-                COALESCE(l.tare_lavage_totale_pct, l.tare_theorique_pct, 22) as tare_utilisee
-            FROM lots_bruts l
-            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
-            WHERE l.is_active = TRUE
-              AND l.poids_total_brut_kg > 0
-              AND l.tare_lavage_totale_pct IS NULL
-            ORDER BY l.code_lot_interne
+            SELECT EXISTS (
+                SELECT FROM information_schema.columns 
+                WHERE table_name = 'lots_bruts' AND column_name = 'tare_theorique_pct'
+            )
         """)
+        col_exists = cursor.fetchone()['exists']
         
+        if col_exists:
+            query = """
+                SELECT 
+                    l.id,
+                    l.code_lot_interne,
+                    l.nom_usage,
+                    v.nom_variete,
+                    l.poids_total_brut_kg / 1000 as poids_brut_tonnes,
+                    l.tare_lavage_totale_pct as tare_reelle,
+                    l.tare_theorique_pct as tare_theorique,
+                    CASE 
+                        WHEN l.tare_lavage_totale_pct IS NOT NULL THEN 'RÉELLE'
+                        WHEN l.tare_theorique_pct IS NOT NULL THEN 'THÉORIQUE'
+                        ELSE 'DÉFAUT (22%)'
+                    END as source_tare,
+                    COALESCE(l.tare_lavage_totale_pct, l.tare_theorique_pct, 22) as tare_utilisee
+                FROM lots_bruts l
+                LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+                WHERE l.is_active = TRUE
+                  AND l.poids_total_brut_kg > 0
+                  AND l.tare_lavage_totale_pct IS NULL
+                ORDER BY l.code_lot_interne
+            """
+        else:
+            query = """
+                SELECT 
+                    l.id,
+                    l.code_lot_interne,
+                    l.nom_usage,
+                    v.nom_variete,
+                    l.poids_total_brut_kg / 1000 as poids_brut_tonnes,
+                    l.tare_lavage_totale_pct as tare_reelle,
+                    NULL::numeric as tare_theorique,
+                    CASE 
+                        WHEN l.tare_lavage_totale_pct IS NOT NULL THEN 'RÉELLE'
+                        ELSE 'DÉFAUT (22%)'
+                    END as source_tare,
+                    COALESCE(l.tare_lavage_totale_pct, 22) as tare_utilisee
+                FROM lots_bruts l
+                LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+                WHERE l.is_active = TRUE
+                  AND l.poids_total_brut_kg > 0
+                  AND l.tare_lavage_totale_pct IS NULL
+                ORDER BY l.code_lot_interne
+            """
+        
+        cursor.execute(query)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -257,6 +335,21 @@ def update_tare_theorique(lot_id, tare_pct):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # Vérifier si la colonne existe
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.columns 
+                WHERE table_name = 'lots_bruts' AND column_name = 'tare_theorique_pct'
+            )
+        """)
+        col_exists = cursor.fetchone()['exists']
+        
+        if not col_exists:
+            st.error("⚠️ Colonne tare_theorique_pct non créée. Exécutez d'abord le script de migration.")
+            cursor.close()
+            conn.close()
+            return False
+        
         cursor.execute("""
             UPDATE lots_bruts 
             SET tare_theorique_pct = %s, updated_at = CURRENT_TIMESTAMP
@@ -276,6 +369,21 @@ def save_prix_previsions(code_produit, prix_actuel, prix_2sem, prix_1mois, prix_
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        
+        # Vérifier si la table existe
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'prix_ventes_previsions'
+            )
+        """)
+        table_exists = cursor.fetchone()['exists']
+        
+        if not table_exists:
+            st.error("⚠️ Table prix_ventes_previsions non créée. Exécutez d'abord le script de migration.")
+            cursor.close()
+            conn.close()
+            return False
         
         created_by = st.session_state.get('username', 'system')
         
