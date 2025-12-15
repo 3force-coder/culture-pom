@@ -1,37 +1,35 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from database import get_connection
 from components import show_footer
 from auth import is_authenticated
 
-st.set_page_config(page_title="Affectations - Culture Pom", page_icon="📋", layout="wide")
+st.set_page_config(page_title="Besoins Campagne - Culture Pom", page_icon="📊", layout="wide")
 
-# CSS compact
+# CSS
 st.markdown("""
 <style>
     .block-container {
         padding-top: 1.5rem !important;
-        padding-bottom: 0.5rem !important;
     }
-    h1, h2, h3, h4 {
-        margin-top: 0.3rem !important;
-        margin-bottom: 0.3rem !important;
-    }
-    .lot-card {
-        background-color: #f8f9fa;
-        padding: 0.8rem;
-        border-radius: 0.5rem;
-        margin: 0.3rem 0;
-        border-left: 4px solid #1976d2;
-    }
-    .lot-card.ct {
-        border-left-color: #ff9800;
-        background-color: #fff8e1;
-    }
-    .lot-card.lt {
-        border-left-color: #4caf50;
+    .besoin-ok {
         background-color: #e8f5e9;
+        padding: 0.5rem;
+        border-radius: 0.3rem;
+        border-left: 4px solid #4caf50;
+    }
+    .besoin-warning {
+        background-color: #fff3e0;
+        padding: 0.5rem;
+        border-radius: 0.3rem;
+        border-left: 4px solid #ff9800;
+    }
+    .besoin-danger {
+        background-color: #ffebee;
+        padding: 0.5rem;
+        border-radius: 0.3rem;
+        border-left: 4px solid #f44336;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -41,340 +39,192 @@ if not is_authenticated():
     st.stop()
 
 # ============================================================
-# FONCTIONS DONNÉES
+# FONCTIONS
 # ============================================================
 
-def get_sites_production():
-    """Récupère les sites de production"""
+def get_besoins_par_produit(date_fin_campagne, semaines_restantes):
+    """Calcule les besoins par produit jusqu'à fin de campagne
+    
+    Logique:
+    - Conso hebdo moyenne = Moyenne des 5 prochaines semaines de previsions_ventes
+    - Besoin = Conso moyenne × Semaines restantes jusqu'à fin campagne
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT DISTINCT site 
-            FROM production_lignes 
-            WHERE is_active = TRUE AND site IS NOT NULL
-            ORDER BY site
-        """)
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        return [row['site'] for row in rows] if rows else ['SAINT_FLAVY', 'CORROY']
-    except:
-        return ['SAINT_FLAVY', 'CORROY']
-
-def get_produits_par_marque_type():
-    """Récupère les produits groupés par marque + type"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
+        
+        # Semaine courante
+        today = date.today()
+        semaine_courante = today.isocalendar()[1]
+        annee_courante = today.year
         
         query = """
+            WITH semaines_5_prochaines AS (
+                -- Récupérer les 5 prochaines semaines de prévisions (triées par date)
+                SELECT 
+                    pv.code_produit_commercial,
+                    pv.quantite_prevue_tonnes,
+                    pv.annee,
+                    pv.semaine,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY pv.code_produit_commercial 
+                        ORDER BY pv.annee, pv.semaine
+                    ) as rn
+                FROM previsions_ventes pv
+                WHERE (pv.annee = %s AND pv.semaine >= %s)
+                   OR (pv.annee > %s)
+            ),
+            conso_5_semaines AS (
+                -- Moyenne limitée aux 5 premières semaines
+                SELECT 
+                    code_produit_commercial,
+                    AVG(quantite_prevue_tonnes) as conso_hebdo_moyenne,
+                    COUNT(*) as nb_semaines_prevues
+                FROM semaines_5_prochaines
+                WHERE rn <= 5
+                GROUP BY code_produit_commercial
+            ),
+            affectations AS (
+                SELECT 
+                    pa.code_produit_commercial,
+                    SUM(COALESCE(pa.poids_net_estime_tonnes, pa.quantite_affectee_tonnes * 0.78)) as stock_affecte
+                FROM previsions_affectations pa
+                WHERE pa.is_active = TRUE
+                GROUP BY pa.code_produit_commercial
+            )
             SELECT 
-                code_produit,
-                marque,
-                type_produit,
-                libelle,
-                atelier,
-                prix_vente_tonne,
-                CONCAT(marque, ' - ', type_produit) as ligne_prevision
-            FROM ref_produits_commerciaux
-            WHERE is_active = TRUE
-            ORDER BY marque, type_produit
+                pc.code_produit,
+                pc.marque,
+                pc.type_produit,
+                pc.libelle,
+                pc.atelier,
+                COALESCE(c.conso_hebdo_moyenne, 0) as conso_hebdo_moyenne,
+                COALESCE(c.nb_semaines_prevues, 0) as nb_semaines_prevues,
+                -- Besoin = Conso moyenne × Semaines restantes
+                COALESCE(c.conso_hebdo_moyenne, 0) * %s as besoin_tonnes,
+                COALESCE(a.stock_affecte, 0) as stock_affecte_tonnes,
+                COALESCE(a.stock_affecte, 0) - (COALESCE(c.conso_hebdo_moyenne, 0) * %s) as difference,
+                CASE 
+                    WHEN COALESCE(a.stock_affecte, 0) - (COALESCE(c.conso_hebdo_moyenne, 0) * %s) >= 0 THEN 'OK'
+                    WHEN COALESCE(a.stock_affecte, 0) - (COALESCE(c.conso_hebdo_moyenne, 0) * %s) > -100 THEN 'ATTENTION'
+                    ELSE 'CRITIQUE'
+                END as statut
+            FROM ref_produits_commerciaux pc
+            LEFT JOIN conso_5_semaines c ON pc.code_produit = c.code_produit_commercial
+            LEFT JOIN affectations a ON pc.code_produit = a.code_produit_commercial
+            WHERE pc.is_active = TRUE
+              AND COALESCE(c.conso_hebdo_moyenne, 0) > 0
+            ORDER BY difference ASC
         """
         
-        cursor.execute(query)
+        cursor.execute(query, (
+            annee_courante, semaine_courante,
+            annee_courante,
+            semaines_restantes, semaines_restantes, semaines_restantes, semaines_restantes
+        ))
+        
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
         
         if rows:
-            return pd.DataFrame(rows)
+            df = pd.DataFrame(rows)
+            for col in ['besoin_tonnes', 'stock_affecte_tonnes', 'difference', 'conso_hebdo_moyenne']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            return df
         return pd.DataFrame()
         
     except Exception as e:
-        st.error(f"Erreur produits: {str(e)}")
+        st.error(f"Erreur besoins: {str(e)}")
         return pd.DataFrame()
 
-def get_lots_disponibles(variete_filter=None):
-    """Récupère les lots disponibles pour affectation"""
+def get_besoins_par_semaine(code_produit, nb_semaines=12):
+    """Récupère les besoins semaine par semaine pour un produit"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        query = """
+        today = date.today()
+        semaine_courante = today.isocalendar()[1]
+        annee_courante = today.year
+        
+        cursor.execute("""
             SELECT 
-                l.id as lot_id,
-                l.code_lot_interne,
-                l.nom_usage,
-                l.code_variete,
+                annee,
+                semaine,
+                quantite_prevue_tonnes
+            FROM previsions_ventes
+            WHERE code_produit_commercial = %s
+              AND ((annee = %s AND semaine >= %s) OR annee > %s)
+            ORDER BY annee, semaine
+            LIMIT %s
+        """, (code_produit, annee_courante, semaine_courante, annee_courante, nb_semaines))
+        
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if rows:
+            df = pd.DataFrame(rows)
+            df['semaine_label'] = df.apply(lambda x: f"S{x['semaine']}/{x['annee']}", axis=1)
+            df['quantite_prevue_tonnes'] = pd.to_numeric(df['quantite_prevue_tonnes'], errors='coerce').fillna(0)
+            return df
+        return pd.DataFrame()
+        
+    except Exception as e:
+        st.error(f"Erreur semaines: {str(e)}")
+        return pd.DataFrame()
+
+def get_stock_total_disponible():
+    """Récupère le stock total disponible (non affecté)"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT 
                 v.nom_variete,
-                l.code_producteur,
-                l.poids_total_brut_kg / 1000 as poids_brut_tonnes,
-                l.prix_achat_euro_tonne,
-                l.date_entree_stock,
-                -- Tare prioritaire
-                COALESCE(
-                    l.tare_lavage_totale_pct,
-                    v.taux_dechet_moyen * 100,
-                    22
-                ) as tare_pct,
-                CASE 
-                    WHEN l.tare_lavage_totale_pct IS NOT NULL THEN 'LOT'
-                    WHEN v.taux_dechet_moyen IS NOT NULL THEN 'VARIETE'
-                    ELSE 'DEFAUT'
-                END as tare_source,
-                -- Poids déjà affecté
-                COALESCE((
+                SUM(l.poids_total_brut_kg) / 1000 as poids_brut_tonnes,
+                SUM(l.poids_total_brut_kg * (1 - COALESCE(l.tare_lavage_totale_pct, v.taux_dechet_moyen * 100, 22) / 100)) / 1000 as poids_net_tonnes,
+                SUM(COALESCE((
                     SELECT SUM(pa.quantite_affectee_tonnes)
                     FROM previsions_affectations pa
                     WHERE pa.lot_id = l.id AND pa.is_active = TRUE
-                ), 0) as poids_affecte_tonnes
+                ), 0)) as deja_affecte
             FROM lots_bruts l
             LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
             WHERE l.is_active = TRUE
-              AND l.poids_total_brut_kg > 0
-            ORDER BY l.date_entree_stock DESC, l.code_lot_interne
-        """
-        
-        cursor.execute(query)
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        
-        if rows:
-            df = pd.DataFrame(rows)
-            # Convertir colonnes numériques
-            numeric_cols = ['poids_brut_tonnes', 'prix_achat_euro_tonne', 'tare_pct', 'poids_affecte_tonnes']
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-            
-            # Calculer poids disponible et poids net
-            df['poids_disponible_tonnes'] = df['poids_brut_tonnes'] - df['poids_affecte_tonnes']
-            df['poids_net_estime_tonnes'] = df['poids_disponible_tonnes'] * (1 - df['tare_pct'] / 100)
-            
-            # Filtrer variété si demandé
-            if variete_filter and variete_filter != "Toutes":
-                df = df[df['nom_variete'] == variete_filter]
-            
-            # Filtrer lots avec stock disponible
-            df = df[df['poids_disponible_tonnes'] > 0]
-            
-            return df
-        return pd.DataFrame()
-        
-    except Exception as e:
-        st.error(f"Erreur lots: {str(e)}")
-        return pd.DataFrame()
-
-def get_varietes_disponibles():
-    """Récupère les variétés des lots en stock"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT DISTINCT v.nom_variete
-            FROM lots_bruts l
-            JOIN ref_varietes v ON l.code_variete = v.code_variete
-            WHERE l.is_active = TRUE AND l.poids_total_brut_kg > 0
-            ORDER BY v.nom_variete
+            GROUP BY v.nom_variete
+            HAVING SUM(l.poids_total_brut_kg) > 0
+            ORDER BY poids_brut_tonnes DESC
         """)
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        return [row['nom_variete'] for row in rows] if rows else []
-    except:
-        return []
-
-def get_affectations_produit(code_produit, type_affectation=None):
-    """Récupère les affectations pour un produit"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
         
-        query = """
-            SELECT 
-                pa.id,
-                pa.lot_id,
-                l.code_lot_interne,
-                l.nom_usage,
-                l.code_variete,
-                v.nom_variete,
-                pa.quantite_affectee_tonnes,
-                pa.tare_utilisee_pct,
-                pa.tare_source,
-                pa.poids_net_estime_tonnes,
-                pa.type_affectation,
-                pa.site,
-                pa.date_debut_estimee,
-                pa.date_fin_estimee,
-                pa.created_at,
-                pa.created_by
-            FROM previsions_affectations pa
-            JOIN lots_bruts l ON pa.lot_id = l.id
-            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
-            WHERE pa.code_produit_commercial = %s
-              AND pa.is_active = TRUE
-        """
-        
-        params = [code_produit]
-        
-        if type_affectation:
-            query += " AND pa.type_affectation = %s"
-            params.append(type_affectation)
-        
-        query += " ORDER BY pa.date_debut_estimee NULLS LAST, pa.created_at"
-        
-        cursor.execute(query, params)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
         
         if rows:
             df = pd.DataFrame(rows)
-            for col in ['quantite_affectee_tonnes', 'tare_utilisee_pct', 'poids_net_estime_tonnes']:
+            for col in ['poids_brut_tonnes', 'poids_net_tonnes', 'deja_affecte']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            df['disponible_tonnes'] = df['poids_brut_tonnes'] - df['deja_affecte']
             return df
         return pd.DataFrame()
         
     except Exception as e:
-        st.error(f"Erreur affectations: {str(e)}")
+        st.error(f"Erreur stock: {str(e)}")
         return pd.DataFrame()
 
-def get_conso_moyenne_produit(code_produit):
-    """Récupère la consommation moyenne 5 semaines pour un produit"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT AVG(quantite_prevue_tonnes) as conso_moyenne
-            FROM previsions_ventes
-            WHERE code_produit_commercial = %s
-              AND annee = EXTRACT(YEAR FROM CURRENT_DATE)
-              AND semaine >= EXTRACT(WEEK FROM CURRENT_DATE) - 5
-              AND semaine <= EXTRACT(WEEK FROM CURRENT_DATE)
-        """, (code_produit,))
-        
-        result = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        
-        return float(result['conso_moyenne'] or 0) if result else 0
-        
-    except:
-        return 0
-
-def create_affectation(code_produit, lot_id, quantite_tonnes, site, type_affectation='LT'):
-    """Crée une nouvelle affectation"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Récupérer infos lot pour calcul tare
-        cursor.execute("""
-            SELECT 
-                l.poids_total_brut_kg / 1000 as poids_brut,
-                COALESCE(l.tare_lavage_totale_pct, v.taux_dechet_moyen * 100, 22) as tare_pct,
-                CASE 
-                    WHEN l.tare_lavage_totale_pct IS NOT NULL THEN 'LOT'
-                    WHEN v.taux_dechet_moyen IS NOT NULL THEN 'VARIETE'
-                    ELSE 'DEFAUT'
-                END as tare_source
-            FROM lots_bruts l
-            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
-            WHERE l.id = %s
-        """, (lot_id,))
-        
-        lot_info = cursor.fetchone()
-        if not lot_info:
-            return False, "Lot introuvable"
-        
-        tare_pct = float(lot_info['tare_pct'])
-        tare_source = lot_info['tare_source']
-        poids_net = float(quantite_tonnes) * (1 - tare_pct / 100)
-        
-        # Calculer date début et fin estimées
-        conso_hebdo = get_conso_moyenne_produit(code_produit)
-        date_debut = date.today()
-        
-        if conso_hebdo > 0:
-            jours_stock = (poids_net / conso_hebdo) * 7
-            date_fin = date.today() + pd.Timedelta(days=int(jours_stock))
-        else:
-            date_fin = None
-        
-        created_by = st.session_state.get('username', 'system')
-        
-        # Insérer
-        cursor.execute("""
-            INSERT INTO previsions_affectations (
-                code_produit_commercial, lot_id, quantite_affectee_tonnes,
-                tare_utilisee_pct, tare_source, poids_net_estime_tonnes,
-                type_affectation, site, date_debut_estimee, date_fin_estimee,
-                created_by, is_active
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
-            RETURNING id
-        """, (
-            code_produit, int(lot_id), float(quantite_tonnes),
-            tare_pct, tare_source, poids_net,
-            type_affectation, site, date_debut, date_fin,
-            created_by
-        ))
-        
-        new_id = cursor.fetchone()['id']
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        return True, f"✅ Affectation #{new_id} créée ({quantite_tonnes:.1f}T brut → {poids_net:.1f}T net)"
-        
-    except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
-        return False, f"❌ Erreur: {str(e)}"
-
-def delete_affectation(affectation_id):
-    """Supprime (désactive) une affectation"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            UPDATE previsions_affectations
-            SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s
-        """, (affectation_id,))
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        return True, "✅ Affectation supprimée"
-        
-    except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
-        return False, f"❌ Erreur: {str(e)}"
-
-def create_tache_from_selection(type_tache, description, lots_ids=None, produit_code=None):
-    """Crée une tâche depuis la sélection"""
+def create_tache(titre, description):
+    """Crée une tâche"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
         created_by = st.session_state.get('username', 'system')
         
-        # Construire le titre
-        if type_tache == "ACHETER":
-            titre = f"ACHETER - {description}"
-        elif type_tache == "VENDRE":
-            titre = f"VENDRE - {description}"
-        else:
-            titre = description
-        
-        # Insérer dans taches
         cursor.execute("""
             INSERT INTO taches (titre, description, statut, created_by, created_at)
             VALUES (%s, %s, 'A_FAIRE', %s, CURRENT_TIMESTAMP)
@@ -386,7 +236,7 @@ def create_tache_from_selection(type_tache, description, lots_ids=None, produit_
         cursor.close()
         conn.close()
         
-        return True, f"✅ Tâche #{tache_id} créée: {titre}"
+        return True, f"✅ Tâche #{tache_id} créée"
         
     except Exception as e:
         if 'conn' in locals():
@@ -397,142 +247,184 @@ def create_tache_from_selection(type_tache, description, lots_ids=None, produit_
 # INTERFACE
 # ============================================================
 
-st.title("📋 Affectations Lots → Produits")
-st.markdown("*Gérer les affectations de lots aux produits commerciaux*")
+st.title("📊 Besoins Campagne")
+st.markdown("*Calcul des besoins par produit jusqu'à fin de campagne*")
 
-# ============================================================
-# SIDEBAR - SÉLECTION PRODUIT
-# ============================================================
+# Paramètres campagne
+col_param1, col_param2 = st.columns([2, 1])
 
-with st.sidebar:
-    st.header("🎯 Sélection Produit")
-    
-    # Charger produits
-    produits_df = get_produits_par_marque_type()
-    
-    if not produits_df.empty:
-        # Filtre marque
-        marques = ["Toutes"] + sorted(produits_df['marque'].dropna().unique().tolist())
-        selected_marque = st.selectbox("Marque", marques, key="filter_marque")
-        
-        # Filtrer produits par marque
-        if selected_marque != "Toutes":
-            produits_filtrés = produits_df[produits_df['marque'] == selected_marque]
-        else:
-            produits_filtrés = produits_df
-        
-        # Sélection produit
-        if not produits_filtrés.empty:
-            produit_options = produits_filtrés['ligne_prevision'].tolist()
-            selected_ligne = st.selectbox("Ligne de prévision", produit_options, key="select_produit")
-            
-            # Récupérer code_produit sélectionné
-            selected_produit = produits_filtrés[produits_filtrés['ligne_prevision'] == selected_ligne].iloc[0]
-            code_produit = selected_produit['code_produit']
-            
-            st.markdown("---")
-            st.markdown(f"**Code**: `{code_produit}`")
-            if selected_produit['atelier']:
-                st.markdown(f"**Atelier**: {selected_produit['atelier']}")
-            if selected_produit['prix_vente_tonne']:
-                st.markdown(f"**Prix vente**: {selected_produit['prix_vente_tonne']:.0f} €/T")
-            
-            # Conso moyenne
-            conso_moy = get_conso_moyenne_produit(code_produit)
-            st.metric("Conso moyenne (5 sem)", f"{conso_moy:.1f} T/sem")
-        else:
-            code_produit = None
-            st.warning("Aucun produit trouvé")
+with col_param1:
+    # Calculer la date fin campagne par défaut (30 juin de l'année en cours ou suivante)
+    today = date.today()
+    if today.month <= 6:
+        # Avant juillet -> fin campagne = 30 juin de cette année
+        default_fin = date(today.year, 6, 30)
     else:
-        code_produit = None
-        st.warning("Aucun produit disponible")
+        # Après juin -> fin campagne = 30 juin de l'année prochaine
+        default_fin = date(today.year + 1, 6, 30)
     
-    st.markdown("---")
+    # S'assurer que la date par défaut est dans le futur
+    if default_fin <= today:
+        default_fin = date(today.year + 1, 6, 30)
     
-    # Filtre site
-    sites = get_sites_production()
-    selected_site = st.selectbox("🏭 Site", sites, key="select_site")
-    
-    # Toggle CT/LT
-    st.markdown("---")
-    show_ct = st.checkbox("Afficher CT (court terme)", value=True)
-    show_lt = st.checkbox("Afficher LT (long terme)", value=True)
+    date_fin_campagne = st.date_input(
+        "📅 Date fin de campagne",
+        value=default_fin,
+        min_value=today,
+        max_value=date(2026, 6, 30)
+    )
+
+with col_param2:
+    # Calculer semaines restantes
+    today = date.today()
+    semaines_restantes = max(0, (date_fin_campagne - today).days // 7)
+    st.metric("Semaines restantes", semaines_restantes)
+
+st.markdown("---")
 
 # ============================================================
-# CONTENU PRINCIPAL
+# KPIs GLOBAUX
 # ============================================================
 
-if code_produit:
-    st.markdown(f"### 📦 Affectations pour: **{selected_ligne}**")
+besoins_df = get_besoins_par_produit(date_fin_campagne, semaines_restantes)
+stock_df = get_stock_total_disponible()
+
+if not besoins_df.empty:
+    col1, col2, col3, col4, col5 = st.columns(5)
     
-    # Onglets
-    tab1, tab2 = st.tabs(["📋 Affectations actuelles", "➕ Nouvelle affectation"])
+    besoin_total = besoins_df['besoin_tonnes'].sum()
+    stock_affecte = besoins_df['stock_affecte_tonnes'].sum()
+    difference = stock_affecte - besoin_total
     
-    # ============================================================
-    # TAB 1: AFFECTATIONS ACTUELLES
-    # ============================================================
+    nb_ok = len(besoins_df[besoins_df['statut'] == 'OK'])
+    nb_attention = len(besoins_df[besoins_df['statut'] == 'ATTENTION'])
+    nb_critique = len(besoins_df[besoins_df['statut'] == 'CRITIQUE'])
     
-    with tab1:
-        # Charger affectations
-        type_filter = None
-        if show_ct and not show_lt:
-            type_filter = 'CT'
-        elif show_lt and not show_ct:
-            type_filter = 'LT'
+    with col1:
+        st.metric("🎯 Besoin Total", f"{besoin_total:,.0f} T")
+    
+    with col2:
+        st.metric("📦 Stock Affecté", f"{stock_affecte:,.0f} T")
+    
+    with col3:
+        delta_color = "normal" if difference >= 0 else "inverse"
+        st.metric("📈 Différence", f"{difference:+,.0f} T", delta_color=delta_color)
+    
+    with col4:
+        if not stock_df.empty:
+            stock_dispo = stock_df['disponible_tonnes'].sum()
+            st.metric("📋 Stock Non Affecté", f"{stock_dispo:,.0f} T")
+    
+    with col5:
+        st.metric("📊 Produits", f"{len(besoins_df)}")
+    
+    # Résumé statuts
+    col_s1, col_s2, col_s3 = st.columns(3)
+    
+    with col_s1:
+        st.markdown(f"""
+        <div class="besoin-ok">
+            <strong>✅ OK</strong>: {nb_ok} produits
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col_s2:
+        st.markdown(f"""
+        <div class="besoin-warning">
+            <strong>⚠️ ATTENTION</strong>: {nb_attention} produits
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col_s3:
+        st.markdown(f"""
+        <div class="besoin-danger">
+            <strong>🔴 CRITIQUE</strong>: {nb_critique} produits
+        </div>
+        """, unsafe_allow_html=True)
+
+st.markdown("---")
+
+# ============================================================
+# ONGLETS
+# ============================================================
+
+tab1, tab2, tab3 = st.tabs(["📋 Par Produit", "📅 Par Semaine", "📦 Stock Disponible"])
+
+# ============================================================
+# TAB 1: BESOINS PAR PRODUIT
+# ============================================================
+
+with tab1:
+    st.subheader("📋 Besoins par Produit")
+    
+    if not besoins_df.empty:
+        # Filtres - Ligne 1 : Statut et Marque
+        col_f1, col_f2 = st.columns(2)
         
-        affectations_df = get_affectations_produit(code_produit, type_filter)
+        with col_f1:
+            statut_filter = st.multiselect(
+                "Filtrer par statut",
+                ["OK", "ATTENTION", "CRITIQUE"],
+                default=["CRITIQUE", "ATTENTION"],
+                key="filter_statut"
+            )
         
-        if not affectations_df.empty:
-            # KPIs affectations
-            col1, col2, col3, col4 = st.columns(4)
-            
-            total_brut = affectations_df['quantite_affectee_tonnes'].sum()
-            total_net = affectations_df['poids_net_estime_tonnes'].sum()
-            nb_lots = len(affectations_df)
-            
-            with col1:
-                st.metric("📦 Lots affectés", nb_lots)
-            with col2:
-                st.metric("⚖️ Tonnage brut", f"{total_brut:,.0f} T")
-            with col3:
-                st.metric("📊 Tonnage net", f"{total_net:,.0f} T")
-            with col4:
-                if conso_moy > 0:
-                    semaines = total_net / conso_moy
-                    st.metric("📅 Stock en semaines", f"{semaines:.1f}")
-                else:
-                    st.metric("📅 Stock en semaines", "-")
-            
-            st.markdown("---")
-            
-            # Tableau avec sélection pour suppression
-            st.markdown("#### Liste des affectations (ordre de consommation)")
-            
-            # Préparer affichage
-            df_display = affectations_df[[
-                'id', 'code_lot_interne', 'nom_variete', 'quantite_affectee_tonnes',
-                'poids_net_estime_tonnes', 'tare_utilisee_pct', 'type_affectation',
-                'date_debut_estimee', 'date_fin_estimee'
+        with col_f2:
+            marques = ["Toutes"] + sorted(besoins_df['marque'].dropna().unique().tolist())
+            marque_filter = st.selectbox("Filtrer par marque", marques, key="filter_marque_besoin")
+        
+        # Filtres - Ligne 2 : Libellé et Atelier
+        col_f3, col_f4 = st.columns(2)
+        
+        with col_f3:
+            libelles = ["Tous"] + sorted(besoins_df['libelle'].dropna().unique().tolist())
+            libelle_filter = st.selectbox("Filtrer par libellé produit", libelles, key="filter_libelle")
+        
+        with col_f4:
+            ateliers = ["Tous"] + sorted([a for a in besoins_df['atelier'].dropna().unique().tolist() if a])
+            atelier_filter = st.selectbox("Filtrer par atelier", ateliers, key="filter_atelier")
+        
+        # Appliquer filtres
+        df_filtered = besoins_df.copy()
+        
+        if statut_filter:
+            df_filtered = df_filtered[df_filtered['statut'].isin(statut_filter)]
+        
+        if marque_filter != "Toutes":
+            df_filtered = df_filtered[df_filtered['marque'] == marque_filter]
+        
+        if libelle_filter != "Tous":
+            df_filtered = df_filtered[df_filtered['libelle'] == libelle_filter]
+        
+        if atelier_filter != "Tous":
+            df_filtered = df_filtered[df_filtered['atelier'] == atelier_filter]
+        
+        if not df_filtered.empty:
+            # Préparer affichage avec libellé
+            df_display = df_filtered[[
+                'marque', 'libelle', 'type_produit', 'atelier', 'besoin_tonnes', 'stock_affecte_tonnes',
+                'difference', 'conso_hebdo_moyenne', 'statut'
             ]].copy()
             
             df_display.columns = [
-                'ID', 'Code Lot', 'Variété', 'Brut (T)', 'Net (T)', 
-                'Tare %', 'Type', 'Début', 'Fin'
+                'Marque', 'Libellé', 'Type Produit', 'Atelier', 'Besoin (T)', 'Stock Affecté (T)',
+                'Différence (T)', 'Conso Hebdo (T)', 'Statut'
             ]
             
             # Formater
-            df_display['Brut (T)'] = df_display['Brut (T)'].apply(lambda x: f"{x:,.1f}")
-            df_display['Net (T)'] = df_display['Net (T)'].apply(lambda x: f"{x:,.1f}")
-            df_display['Tare %'] = df_display['Tare %'].apply(lambda x: f"{x:.1f}%")
+            df_display['Besoin (T)'] = df_display['Besoin (T)'].apply(lambda x: f"{x:,.0f}")
+            df_display['Stock Affecté (T)'] = df_display['Stock Affecté (T)'].apply(lambda x: f"{x:,.0f}")
+            df_display['Différence (T)'] = df_display['Différence (T)'].apply(lambda x: f"{x:+,.0f}")
+            df_display['Conso Hebdo (T)'] = df_display['Conso Hebdo (T)'].apply(lambda x: f"{x:.1f}")
             
-            # Afficher avec sélection
+            # Tableau avec sélection
             event = st.dataframe(
                 df_display,
                 use_container_width=True,
                 hide_index=True,
                 on_select="rerun",
                 selection_mode="multi-row",
-                key="affectations_table"
+                key="besoins_table"
             )
             
             # Actions sur sélection
@@ -540,206 +432,178 @@ if code_produit:
             
             if len(selected_rows) > 0:
                 st.markdown("---")
-                col_del, col_task = st.columns(2)
                 
-                with col_del:
-                    if st.button("🗑️ Supprimer sélection", type="secondary", use_container_width=True):
-                        for idx in selected_rows:
-                            affectation_id = affectations_df.iloc[idx]['id']
-                            success, msg = delete_affectation(int(affectation_id))
+                # Bouton créer tâche
+                if st.button("📝 Créer tâche d'achat", type="primary", use_container_width=True):
+                    for idx in selected_rows:
+                        row = df_filtered.iloc[idx]
+                        if row['difference'] < 0:
+                            titre = f"ACHETER - {row['marque']} {row['libelle']}"
+                            desc = f"Type: {row['type_produit']} | Atelier: {row['atelier'] or 'N/A'}\nManque estimé: {abs(row['difference']):,.0f} T jusqu'au {date_fin_campagne.strftime('%d/%m/%Y')}"
+                            success, msg = create_tache(titre, desc)
                             if success:
                                 st.success(msg)
                             else:
                                 st.error(msg)
-                        st.rerun()
-                
-                with col_task:
-                    if st.button("📝 Créer tâche", use_container_width=True):
-                        st.session_state['show_task_form'] = True
-                
-                # Formulaire tâche
-                if st.session_state.get('show_task_form', False):
-                    with st.form("task_form"):
-                        st.markdown("##### Créer une tâche")
-                        
-                        type_tache = st.selectbox("Type", ["ACHETER", "VENDRE", "AUTRE"])
-                        description = st.text_area("Description")
-                        
-                        if st.form_submit_button("✅ Créer"):
-                            if description:
-                                success, msg = create_tache_from_selection(type_tache, description)
-                                if success:
-                                    st.success(msg)
-                                    st.session_state['show_task_form'] = False
-                                    st.rerun()
-                                else:
-                                    st.error(msg)
-                            else:
-                                st.error("Description obligatoire")
-        else:
-            st.info("Aucune affectation pour ce produit. Utilisez l'onglet '➕ Nouvelle affectation' pour en créer.")
-    
-    # ============================================================
-    # TAB 2: NOUVELLE AFFECTATION
-    # ============================================================
-    
-    with tab2:
-        st.markdown("#### 📦 Sélectionner un lot à affecter")
-        
-        # Filtres lots
-        col_filter1, col_filter2 = st.columns(2)
-        
-        with col_filter1:
-            varietes = ["Toutes"] + get_varietes_disponibles()
-            filter_variete = st.selectbox("Filtrer par variété", varietes, key="filter_variete_lot")
-        
-        with col_filter2:
-            filter_dispo = st.checkbox("Uniquement lots avec stock disponible", value=True)
-        
-        # Charger lots
-        lots_df = get_lots_disponibles(filter_variete if filter_variete != "Toutes" else None)
-        
-        if not lots_df.empty:
-            st.markdown(f"**{len(lots_df)} lot(s) disponible(s)**")
+                    st.rerun()
             
-            # Préparer affichage
-            df_lots_display = lots_df[[
-                'lot_id', 'code_lot_interne', 'nom_variete', 'poids_brut_tonnes',
-                'poids_disponible_tonnes', 'poids_net_estime_tonnes', 'tare_pct',
-                'prix_achat_euro_tonne', 'date_entree_stock'
-            ]].copy()
-            
-            df_lots_display.columns = [
-                'ID', 'Code Lot', 'Variété', 'Brut Total (T)', 
-                'Disponible (T)', 'Net Estimé (T)', 'Tare %',
-                'Prix Achat €/T', 'Date Entrée'
-            ]
-            
-            # Formater
-            for col in ['Brut Total (T)', 'Disponible (T)', 'Net Estimé (T)']:
-                df_lots_display[col] = df_lots_display[col].apply(lambda x: f"{x:,.1f}")
-            df_lots_display['Tare %'] = df_lots_display['Tare %'].apply(lambda x: f"{x:.1f}%")
-            df_lots_display['Prix Achat €/T'] = df_lots_display['Prix Achat €/T'].apply(
-                lambda x: f"{x:,.0f}" if pd.notna(x) and x > 0 else "-"
+            # Export
+            csv = df_filtered.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "📥 Exporter CSV",
+                csv,
+                f"besoins_campagne_{date.today().strftime('%Y%m%d')}.csv",
+                "text/csv"
             )
-            
-            # Tableau avec sélection
-            event_lots = st.dataframe(
-                df_lots_display,
-                use_container_width=True,
-                hide_index=True,
-                on_select="rerun",
-                selection_mode="single-row",
-                key="lots_table"
-            )
-            
-            selected_lot_rows = event_lots.selection.rows if hasattr(event_lots, 'selection') else []
-            
-            if len(selected_lot_rows) > 0:
-                st.markdown("---")
-                
-                selected_lot_idx = selected_lot_rows[0]
-                selected_lot = lots_df.iloc[selected_lot_idx]
-                
-                st.success(f"✅ Lot sélectionné: **{selected_lot['code_lot_interne']}** - {selected_lot['nom_variete']}")
-                
-                # Formulaire affectation
-                col_form1, col_form2 = st.columns(2)
-                
-                with col_form1:
-                    max_dispo = float(selected_lot['poids_disponible_tonnes'])
-                    quantite = st.number_input(
-                        "Quantité à affecter (T brut)",
-                        min_value=0.1,
-                        max_value=max_dispo,
-                        value=min(100.0, max_dispo),
-                        step=10.0,
-                        key="quantite_affectation"
-                    )
-                    
-                    # Calcul net estimé
-                    tare = float(selected_lot['tare_pct'])
-                    net_estime = quantite * (1 - tare / 100)
-                    st.info(f"📊 Net estimé: **{net_estime:,.1f} T** (tare {tare:.1f}%)")
-                
-                with col_form2:
-                    type_aff = st.selectbox(
-                        "Type d'affectation",
-                        ["LT - Long terme (prévision)", "CT - Court terme (réel)"],
-                        key="type_affectation"
-                    )
-                    type_code = 'LT' if 'LT' in type_aff else 'CT'
-                    
-                    # Calcul semaines
-                    if conso_moy > 0:
-                        semaines_lot = net_estime / conso_moy
-                        st.info(f"📅 Durée estimée: **{semaines_lot:.1f} semaines**")
-                
-                # Bouton créer
-                if st.button("✅ Créer l'affectation", type="primary", use_container_width=True, key="btn_create_affectation"):
-                    success, msg = create_affectation(
-                        code_produit,
-                        int(selected_lot['lot_id']),
-                        quantite,
-                        selected_site,
-                        type_code
-                    )
-                    
-                    if success:
-                        st.success(msg)
-                        st.balloons()
-                        st.rerun()
-                    else:
-                        st.error(msg)
-            else:
-                st.info("👆 Sélectionnez un lot dans le tableau ci-dessus")
         else:
-            st.warning("Aucun lot disponible avec les filtres actuels")
+            st.info("Aucun produit correspondant aux filtres")
+    else:
+        st.info("Aucune prévision de vente disponible")
 
-else:
-    st.info("👈 Sélectionnez un produit dans la barre latérale pour commencer")
+# ============================================================
+# TAB 2: BESOINS PAR SEMAINE
+# ============================================================
+
+with tab2:
+    st.subheader("📅 Prévisions par Semaine")
+    
+    if not besoins_df.empty:
+        # Sélection produit avec libellé
+        produits_list = besoins_df.apply(lambda x: f"{x['marque']} - {x['libelle']} ({x['type_produit']})", axis=1).tolist()
+        selected_produit = st.selectbox("Sélectionner un produit", produits_list, key="select_produit_semaine")
+        
+        # Récupérer code produit
+        idx = produits_list.index(selected_produit)
+        code_produit = besoins_df.iloc[idx]['code_produit']
+        
+        # Charger données semaine
+        semaines_df = get_besoins_par_semaine(code_produit, nb_semaines=16)
+        
+        if not semaines_df.empty:
+            # Graphique
+            st.markdown("#### 📈 Évolution des besoins")
+            
+            st.bar_chart(
+                semaines_df.set_index('semaine_label')['quantite_prevue_tonnes'],
+                use_container_width=True
+            )
+            
+            # Tableau détaillé
+            st.markdown("#### 📋 Détail par semaine")
+            
+            df_sem_display = semaines_df[['semaine_label', 'quantite_prevue_tonnes']].copy()
+            df_sem_display.columns = ['Semaine', 'Quantité (T)']
+            df_sem_display['Quantité (T)'] = df_sem_display['Quantité (T)'].apply(lambda x: f"{x:.1f}")
+            
+            st.dataframe(df_sem_display, use_container_width=True, hide_index=True)
+            
+            # Totaux
+            total_sem = semaines_df['quantite_prevue_tonnes'].sum()
+            moy_sem = semaines_df['quantite_prevue_tonnes'].mean()
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Total sur la période", f"{total_sem:,.1f} T")
+            with col2:
+                st.metric("Moyenne hebdomadaire", f"{moy_sem:.1f} T/sem")
+        else:
+            st.info("Aucune prévision disponible pour ce produit")
+    else:
+        st.info("Aucune donnée disponible")
+
+# ============================================================
+# TAB 3: STOCK DISPONIBLE
+# ============================================================
+
+with tab3:
+    st.subheader("📦 Stock Disponible par Variété")
+    
+    if not stock_df.empty:
+        # KPIs stock
+        col1, col2, col3 = st.columns(3)
+        
+        total_brut = stock_df['poids_brut_tonnes'].sum()
+        total_dispo = stock_df['disponible_tonnes'].sum()
+        total_affecte = stock_df['deja_affecte'].sum()
+        
+        with col1:
+            st.metric("📦 Stock Brut Total", f"{total_brut:,.0f} T")
+        with col2:
+            st.metric("✅ Déjà Affecté", f"{total_affecte:,.0f} T")
+        with col3:
+            st.metric("📋 Disponible", f"{total_dispo:,.0f} T")
+        
+        st.markdown("---")
+        
+        # Tableau par variété
+        df_stock_display = stock_df[[
+            'nom_variete', 'poids_brut_tonnes', 'deja_affecte', 'disponible_tonnes'
+        ]].copy()
+        
+        df_stock_display.columns = ['Variété', 'Stock Brut (T)', 'Affecté (T)', 'Disponible (T)']
+        
+        df_stock_display['Stock Brut (T)'] = df_stock_display['Stock Brut (T)'].apply(lambda x: f"{x:,.0f}")
+        df_stock_display['Affecté (T)'] = df_stock_display['Affecté (T)'].apply(lambda x: f"{x:,.0f}")
+        df_stock_display['Disponible (T)'] = df_stock_display['Disponible (T)'].apply(lambda x: f"{x:,.0f}")
+        
+        st.dataframe(df_stock_display, use_container_width=True, hide_index=True)
+        
+        # Graphique
+        st.markdown("---")
+        st.markdown("#### 📊 Répartition par variété")
+        
+        chart_data = stock_df[['nom_variete', 'disponible_tonnes']].copy()
+        chart_data = chart_data[chart_data['disponible_tonnes'] > 0]
+        chart_data = chart_data.set_index('nom_variete')
+        
+        if not chart_data.empty:
+            st.bar_chart(chart_data['disponible_tonnes'], use_container_width=True)
+    else:
+        st.info("Aucun stock disponible")
 
 st.markdown("---")
 
 # ============================================================
-# RÉSUMÉ GLOBAL
+# AIDE
 # ============================================================
 
-with st.expander("📊 Résumé global des affectations"):
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT 
-                pc.marque,
-                COUNT(DISTINCT pa.lot_id) as nb_lots,
-                SUM(pa.quantite_affectee_tonnes) as tonnes_brut,
-                SUM(pa.poids_net_estime_tonnes) as tonnes_net
-            FROM previsions_affectations pa
-            JOIN ref_produits_commerciaux pc ON pa.code_produit_commercial = pc.code_produit
-            WHERE pa.is_active = TRUE
-            GROUP BY pc.marque
-            ORDER BY tonnes_brut DESC
-        """)
-        
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        
-        if rows:
-            df_resume = pd.DataFrame(rows)
-            df_resume.columns = ['Marque', 'Nb Lots', 'Tonnes Brut', 'Tonnes Net']
-            
-            for col in ['Tonnes Brut', 'Tonnes Net']:
-                df_resume[col] = pd.to_numeric(df_resume[col], errors='coerce').fillna(0)
-                df_resume[col] = df_resume[col].apply(lambda x: f"{x:,.0f}")
-            
-            st.dataframe(df_resume, use_container_width=True, hide_index=True)
-        else:
-            st.info("Aucune affectation enregistrée")
-            
-    except Exception as e:
-        st.error(f"Erreur: {str(e)}")
+with st.expander("ℹ️ Aide et explications"):
+    st.markdown(f"""
+    ### Calcul des besoins
+    
+    **Période analysée**: De aujourd'hui ({date.today().strftime('%d/%m/%Y')}) jusqu'au {date_fin_campagne.strftime('%d/%m/%Y')} ({semaines_restantes} semaines)
+    
+    **Conso hebdo moyenne** = Moyenne des prévisions de ventes des prochaines semaines (table `previsions_ventes`)
+    
+    **Besoin** = Conso hebdo moyenne × {semaines_restantes} semaines restantes
+    
+    **Stock affecté** = Somme des affectations actives (poids net estimé)
+    
+    **Différence** = Stock affecté - Besoin
+    - ✅ **OK** : Différence ≥ 0 (stock suffisant)
+    - ⚠️ **ATTENTION** : -100 T < Différence < 0 (manque léger)
+    - 🔴 **CRITIQUE** : Différence ≤ -100 T (manque important)
+    
+    ### Exemple de calcul
+    
+    Pour un produit avec:
+    - Conso moyenne = 50 T/semaine
+    - Semaines restantes = {semaines_restantes}
+    - Stock affecté = 800 T
+    
+    → Besoin = 50 × {semaines_restantes} = {50 * semaines_restantes} T
+    → Différence = 800 - {50 * semaines_restantes} = {800 - 50 * semaines_restantes} T
+    
+    ### Actions
+    
+    - **Créer tâche d'achat** : Génère une tâche pour les produits sélectionnés en manque
+    - **Exporter CSV** : Télécharge les données pour analyse externe
+    
+    ### Données nécessaires
+    
+    - Table `previsions_ventes` : Prévisions hebdomadaires par produit
+    - Table `previsions_affectations` : Affectations lots → produits
+    - Table `lots_bruts` : Stock de lots disponibles
+    """)
 
 show_footer()
