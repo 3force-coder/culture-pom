@@ -42,8 +42,13 @@ if not is_authenticated():
 # FONCTIONS
 # ============================================================
 
-def get_besoins_par_produit(date_fin_campagne):
-    """Calcule les besoins par produit jusqu'à fin de campagne"""
+def get_besoins_par_produit(date_fin_campagne, semaines_restantes):
+    """Calcule les besoins par produit jusqu'à fin de campagne
+    
+    Logique:
+    - Conso hebdo moyenne = Moyenne des 5 prochaines semaines de previsions_ventes
+    - Besoin = Conso moyenne × Semaines restantes jusqu'à fin campagne
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -53,20 +58,31 @@ def get_besoins_par_produit(date_fin_campagne):
         semaine_courante = today.isocalendar()[1]
         annee_courante = today.year
         
-        # Semaine fin campagne
-        semaine_fin = date_fin_campagne.isocalendar()[1]
-        annee_fin = date_fin_campagne.year
-        
         query = """
-            WITH besoins AS (
+            WITH semaines_5_prochaines AS (
+                -- Récupérer les 5 prochaines semaines de prévisions (triées par date)
                 SELECT 
                     pv.code_produit_commercial,
-                    SUM(pv.quantite_prevue_tonnes) as besoin_total
+                    pv.quantite_prevue_tonnes,
+                    pv.annee,
+                    pv.semaine,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY pv.code_produit_commercial 
+                        ORDER BY pv.annee, pv.semaine
+                    ) as rn
                 FROM previsions_ventes pv
                 WHERE (pv.annee = %s AND pv.semaine >= %s)
-                   OR (pv.annee > %s AND pv.annee < %s)
-                   OR (pv.annee = %s AND pv.semaine <= %s)
-                GROUP BY pv.code_produit_commercial
+                   OR (pv.annee > %s)
+            ),
+            conso_5_semaines AS (
+                -- Moyenne limitée aux 5 premières semaines
+                SELECT 
+                    code_produit_commercial,
+                    AVG(quantite_prevue_tonnes) as conso_hebdo_moyenne,
+                    COUNT(*) as nb_semaines_prevues
+                FROM semaines_5_prochaines
+                WHERE rn <= 5
+                GROUP BY code_produit_commercial
             ),
             affectations AS (
                 SELECT 
@@ -75,16 +91,6 @@ def get_besoins_par_produit(date_fin_campagne):
                 FROM previsions_affectations pa
                 WHERE pa.is_active = TRUE
                 GROUP BY pa.code_produit_commercial
-            ),
-            conso_moyenne AS (
-                SELECT 
-                    pv.code_produit_commercial,
-                    AVG(pv.quantite_prevue_tonnes) as conso_hebdo
-                FROM previsions_ventes pv
-                WHERE pv.annee = %s
-                  AND pv.semaine >= %s - 5
-                  AND pv.semaine <= %s
-                GROUP BY pv.code_produit_commercial
             )
             SELECT 
                 pc.code_produit,
@@ -92,29 +98,29 @@ def get_besoins_par_produit(date_fin_campagne):
                 pc.type_produit,
                 pc.libelle,
                 pc.atelier,
-                COALESCE(b.besoin_total, 0) as besoin_tonnes,
+                COALESCE(c.conso_hebdo_moyenne, 0) as conso_hebdo_moyenne,
+                COALESCE(c.nb_semaines_prevues, 0) as nb_semaines_prevues,
+                -- Besoin = Conso moyenne × Semaines restantes
+                COALESCE(c.conso_hebdo_moyenne, 0) * %s as besoin_tonnes,
                 COALESCE(a.stock_affecte, 0) as stock_affecte_tonnes,
-                COALESCE(a.stock_affecte, 0) - COALESCE(b.besoin_total, 0) as difference,
-                COALESCE(cm.conso_hebdo, 0) as conso_hebdo_moyenne,
+                COALESCE(a.stock_affecte, 0) - (COALESCE(c.conso_hebdo_moyenne, 0) * %s) as difference,
                 CASE 
-                    WHEN COALESCE(a.stock_affecte, 0) - COALESCE(b.besoin_total, 0) >= 0 THEN 'OK'
-                    WHEN COALESCE(a.stock_affecte, 0) - COALESCE(b.besoin_total, 0) > -100 THEN 'ATTENTION'
+                    WHEN COALESCE(a.stock_affecte, 0) - (COALESCE(c.conso_hebdo_moyenne, 0) * %s) >= 0 THEN 'OK'
+                    WHEN COALESCE(a.stock_affecte, 0) - (COALESCE(c.conso_hebdo_moyenne, 0) * %s) > -100 THEN 'ATTENTION'
                     ELSE 'CRITIQUE'
                 END as statut
             FROM ref_produits_commerciaux pc
-            LEFT JOIN besoins b ON pc.code_produit = b.code_produit_commercial
+            LEFT JOIN conso_5_semaines c ON pc.code_produit = c.code_produit_commercial
             LEFT JOIN affectations a ON pc.code_produit = a.code_produit_commercial
-            LEFT JOIN conso_moyenne cm ON pc.code_produit = cm.code_produit_commercial
             WHERE pc.is_active = TRUE
-              AND COALESCE(b.besoin_total, 0) > 0
+              AND COALESCE(c.conso_hebdo_moyenne, 0) > 0
             ORDER BY difference ASC
         """
         
         cursor.execute(query, (
             annee_courante, semaine_courante,
-            annee_courante, annee_fin,
-            annee_fin, semaine_fin,
-            annee_courante, semaine_courante, semaine_courante
+            annee_courante,
+            semaines_restantes, semaines_restantes, semaines_restantes, semaines_restantes
         ))
         
         rows = cursor.fetchall()
@@ -280,7 +286,7 @@ st.markdown("---")
 # KPIs GLOBAUX
 # ============================================================
 
-besoins_df = get_besoins_par_produit(date_fin_campagne)
+besoins_df = get_besoins_par_produit(date_fin_campagne, semaines_restantes)
 stock_df = get_stock_total_disponible()
 
 if not besoins_df.empty:
@@ -548,9 +554,11 @@ with st.expander("ℹ️ Aide et explications"):
     st.markdown(f"""
     ### Calcul des besoins
     
-    **Période analysée**: De aujourd'hui ({date.today().strftime('%d/%m/%Y')}) jusqu'au {date_fin_campagne.strftime('%d/%m/%Y')}
+    **Période analysée**: De aujourd'hui ({date.today().strftime('%d/%m/%Y')}) jusqu'au {date_fin_campagne.strftime('%d/%m/%Y')} ({semaines_restantes} semaines)
     
-    **Besoin** = Somme des prévisions de ventes sur la période
+    **Conso hebdo moyenne** = Moyenne des prévisions de ventes des prochaines semaines (table `previsions_ventes`)
+    
+    **Besoin** = Conso hebdo moyenne × {semaines_restantes} semaines restantes
     
     **Stock affecté** = Somme des affectations actives (poids net estimé)
     
@@ -558,6 +566,16 @@ with st.expander("ℹ️ Aide et explications"):
     - ✅ **OK** : Différence ≥ 0 (stock suffisant)
     - ⚠️ **ATTENTION** : -100 T < Différence < 0 (manque léger)
     - 🔴 **CRITIQUE** : Différence ≤ -100 T (manque important)
+    
+    ### Exemple de calcul
+    
+    Pour un produit avec:
+    - Conso moyenne = 50 T/semaine
+    - Semaines restantes = {semaines_restantes}
+    - Stock affecté = 800 T
+    
+    → Besoin = 50 × {semaines_restantes} = {50 * semaines_restantes} T
+    → Différence = 800 - {50 * semaines_restantes} = {800 - 50 * semaines_restantes} T
     
     ### Actions
     
