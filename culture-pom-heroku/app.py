@@ -100,6 +100,12 @@ pages = {
         st.Page("pages/06_Previsions_Ventes.py", title="Prévisions Ventes", icon="📈"),
         st.Page("pages/07_Affectation_Stock.py", title="Affectation Stock", icon="🔗"),
     ],
+        "📊 Prévisions": [
+        st.Page("pages/31_Prev_Dashboard.py", title="Dashboard Prév.", icon="📊"),
+        st.Page("pages/32_Prev_Affectations.py", title="Affectations", icon="📋"),
+        st.Page("pages/33_Prev_Simulation.py", title="Simulation", icon="💰"),
+        st.Page("pages/34_Prev_Besoins.py", title="Besoins", icon="🎯"),
+    ],
     "🛒 CRM": [
         st.Page("pages/20_CRM_Dashboard.py", title="Dashboard CRM", icon="📊"),
         st.Page("pages/21_CRM_Magasins.py", title="Clients", icon="🏪"),
