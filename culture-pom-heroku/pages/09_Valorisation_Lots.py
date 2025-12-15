@@ -65,7 +65,7 @@ require_access("FINANCE")
 # ============================================================
 
 st.title("💰 Valorisation des Lots")
-st.caption("*Qualification des lots : prix d'achat et tare*")
+st.caption("*Qualification des lots : prix d'achat, tare et poids*")
 st.markdown("---")
 
 # ============================================================
@@ -215,7 +215,7 @@ def get_lots_qualifies(filtre_nom=None, filtre_variete=None, filtre_producteur=N
         return pd.DataFrame()
 
 def update_lot_valorisation(lot_id, prix_achat, tare_achat):
-    """Met à jour le prix et la tare d'un lot"""
+    """Met à jour le prix et la tare d'un lot (utilise le poids existant)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -253,6 +253,50 @@ def update_lot_valorisation(lot_id, prix_achat, tare_achat):
         if 'conn' in locals():
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
+
+
+def update_lot_valorisation_complet(lot_id, poids_brut, prix_achat, tare_achat):
+    """
+    Met à jour le poids, prix et tare d'un lot
+    ⚠️ Le poids modifié ici est le poids d'ENTRÉE (valorisation), 
+    PAS le stock disponible (qui est calculé depuis stock_emplacements)
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Convertir en types Python natifs
+        lot_id = int(lot_id)
+        poids_brut = float(poids_brut)
+        prix_achat = float(prix_achat)
+        tare_achat = float(tare_achat)
+        
+        # Calculer valeur lot
+        poids_net_paye = poids_brut * (1 - tare_achat / 100)
+        valeur_lot = (poids_net_paye / 1000) * prix_achat
+        
+        # Update avec poids
+        cursor.execute("""
+            UPDATE lots_bruts
+            SET poids_total_brut_kg = %s,
+                prix_achat_euro_tonne = %s,
+                tare_achat_pct = %s,
+                valeur_lot_euro = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (poids_brut, prix_achat, tare_achat, valeur_lot, lot_id))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, f"✅ Lot mis à jour (Valeur: {valeur_lot:,.2f} €)"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
 
 def get_recap_valorisation_global():
     """Récap valorisation global de tous les lots qualifiés"""
@@ -544,24 +588,22 @@ def get_stats_tare_variete():
         return pd.DataFrame()
 
 def get_evolution_prix_temps():
-    """Évolution prix dans le temps (par semaine)"""
+    """Évolution prix moyen par semaine"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
         cursor.execute("""
             SELECT 
-                EXTRACT(WEEK FROM date_entree_stock) as semaine,
-                EXTRACT(YEAR FROM date_entree_stock) as annee,
-                AVG(prix_achat_euro_tonne) as prix_moyen,
-                COUNT(*) as nb_lots
+                TO_CHAR(date_entree_stock, 'IYYY-IW') as semaine,
+                AVG(prix_achat_euro_tonne) as prix_moyen
             FROM lots_bruts
             WHERE is_active = TRUE
               AND prix_achat_euro_tonne IS NOT NULL
               AND prix_achat_euro_tonne > 0
-              AND date_entree_stock IS NOT NULL
-            GROUP BY EXTRACT(WEEK FROM date_entree_stock), EXTRACT(YEAR FROM date_entree_stock)
-            ORDER BY annee, semaine
+              AND date_entree_stock >= CURRENT_DATE - INTERVAL '6 months'
+            GROUP BY TO_CHAR(date_entree_stock, 'IYYY-IW')
+            ORDER BY semaine
         """)
         
         rows = cursor.fetchall()
@@ -570,12 +612,8 @@ def get_evolution_prix_temps():
         
         if rows:
             df = pd.DataFrame(rows)
-            df['semaine'] = df['annee'].astype(str) + '-S' + df['semaine'].astype(int).astype(str)
-            numeric_cols = ['prix_moyen']
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce').round(2)
-            return df[['semaine', 'prix_moyen', 'nb_lots']]
+            df['prix_moyen'] = pd.to_numeric(df['prix_moyen'], errors='coerce').round(2)
+            return df
         return pd.DataFrame()
         
     except Exception as e:
@@ -583,24 +621,22 @@ def get_evolution_prix_temps():
         return pd.DataFrame()
 
 def get_evolution_tare_temps():
-    """Évolution tare dans le temps (par semaine)"""
+    """Évolution tare moyenne par semaine"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
         cursor.execute("""
             SELECT 
-                EXTRACT(WEEK FROM date_entree_stock) as semaine,
-                EXTRACT(YEAR FROM date_entree_stock) as annee,
-                AVG(tare_achat_pct) as tare_moyenne,
-                COUNT(*) as nb_lots
+                TO_CHAR(date_entree_stock, 'IYYY-IW') as semaine,
+                AVG(tare_achat_pct) as tare_moyenne
             FROM lots_bruts
             WHERE is_active = TRUE
               AND tare_achat_pct IS NOT NULL
               AND tare_achat_pct > 0
-              AND date_entree_stock IS NOT NULL
-            GROUP BY EXTRACT(WEEK FROM date_entree_stock), EXTRACT(YEAR FROM date_entree_stock)
-            ORDER BY annee, semaine
+              AND date_entree_stock >= CURRENT_DATE - INTERVAL '6 months'
+            GROUP BY TO_CHAR(date_entree_stock, 'IYYY-IW')
+            ORDER BY semaine
         """)
         
         rows = cursor.fetchall()
@@ -609,53 +645,36 @@ def get_evolution_tare_temps():
         
         if rows:
             df = pd.DataFrame(rows)
-            df['semaine'] = df['annee'].astype(str) + '-S' + df['semaine'].astype(int).astype(str)
-            numeric_cols = ['tare_moyenne']
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce').round(2)
-            return df[['semaine', 'tare_moyenne', 'nb_lots']]
+            df['tare_moyenne'] = pd.to_numeric(df['tare_moyenne'], errors='coerce').round(2)
+            return df
         return pd.DataFrame()
         
     except Exception as e:
         st.error(f"❌ Erreur : {str(e)}")
         return pd.DataFrame()
 
-def get_historique_modifications(lot_id=None, limit=20):
-    """Historique des modifications de valorisation"""
+def get_historique_modifications(limit=50):
+    """Récupère l'historique des dernières modifications"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        if lot_id:
-            cursor.execute("""
-                SELECT 
-                    l.code_lot_interne,
-                    l.nom_usage,
-                    l.updated_at,
-                    l.prix_achat_euro_tonne,
-                    l.tare_achat_pct,
-                    l.valeur_lot_euro
-                FROM lots_bruts l
-                WHERE l.id = %s
-                  AND l.prix_achat_euro_tonne IS NOT NULL
-                ORDER BY l.updated_at DESC
-                LIMIT %s
-            """, (lot_id, limit))
-        else:
-            cursor.execute("""
-                SELECT 
-                    l.code_lot_interne,
-                    l.nom_usage,
-                    l.updated_at,
-                    l.prix_achat_euro_tonne,
-                    l.tare_achat_pct,
-                    l.valeur_lot_euro
-                FROM lots_bruts l
-                WHERE l.prix_achat_euro_tonne IS NOT NULL
-                ORDER BY l.updated_at DESC
-                LIMIT %s
-            """, (limit,))
+        cursor.execute("""
+            SELECT 
+                code_lot_interne,
+                nom_usage,
+                prix_achat_euro_tonne,
+                tare_achat_pct,
+                poids_total_brut_kg,
+                valeur_lot_euro,
+                updated_at
+            FROM lots_bruts
+            WHERE is_active = TRUE
+              AND prix_achat_euro_tonne IS NOT NULL
+              AND updated_at IS NOT NULL
+            ORDER BY updated_at DESC
+            LIMIT %s
+        """, (limit,))
         
         rows = cursor.fetchall()
         cursor.close()
@@ -663,7 +682,7 @@ def get_historique_modifications(lot_id=None, limit=20):
         
         if rows:
             df = pd.DataFrame(rows)
-            numeric_cols = ['prix_achat_euro_tonne', 'tare_achat_pct', 'valeur_lot_euro']
+            numeric_cols = ['prix_achat_euro_tonne', 'tare_achat_pct', 'poids_total_brut_kg', 'valeur_lot_euro']
             for col in numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -675,25 +694,29 @@ def get_historique_modifications(lot_id=None, limit=20):
         return pd.DataFrame()
 
 # ============================================================
-# KPIs PRINCIPAUX
+# CHARGEMENT DONNÉES
 # ============================================================
 
 lots_non_qualifies = get_lots_non_qualifies()
 lots_qualifies = get_lots_qualifies()
 
+# ============================================================
+# KPIs
+# ============================================================
+
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    st.metric("📝 Lots Non Qualifiés", len(lots_non_qualifies))
+    st.metric("📦 Lots Non Qualifiés", len(lots_non_qualifies) if not lots_non_qualifies.empty else 0)
 
 with col2:
-    st.metric("✅ Lots Qualifiés", len(lots_qualifies))
+    st.metric("✅ Lots Qualifiés", len(lots_qualifies) if not lots_qualifies.empty else 0)
 
 with col3:
-    total_lots = len(lots_non_qualifies) + len(lots_qualifies)
+    total_lots = (len(lots_non_qualifies) if not lots_non_qualifies.empty else 0) + (len(lots_qualifies) if not lots_qualifies.empty else 0)
     if total_lots > 0:
-        pct_qualifies = (len(lots_qualifies) / total_lots) * 100
-        st.metric("📊 Taux Qualification", f"{pct_qualifies:.0f}%")
+        taux = (len(lots_qualifies) if not lots_qualifies.empty else 0) / total_lots * 100
+        st.metric("📊 Taux Qualification", f"{taux:.0f}%")
     else:
         st.metric("📊 Taux Qualification", "0%")
 
@@ -803,11 +826,17 @@ with tab1:
         """, unsafe_allow_html=True)
 
 # ============================================================
-# ONGLET 2 : MODIFIER (lots qualifiés)
+# ONGLET 2 : MODIFIER (lots qualifiés) - ⭐ AVEC POIDS ÉDITABLE
 # ============================================================
 
 with tab2:
     st.subheader("🔧 Modifier Lots Qualifiés")
+    
+    # ⭐ INFO IMPORTANTE
+    st.info("""
+    💡 **Poids modifiable** : Le poids ici est le **poids d'entrée** (pour la valorisation).
+    Il est **indépendant du stock physique** qui est calculé depuis les emplacements.
+    """)
     
     if not lots_qualifies.empty:
         # Filtres
@@ -831,7 +860,7 @@ with tab2:
         if not lots_qualifies.empty:
             st.markdown(f"**{len(lots_qualifies)} lot(s) qualifié(s)**")
             
-            # Tableau éditable
+            # ⭐ Tableau éditable AVEC POIDS
             df_edit = lots_qualifies[['id', 'code_lot_interne', 'nom_usage', 'variete_nom', 'producteur_nom', 'poids_total_brut_kg', 'prix_achat_euro_tonne', 'tare_achat_pct', 'valeur_lot_euro']].copy()
             
             df_display = df_edit.rename(columns={
@@ -845,13 +874,19 @@ with tab2:
                 'valeur_lot_euro': 'Valeur (€)'
             })
             
+            # ⭐ POIDS MAINTENANT ÉDITABLE
             column_config = {
                 "id": None,
                 "Code": st.column_config.TextColumn("Code", disabled=True),
                 "Nom": st.column_config.TextColumn("Nom", disabled=True),
                 "Variété": st.column_config.TextColumn("Variété", disabled=True),
                 "Producteur": st.column_config.TextColumn("Producteur", disabled=True),
-                "Poids (kg)": st.column_config.NumberColumn("Poids (kg)", format="%.0f", disabled=True),
+                "Poids (kg)": st.column_config.NumberColumn(
+                    "Poids (kg)", 
+                    format="%.0f", 
+                    min_value=0,
+                    help="⚠️ Poids d'ENTRÉE (valorisation), pas le stock disponible"
+                ),
                 "Prix (€/T)": st.column_config.NumberColumn("Prix (€/T)", format="%.2f", min_value=0),
                 "Tare (%)": st.column_config.NumberColumn("Tare (%)", format="%.2f", min_value=0, max_value=100),
                 "Valeur (€)": st.column_config.NumberColumn("Valeur (€)", format="%.2f", disabled=True)
@@ -876,13 +911,20 @@ with tab2:
                     
                     for idx in edited_df.index:
                         lot_id = int(df_display.loc[idx, 'id'])
+                        
+                        # Récupérer anciennes valeurs
+                        old_poids = float(df_display.loc[idx, 'Poids (kg)'])
                         old_prix = float(df_display.loc[idx, 'Prix (€/T)'])
                         old_tare = float(df_display.loc[idx, 'Tare (%)'])
+                        
+                        # Récupérer nouvelles valeurs
+                        new_poids = float(edited_df.loc[idx, 'Poids (kg)'])
                         new_prix = float(edited_df.loc[idx, 'Prix (€/T)'])
                         new_tare = float(edited_df.loc[idx, 'Tare (%)'])
                         
-                        if old_prix != new_prix or old_tare != new_tare:
-                            success, message = update_lot_valorisation(lot_id, new_prix, new_tare)
+                        # ⭐ Vérifier si modifié (poids, prix ou tare)
+                        if old_poids != new_poids or old_prix != new_prix or old_tare != new_tare:
+                            success, message = update_lot_valorisation_complet(lot_id, new_poids, new_prix, new_tare)
                             if success:
                                 modifications += 1
                     
@@ -898,7 +940,7 @@ with tab2:
         else:
             st.info("Aucun lot qualifié avec ces filtres")
     else:
-        st.warning("⚠️ Aucun lot qualifié à modifier")
+        st.info("📦 Aucun lot qualifié à modifier")
 
 # ============================================================
 # ONGLET 3 : STATISTIQUES
@@ -907,91 +949,89 @@ with tab2:
 with tab3:
     st.subheader("📊 Statistiques de Valorisation")
     
-    # ⭐ SOUS-ONGLETS
     stat_tab1, stat_tab2, stat_tab3, stat_tab4, stat_tab5, stat_tab6 = st.tabs([
-        "📊 Vue Globale",
-        "📋 Détails par Lot",
-        "💶 Prix par Variété", 
-        "🏭 Prix par Producteur",
-        "📉 Tare par Variété",
-        "📈 Évolution Temporelle"
+        "🎯 Récap Global", "📋 Détail Lots", "💶 Prix/Variété", 
+        "🏭 Prix/Producteur", "📉 Tare/Variété", "📈 Évolution"
     ])
     
     # ============================================================
-    # SOUS-ONGLET 1 : VUE GLOBALE (récap déplacé ici)
+    # SOUS-ONGLET 1 : RÉCAP GLOBAL
     # ============================================================
     
     with stat_tab1:
-        st.markdown("### 📊 Récap Valorisation Stock Complet")
+        st.markdown("### 🎯 Récapitulatif Global")
         
         recap = get_recap_valorisation_global()
         
         if recap:
-            col1, col2 = st.columns(2)
+            # Ligne 1 : Volumes
+            col1, col2, col3 = st.columns(3)
             
             with col1:
-                # ✅ HAUTEUR FIXE : min-height: 250px
-                st.markdown("""
-                <div style='background-color: #e3f2fd; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #2196f3; min-height: 250px;'>
-                    <h4 style='margin-top: 0; color: #1976d2;'>💰 VALEUR ACHAT</h4>
-                    <p style='margin: 0.3rem 0;'><strong>Poids brut total:</strong> {:.1f} T</p>
-                    <p style='margin: 0.3rem 0;'><strong>Tare achat moyenne:</strong> {:.1f}%</p>
-                    <p style='margin: 0.3rem 0;'><strong>Poids net payé:</strong> {:.1f} T</p>
-                    <hr style='margin: 0.5rem 0;'>
-                    <p style='margin: 0.3rem 0; font-size: 1.1rem;'><strong>Valeur stock:</strong> {:,.0f} €</p>
-                </div>
-                """.format(
-                    recap['poids_brut_total'],
-                    recap['tare_achat_moy'],
-                    recap['poids_net_paye'],
-                    recap['valeur_totale']
-                ), unsafe_allow_html=True)
+                st.metric("📦 Lots qualifiés", recap['nb_lots'])
             
             with col2:
-                # ✅ HAUTEUR FIXE : min-height: 250px
-                st.markdown("""
-                <div style='background-color: #fff3e0; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #ff9800; min-height: 250px;'>
-                    <h4 style='margin-top: 0; color: #f57c00;'>🏭 MATIÈRE PREMIÈRE PRODUCTION</h4>
-                    <p style='margin: 0.3rem 0;'><strong>Tare production moyenne:</strong> {:.1f}% <span style='font-size: 0.85rem;'>{}</span></p>
-                    <p style='margin: 0.3rem 0;'><strong>Poids net production:</strong> {:.1f} T</p>
-                    <hr style='margin: 0.5rem 0;'>
-                    <h4 style='margin-top: 0.5rem; margin-bottom: 0.3rem; color: #d32f2f;'>📈 ÉCARTS</h4>
-                    <p style='margin: 0.3rem 0;'><strong>Perte production:</strong> {:.1f} T ({:.1f}%)</p>
-                    <p style='margin: 0.3rem 0;'><strong>Valeur MP réelle:</strong> {:,.0f} €</p>
-                </div>
-                """.format(
-                    recap['tare_prod_moy'],
-                    recap['tare_prod_source'],
-                    recap['poids_net_production'],
-                    recap['perte_production'],
-                    recap['pct_perte'],
-                    recap['valeur_mp_reelle']
-                ), unsafe_allow_html=True)
+                st.metric("⚖️ Poids brut total", f"{recap['poids_brut_total']:,.1f} T")
             
-            st.caption("💡 **Tare achat** : Négociée avec producteur (ce qu'on a payé) | **Tare production** : Réelle après lavage ou standard 22% (matière disponible)")
+            with col3:
+                st.metric("💰 Valeur totale", f"{recap['valeur_totale']:,.0f} €")
+            
+            st.markdown("---")
+            
+            # Ligne 2 : Comparaison Achat vs Production
+            st.markdown("#### 📊 Comparaison Achat vs Production")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown("""
+                <div class='info-box'>
+                    <h4>💵 Ce qu'on a payé</h4>
+                    <p><strong>Tare achat moyenne</strong> : {:.1f}%</p>
+                    <p><strong>Poids net payé</strong> : {:,.1f} T</p>
+                </div>
+                """.format(recap['tare_achat_moy'], recap['poids_net_paye']), unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown("""
+                <div class='info-box'>
+                    <h4>🏭 Ce qu'on a réellement</h4>
+                    <p><strong>Tare production</strong> : {:.1f}% ({})</p>
+                    <p><strong>Poids net production</strong> : {:,.1f} T</p>
+                </div>
+                """.format(recap['tare_prod_moy'], recap['tare_prod_source'], recap['poids_net_production']), unsafe_allow_html=True)
+            
+            with col3:
+                if recap['pct_perte'] > 0:
+                    st.markdown("""
+                    <div class='warning-box'>
+                        <h4>⚠️ Écart</h4>
+                        <p><strong>Perte</strong> : {:,.1f} T ({:.1f}%)</p>
+                        <p><small>Différence entre ce qu'on paie et ce qu'on récupère</small></p>
+                    </div>
+                    """.format(recap['perte_production'], recap['pct_perte']), unsafe_allow_html=True)
+                else:
+                    st.markdown("""
+                    <div class='success-box' style='padding: 1rem;'>
+                        <h4>✅ Gain</h4>
+                        <p><strong>Surplus</strong> : {:,.1f} T ({:.1f}%)</p>
+                    </div>
+                    """.format(abs(recap['perte_production']), abs(recap['pct_perte'])), unsafe_allow_html=True)
         else:
-            st.info("📊 Aucun lot qualifié pour calculer les statistiques globales")
+            st.info("📊 Aucune donnée disponible")
     
     # ============================================================
-    # SOUS-ONGLET 2 : DÉTAILS PAR LOT (nouveau)
+    # SOUS-ONGLET 2 : DÉTAIL LOTS
     # ============================================================
     
     with stat_tab2:
-        st.markdown("### 📋 Détails Valorisation par Lot")
+        st.markdown("### 📋 Détail par Lot")
         
         df_details = get_details_lots_qualifies()
         
         if not df_details.empty:
-            st.markdown(f"**{len(df_details)} lot(s) qualifié(s)**")
-            
-            # Formater pour affichage
-            df_display = df_details[[
-                'id', 'code_lot_interne', 'variete', 'producteur',
-                'poids_total_brut_kg', 'tare_achat_pct', 'poids_net_paye_kg',
-                'tare_production_pct', 'tare_prod_source', 'poids_net_production_kg',
-                'ecart_kg', 'ecart_pct', 'valeur_lot_euro'
-            ]].copy()
-            
+            # Convertir en tonnes pour affichage
+            df_display = df_details.copy()
             df_display['poids_total_brut_kg'] = df_display['poids_total_brut_kg'] / 1000
             df_display['poids_net_paye_kg'] = df_display['poids_net_paye_kg'] / 1000
             df_display['poids_net_production_kg'] = df_display['poids_net_production_kg'] / 1000
@@ -1183,10 +1223,12 @@ with tab4:
         st.markdown(f"**{len(df_historique)} modification(s) récente(s)**")
         
         for idx, row in df_historique.iterrows():
+            poids_kg = row['poids_total_brut_kg'] if pd.notna(row['poids_total_brut_kg']) else 0
             st.markdown(f"""
             <div class='history-item modification'>
                 <strong>{row['code_lot_interne']}</strong> - {row['nom_usage']}<br>
                 <small>📅 {row['updated_at']}</small><br>
+                ⚖️ Poids : {poids_kg:,.0f} kg |
                 💶 Prix : {row['prix_achat_euro_tonne']:.2f} €/T | 
                 📉 Tare : {row['tare_achat_pct']:.1f}% | 
                 💰 Valeur : {row['valeur_lot_euro']:,.0f} €
