@@ -51,7 +51,7 @@ if not is_authenticated():
     st.stop()
 
 # Date fin campagne
-DATE_FIN_CAMPAGNE = date(2025, 6, 30)
+DATE_FIN_CAMPAGNE = date(2026, 6, 30)
 
 # ============================================================
 # FONCTIONS DONNÉES
@@ -264,33 +264,25 @@ def get_conso_moyenne_produit(code_produit):
         return 0
 
 def get_besoin_total_produit(code_produit):
-    """Calcule le besoin total d'un produit jusqu'à fin de campagne"""
+    """Calcule le besoin total d'un produit jusqu'à fin de campagne
+    
+    Formule: Besoin = Conso moyenne hebdo × Nombre de semaines restantes jusqu'au 30/06/2026
+    """
     try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
+        # 1. Calculer le nombre de semaines entre aujourd'hui et fin campagne
         today = date.today()
-        semaine_courante = today.isocalendar()[1]
-        annee_courante = today.year
+        nb_semaines = (DATE_FIN_CAMPAGNE - today).days / 7.0
         
-        # Besoin = somme prévisions de maintenant jusqu'à S26 2025
-        cursor.execute("""
-            SELECT COALESCE(SUM(quantite_prevue_tonnes), 0) as besoin_total
-            FROM previsions_ventes
-            WHERE code_produit_commercial = %s
-              AND (
-                  (annee = %s AND semaine >= %s)
-                  OR (annee = 2025 AND semaine <= 26)
-              )
-        """, (code_produit, annee_courante, semaine_courante))
+        if nb_semaines <= 0:
+            return 0.0
         
-        result = cursor.fetchone()
-        cursor.close()
-        conn.close()
+        # 2. Récupérer la consommation moyenne hebdomadaire
+        conso_hebdo = get_conso_moyenne_produit(code_produit)
         
-        if result and result['besoin_total'] is not None:
-            return float(result['besoin_total'])
-        return 0.0
+        # 3. Besoin = moyenne × nombre de semaines
+        besoin = conso_hebdo * nb_semaines
+        
+        return float(besoin)
         
     except:
         return 0.0
