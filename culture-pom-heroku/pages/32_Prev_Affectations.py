@@ -53,17 +53,39 @@ if not is_authenticated():
 # Date fin campagne
 DATE_FIN_CAMPAGNE = date(2026, 6, 30)
 
+def clear_data_cache():
+    """Invalide tous les caches de données après modification"""
+    # Invalide les fonctions cachées
+    _get_all_lots_raw.clear()
+    get_affectations_existantes.clear()
+    get_resume_par_produit.clear()
+    get_varietes_disponibles.clear()
+    get_producteurs_disponibles.clear()
+    get_produits_commerciaux.clear()
+
 # ============================================================
 # FONCTIONS DONNÉES
 # ============================================================
 
-def get_lots_disponibles(varietes_filter=None, producteurs_filter=None, only_with_stock=True):
-    """Récupère les lots disponibles pour affectation avec détail affectations existantes"""
+@st.cache_data(ttl=30)  # Cache 30 secondes
+def _get_all_lots_raw():
+    """Charge tous les lots avec leurs affectations - FONCTION INTERNE CACHÉE"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
+        # Requête optimisée avec JOINs au lieu de sous-requêtes corrélées
         query = """
+            WITH affectations_par_lot AS (
+                SELECT 
+                    lot_id,
+                    SUM(quantite_affectee_tonnes) as poids_affecte,
+                    COUNT(*) FILTER (WHERE COALESCE(type_affectation, 'CT') = 'CT') as nb_ct,
+                    COUNT(*) FILTER (WHERE type_affectation = 'LT') as nb_lt
+                FROM previsions_affectations
+                WHERE is_active = TRUE
+                GROUP BY lot_id
+            )
             SELECT 
                 l.id as lot_id,
                 l.code_lot_interne,
@@ -85,26 +107,13 @@ def get_lots_disponibles(varietes_filter=None, producteurs_filter=None, only_wit
                     WHEN v.taux_dechet_moyen IS NOT NULL THEN 'VARIETE'
                     ELSE 'DEFAUT'
                 END as tare_source,
-                COALESCE((
-                    SELECT SUM(pa.quantite_affectee_tonnes)
-                    FROM previsions_affectations pa
-                    WHERE pa.lot_id = l.id AND pa.is_active = TRUE
-                ), 0) as poids_affecte_tonnes,
-                COALESCE((
-                    SELECT COUNT(*)
-                    FROM previsions_affectations pa
-                    WHERE pa.lot_id = l.id AND pa.is_active = TRUE
-                      AND COALESCE(pa.type_affectation, 'CT') = 'CT'
-                ), 0) as nb_affectations_ct,
-                COALESCE((
-                    SELECT COUNT(*)
-                    FROM previsions_affectations pa
-                    WHERE pa.lot_id = l.id AND pa.is_active = TRUE
-                      AND pa.type_affectation = 'LT'
-                ), 0) as nb_affectations_lt
+                COALESCE(a.poids_affecte, 0) as poids_affecte_tonnes,
+                COALESCE(a.nb_ct, 0) as nb_affectations_ct,
+                COALESCE(a.nb_lt, 0) as nb_affectations_lt
             FROM lots_bruts l
             LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
             LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
+            LEFT JOIN affectations_par_lot a ON l.id = a.lot_id
             WHERE l.is_active = TRUE
               AND l.poids_total_brut_kg > 0
             ORDER BY l.date_entree_stock DESC, l.code_lot_interne
@@ -140,16 +149,6 @@ def get_lots_disponibles(varietes_filter=None, producteurs_filter=None, only_wit
                 return ' '.join(parts)
             
             df['affectations'] = df.apply(affectation_status, axis=1)
-            
-            if varietes_filter and len(varietes_filter) > 0:
-                df = df[df['nom_variete'].isin(varietes_filter)]
-            
-            if producteurs_filter and len(producteurs_filter) > 0:
-                df = df[df['nom_producteur'].isin(producteurs_filter)]
-            
-            if only_with_stock:
-                df = df[df['poids_disponible_tonnes'] > 0]
-            
             return df
         return pd.DataFrame()
         
@@ -157,8 +156,28 @@ def get_lots_disponibles(varietes_filter=None, producteurs_filter=None, only_wit
         st.error(f"Erreur lots: {str(e)}")
         return pd.DataFrame()
 
+def get_lots_disponibles(varietes_filter=None, producteurs_filter=None, only_with_stock=True):
+    """Récupère les lots disponibles avec filtres (utilise cache interne)"""
+    df = _get_all_lots_raw()
+    
+    if df.empty:
+        return df
+    
+    # Appliquer filtres en Python (rapide sur données déjà chargées)
+    if varietes_filter and len(varietes_filter) > 0:
+        df = df[df['nom_variete'].isin(varietes_filter)]
+    
+    if producteurs_filter and len(producteurs_filter) > 0:
+        df = df[df['nom_producteur'].isin(producteurs_filter)]
+    
+    if only_with_stock:
+        df = df[df['poids_disponible_tonnes'] > 0]
+    
+    return df
+
+@st.cache_data(ttl=120)  # Cache 2 minutes (données référence)
 def get_varietes_disponibles():
-    """Récupère les variétés des lots en stock"""
+    """Récupère les variétés des lots en stock - AVEC CACHE"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -176,8 +195,9 @@ def get_varietes_disponibles():
     except:
         return []
 
+@st.cache_data(ttl=120)  # Cache 2 minutes (données référence)
 def get_producteurs_disponibles():
-    """Récupère les producteurs des lots en stock"""
+    """Récupère les producteurs des lots en stock - AVEC CACHE"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -195,8 +215,9 @@ def get_producteurs_disponibles():
     except:
         return []
 
+@st.cache_data(ttl=120)  # Cache 2 minutes (données référence)
 def get_produits_commerciaux():
-    """Récupère tous les produits commerciaux actifs"""
+    """Récupère tous les produits commerciaux actifs - AVEC CACHE"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -443,8 +464,9 @@ def delete_affectation(affectation_id):
     except:
         return False
 
+@st.cache_data(ttl=30)  # Cache 30 secondes
 def get_affectations_existantes():
-    """Récupère TOUTES les affectations actives (CT et LT)"""
+    """Récupère TOUTES les affectations actives (CT et LT) - AVEC CACHE"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -501,28 +523,54 @@ def get_affectations_existantes():
         st.error(f"Erreur affectations: {str(e)}")
         return pd.DataFrame()
 
+@st.cache_data(ttl=60)  # Cache 60 secondes
 def get_resume_par_produit():
-    """Calcule le résumé par produit avec solde et dates"""
+    """Calcule le résumé par produit avec solde et dates - OPTIMISÉ (1 seule requête)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Tous les produits avec prévisions
+        # Calculer nb semaines restantes jusqu'à fin campagne
+        today = date.today()
+        nb_semaines_restantes = max(0, (DATE_FIN_CAMPAGNE - today).days / 7.0)
+        
+        # Semaine courante pour filtrer les prévisions
+        semaine_courante = today.isocalendar()[1]
+        annee_courante = today.year
+        
+        # REQUÊTE UNIQUE avec tous les calculs
         cursor.execute("""
-            WITH produits_avec_prev AS (
-                SELECT DISTINCT pv.code_produit_commercial
-                FROM previsions_ventes pv
+            WITH conso_5_semaines AS (
+                -- Moyenne des 5 prochaines semaines de prévisions par produit
+                SELECT 
+                    code_produit_commercial,
+                    AVG(quantite_prevue_tonnes) as conso_hebdo
+                FROM (
+                    SELECT 
+                        code_produit_commercial,
+                        quantite_prevue_tonnes,
+                        ROW_NUMBER() OVER (PARTITION BY code_produit_commercial ORDER BY annee, semaine) as rn
+                    FROM previsions_ventes
+                    WHERE (annee = %s AND semaine >= %s) OR annee > %s
+                ) sub
+                WHERE rn <= 5
+                GROUP BY code_produit_commercial
             ),
             affectations_agg AS (
+                -- Agrégation des affectations par produit
                 SELECT 
-                    pa.code_produit_commercial,
-                    SUM(pa.quantite_affectee_tonnes) as total_brut,
-                    SUM(pa.poids_net_estime_tonnes) as total_net,
+                    code_produit_commercial,
+                    SUM(quantite_affectee_tonnes) as total_brut,
+                    SUM(poids_net_estime_tonnes) as total_net,
                     COUNT(*) as nb_lots,
-                    MAX(pa.date_fin_estimee) as date_fin_derniere
-                FROM previsions_affectations pa
-                WHERE pa.is_active = TRUE
-                GROUP BY pa.code_produit_commercial
+                    MAX(date_fin_estimee) as date_fin_derniere
+                FROM previsions_affectations
+                WHERE is_active = TRUE
+                GROUP BY code_produit_commercial
+            ),
+            produits_avec_prev AS (
+                SELECT DISTINCT code_produit_commercial
+                FROM previsions_ventes
             )
             SELECT 
                 pc.code_produit,
@@ -533,13 +581,19 @@ def get_resume_par_produit():
                 COALESCE(a.total_brut, 0) as total_brut,
                 COALESCE(a.total_net, 0) as total_net,
                 COALESCE(a.nb_lots, 0) as nb_lots,
-                a.date_fin_derniere
+                a.date_fin_derniere,
+                COALESCE(c.conso_hebdo, 0) as conso_hebdo,
+                -- Besoin campagne = conso_hebdo × nb semaines restantes
+                COALESCE(c.conso_hebdo, 0) * %s as besoin_campagne,
+                -- Solde = stock affecté - besoin
+                COALESCE(a.total_net, 0) - (COALESCE(c.conso_hebdo, 0) * %s) as solde
             FROM ref_produits_commerciaux pc
             JOIN produits_avec_prev pap ON pc.code_produit = pap.code_produit_commercial
+            LEFT JOIN conso_5_semaines c ON pc.code_produit = c.code_produit_commercial
             LEFT JOIN affectations_agg a ON pc.code_produit = a.code_produit_commercial
             WHERE pc.is_active = TRUE
             ORDER BY pc.marque, pc.libelle
-        """)
+        """, (annee_courante, semaine_courante, annee_courante, nb_semaines_restantes, nb_semaines_restantes))
         
         rows = cursor.fetchall()
         cursor.close()
@@ -549,41 +603,22 @@ def get_resume_par_produit():
             df = pd.DataFrame(rows)
             
             # Convertir colonnes numériques Decimal -> float
-            numeric_cols = ['total_brut', 'total_net', 'nb_lots']
+            numeric_cols = ['total_brut', 'total_net', 'nb_lots', 'conso_hebdo', 'besoin_campagne', 'solde']
             for col in numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
-            # Ajouter conso hebdo, besoin total et solde
-            result_data = []
-            for _, row in df.iterrows():
-                code_produit = row['code_produit']
-                conso_hebdo = float(get_conso_moyenne_produit(code_produit) or 0)
-                besoin_total = float(get_besoin_total_produit(code_produit) or 0)
-                solde_info = get_solde_produit(code_produit)
-                
-                # Semaines couvertes (float conversion)
-                total_net = float(row['total_net']) if pd.notna(row['total_net']) else 0.0
-                semaines_couvertes = total_net / conso_hebdo if conso_hebdo > 0 else 0.0
-                
-                result_data.append({
-                    'code_produit': code_produit,
-                    'marque': row['marque'],
-                    'libelle': row['libelle'],
-                    'type_produit': row['type_produit'],
-                    'atelier': row['atelier'],
-                    'nb_lots': int(row['nb_lots']) if row['nb_lots'] else 0,
-                    'total_brut': float(row['total_brut']) if row['total_brut'] else 0,
-                    'total_net': total_net,
-                    'conso_hebdo': float(conso_hebdo) if conso_hebdo else 0,
-                    'semaines_couvertes': float(semaines_couvertes),
-                    'besoin_campagne': float(besoin_total) if besoin_total else 0,
-                    'solde': float(solde_info['solde']) if solde_info['solde'] else 0,
-                    'statut': solde_info['statut'],
-                    'date_fin_derniere': row['date_fin_derniere']
-                })
+            # Calculer semaines couvertes et statut
+            df['semaines_couvertes'] = df.apply(
+                lambda r: float(r['total_net']) / float(r['conso_hebdo']) if r['conso_hebdo'] > 0 else 0,
+                axis=1
+            )
             
-            return pd.DataFrame(result_data)
+            df['statut'] = df['solde'].apply(
+                lambda s: 'SURPLUS' if s > 0 else ('MANQUE' if s < 0 else 'EQUILIBRE')
+            )
+            
+            return df
         return pd.DataFrame()
         
     except Exception as e:
@@ -594,7 +629,14 @@ def get_resume_par_produit():
 # INTERFACE
 # ============================================================
 
-st.title("📋 Affectations Prévisions (Long Terme)")
+col_title, col_refresh = st.columns([6, 1])
+with col_title:
+    st.title("📋 Affectations Prévisions (Long Terme)")
+with col_refresh:
+    if st.button("🔄", help="Rafraîchir les données"):
+        clear_data_cache()
+        st.rerun()
+
 st.caption(f"Affectation des lots aux produits commerciaux • Fin campagne: {DATE_FIN_CAMPAGNE.strftime('%d/%m/%Y')}")
 st.markdown("---")
 
@@ -889,6 +931,7 @@ with tab1:
                             st.success(f"✅ {success_count} affectation(s) créée(s) !")
                             st.balloons()
                             st.session_state.affectations_config = {}
+                            clear_data_cache()  # Invalider le cache
                             st.rerun()
                         
                         for err in errors:
@@ -1024,6 +1067,7 @@ with tab2:
                         affectation_id = int(df_filtered.iloc[idx]['id'])
                         delete_affectation(affectation_id)
                     st.success(f"✅ {len(selected_rows)} supprimée(s)")
+                    clear_data_cache()  # Invalider le cache
                     st.rerun()
             
             # Export
