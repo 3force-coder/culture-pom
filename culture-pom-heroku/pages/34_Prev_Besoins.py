@@ -358,7 +358,7 @@ with tab1:
     st.subheader("📋 Besoins par Produit")
     
     if not besoins_df.empty:
-        # Filtres
+        # Filtres - Ligne 1 : Statut et Marque
         col_f1, col_f2 = st.columns(2)
         
         with col_f1:
@@ -373,6 +373,17 @@ with tab1:
             marques = ["Toutes"] + sorted(besoins_df['marque'].dropna().unique().tolist())
             marque_filter = st.selectbox("Filtrer par marque", marques, key="filter_marque_besoin")
         
+        # Filtres - Ligne 2 : Libellé et Atelier
+        col_f3, col_f4 = st.columns(2)
+        
+        with col_f3:
+            libelles = ["Tous"] + sorted(besoins_df['libelle'].dropna().unique().tolist())
+            libelle_filter = st.selectbox("Filtrer par libellé produit", libelles, key="filter_libelle")
+        
+        with col_f4:
+            ateliers = ["Tous"] + sorted([a for a in besoins_df['atelier'].dropna().unique().tolist() if a])
+            atelier_filter = st.selectbox("Filtrer par atelier", ateliers, key="filter_atelier")
+        
         # Appliquer filtres
         df_filtered = besoins_df.copy()
         
@@ -382,15 +393,21 @@ with tab1:
         if marque_filter != "Toutes":
             df_filtered = df_filtered[df_filtered['marque'] == marque_filter]
         
+        if libelle_filter != "Tous":
+            df_filtered = df_filtered[df_filtered['libelle'] == libelle_filter]
+        
+        if atelier_filter != "Tous":
+            df_filtered = df_filtered[df_filtered['atelier'] == atelier_filter]
+        
         if not df_filtered.empty:
-            # Préparer affichage
+            # Préparer affichage avec libellé
             df_display = df_filtered[[
-                'marque', 'type_produit', 'besoin_tonnes', 'stock_affecte_tonnes',
+                'marque', 'libelle', 'type_produit', 'atelier', 'besoin_tonnes', 'stock_affecte_tonnes',
                 'difference', 'conso_hebdo_moyenne', 'statut'
             ]].copy()
             
             df_display.columns = [
-                'Marque', 'Type Produit', 'Besoin (T)', 'Stock Affecté (T)',
+                'Marque', 'Libellé', 'Type Produit', 'Atelier', 'Besoin (T)', 'Stock Affecté (T)',
                 'Différence (T)', 'Conso Hebdo (T)', 'Statut'
             ]
             
@@ -421,8 +438,8 @@ with tab1:
                     for idx in selected_rows:
                         row = df_filtered.iloc[idx]
                         if row['difference'] < 0:
-                            titre = f"ACHETER - {row['marque']} {row['type_produit']}"
-                            desc = f"Manque estimé: {abs(row['difference']):,.0f} T jusqu'au {date_fin_campagne.strftime('%d/%m/%Y')}"
+                            titre = f"ACHETER - {row['marque']} {row['libelle']}"
+                            desc = f"Type: {row['type_produit']} | Atelier: {row['atelier'] or 'N/A'}\nManque estimé: {abs(row['difference']):,.0f} T jusqu'au {date_fin_campagne.strftime('%d/%m/%Y')}"
                             success, msg = create_tache(titre, desc)
                             if success:
                                 st.success(msg)
@@ -451,8 +468,8 @@ with tab2:
     st.subheader("📅 Prévisions par Semaine")
     
     if not besoins_df.empty:
-        # Sélection produit
-        produits_list = besoins_df.apply(lambda x: f"{x['marque']} - {x['type_produit']}", axis=1).tolist()
+        # Sélection produit avec libellé
+        produits_list = besoins_df.apply(lambda x: f"{x['marque']} - {x['libelle']} ({x['type_produit']})", axis=1).tolist()
         selected_produit = st.selectbox("Sélectionner un produit", produits_list, key="select_produit_semaine")
         
         # Récupérer code produit
