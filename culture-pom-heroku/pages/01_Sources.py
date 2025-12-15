@@ -212,7 +212,53 @@ def get_types_atelier_with_existing(df, column_name):
     existing = [str(v) for v in existing if str(v).strip() != '']
     return sorted(list(set(existing + active)))
 
-# ✅ TABLES_CONFIG - AVEC CHAÎNES PRODUCTION
+# ⭐ NOUVELLE FONCTION : Récupérer les lignes de production pour dropdown
+def get_lignes_production():
+    """Récupère toutes les lignes de production actives avec site, type_atelier, cout"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, site, code, libelle, type_atelier, cout_tonne
+            FROM production_lignes 
+            WHERE is_active = TRUE 
+            ORDER BY site, type_atelier, code
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return rows if rows else []
+    except Exception as e:
+        return []
+
+def get_lignes_production_options():
+    """Retourne dict {id: "SITE - TYPE_ATELIER (COUT€/T)"} pour dropdown"""
+    lignes = get_lignes_production()
+    options = {}
+    for ligne in lignes:
+        cout = f"{ligne['cout_tonne']}€/T" if ligne['cout_tonne'] else "N/C"
+        label = f"{ligne['site']} - {ligne['type_atelier']} ({cout})"
+        options[ligne['id']] = label
+    return options
+
+def get_ligne_production_by_id(ligne_id):
+    """Récupère les détails d'une ligne de production par son ID"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, site, type_atelier, cout_tonne
+            FROM production_lignes 
+            WHERE id = %s
+        """, (ligne_id,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return row
+    except Exception as e:
+        return None
+
+# ✅ TABLES_CONFIG - AVEC CHAÎNES PRODUCTION ET LIGNE_PRODUCTION_ID
 TABLES_CONFIG = {
     "Variétés": {
         "table": "ref_varietes",
@@ -296,24 +342,27 @@ TABLES_CONFIG = {
         }
     },
     
+    # ⭐ MODIFIÉ : Produits Commerciaux avec ligne_production_id
     "Produits Commerciaux": {
         "table": "ref_produits_commerciaux",
-        "columns": ["code_produit", "marque", "libelle", "poids_unitaire", "unite_poids", "poids", "type_produit", "atelier", "code_variete"],  # ⭐ AJOUTÉ atelier
-        "hidden_columns": ["is_bio", "notes", "is_active"],
+        # ⭐ Colonnes affichées : ligne_prod remplace atelier (colonne calculée depuis ligne_production_id)
+        "columns": ["code_produit", "marque", "libelle", "poids_unitaire", "unite_poids", "poids", "type_produit", "ligne_prod", "code_variete"],
+        "hidden_columns": ["is_bio", "notes", "is_active", "atelier", "ligne_production_id"],  # ⭐ atelier et ligne_production_id cachés
         "primary_key": "id",
-        "editable": ["marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "atelier", "code_variete"],  # ⭐ AJOUTÉ atelier
+        "editable": ["marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "ligne_production_id", "code_variete"],  # ⭐ ligne_production_id éditable
         "has_updated_at": True,
         "dropdown_fields": {
             "marque": "dynamic_from_db",
             "unite_poids": "dynamic_from_db",
             "type_produit": "dynamic_from_db",
-            "atelier": "dynamic_types_atelier",  # ⭐ NOUVEAU : dropdown depuis production_lignes
+            "ligne_production_id": "dynamic_lignes_production",  # ⭐ NOUVEAU : dropdown lignes production
             "code_variete": "dynamic_varietes"
         },
         "filter_columns": ["poids", "marque", "type_produit"],
         "required_fields": ["code_produit", "marque", "libelle"],
         "calculated_columns": {
-            "poids": ["poids_unitaire", "unite_poids"]
+            "poids": ["poids_unitaire", "unite_poids"],
+            "ligne_prod": ["ligne_production_id"]  # ⭐ Colonne calculée depuis ligne_production_id
         }
     },
     
@@ -343,6 +392,12 @@ TABLES_CONFIG = {
         "required_fields": ["site", "code", "libelle", "type_atelier"]
     }
 }
+
+# ⭐ Cache pour les options de lignes production (évite requêtes répétées)
+@st.cache_data(ttl=60)
+def get_cached_lignes_production_options():
+    """Version cachée de get_lignes_production_options"""
+    return get_lignes_production_options()
 
 def load_table_data(table_name, show_inactive=False):
     """Charge les données d'une table"""
@@ -392,6 +447,17 @@ def load_table_data(table_name, show_inactive=False):
                     else "", 
                     axis=1
                 )
+        
+        # ⭐ CALCULER colonne ligne_prod depuis ligne_production_id
+        if "calculated_columns" in config and "ligne_prod" in config["calculated_columns"]:
+            if 'ligne_production_id' in df.columns:
+                # Récupérer mapping id -> label
+                lignes_options = get_cached_lignes_production_options()
+                df['ligne_prod'] = df['ligne_production_id'].apply(
+                    lambda x: lignes_options.get(int(x), '-') if pd.notna(x) else '-'
+                )
+            else:
+                df['ligne_prod'] = '-'
         
         # ⭐ Ne garder que les colonnes visibles pour l'affichage
         display_columns = [config['primary_key']] + config['columns']
@@ -651,7 +717,14 @@ if st.session_state.get('show_add_form', False):
     
     col1, col2 = st.columns(2)
     
-    for i, col in enumerate(config['columns']):
+    # ⭐ Déterminer les colonnes à afficher dans le formulaire
+    form_columns = config['columns'].copy()
+    # Ajouter les colonnes cachées éditables (comme ligne_production_id)
+    for hidden_col in config.get('hidden_columns', []):
+        if hidden_col in config.get('editable', []) and hidden_col not in form_columns:
+            form_columns.append(hidden_col)
+    
+    for i, col in enumerate(form_columns):
         # ⭐ Ignorer colonnes calculées dans le formulaire
         if col in config.get("calculated_columns", {}):
             continue
@@ -675,7 +748,30 @@ if st.session_state.get('show_add_form', False):
                         options=options,
                         key=f"add_{col}"
                     )
-                # ⭐ NOUVEAU : Dropdown dynamique pour types_atelier
+                # ⭐ NOUVEAU : Dropdown dynamique pour lignes_production
+                elif field_config == "dynamic_lignes_production":
+                    lignes_options = get_cached_lignes_production_options()
+                    if lignes_options:
+                        # Créer liste avec labels et mapping vers IDs
+                        options_labels = ["(Aucune)"] + list(lignes_options.values())
+                        selected_label = st.selectbox(
+                            "🏭 Ligne Production (Site - Atelier)",
+                            options=options_labels,
+                            key=f"add_{col}_select"
+                        )
+                        
+                        # Trouver l'ID correspondant au label sélectionné
+                        if selected_label == "(Aucune)":
+                            st.session_state.new_data[col] = None
+                        else:
+                            for ligne_id, ligne_label in lignes_options.items():
+                                if ligne_label == selected_label:
+                                    st.session_state.new_data[col] = ligne_id
+                                    break
+                    else:
+                        st.warning("⚠️ Aucune ligne de production définie. Allez dans Chaînes Production pour en créer.")
+                        st.session_state.new_data[col] = None
+                # ⭐ Dropdown dynamique pour types_atelier
                 elif field_config == "dynamic_types_atelier":
                     full_df_for_form = st.session_state.get(f'full_df_{selected_table}')
                     types_atelier = get_types_atelier_with_existing(full_df_for_form, col) if full_df_for_form is not None else get_types_atelier()
@@ -771,6 +867,8 @@ if st.session_state.get('show_add_form', False):
                     time.sleep(2)
                     st.session_state.show_add_form = False
                     st.session_state.pop('new_data', None)
+                    # ⭐ Vider le cache pour recharger les données
+                    get_cached_lignes_production_options.clear()
                     st.rerun()
                 else:
                     st.error(message)
@@ -883,6 +981,7 @@ if not df_full.empty:
     with col_refresh:
         if st.button("🔄 Actualiser", use_container_width=True, key="btn_refresh_top_sources"):
             st.session_state.pop('original_df', None)
+            get_cached_lignes_production_options.clear()
             st.rerun()
     
     with col_add:
@@ -903,7 +1002,17 @@ if not df_full.empty:
                     options=varietes,
                     required=False
                 )
-            # ⭐ NOUVEAU : Dropdown dynamique depuis types_atelier
+            # ⭐ NOUVEAU : Dropdown dynamique depuis lignes_production
+            elif field_config == "dynamic_lignes_production":
+                lignes_options = get_cached_lignes_production_options()
+                if lignes_options:
+                    # Pour data_editor, on utilise les IDs comme valeurs et labels pour affichage
+                    column_config[field] = st.column_config.SelectboxColumn(
+                        "Ligne Production",
+                        options=list(lignes_options.keys()),
+                        required=False
+                    )
+            # ⭐ Dropdown dynamique depuis types_atelier
             elif field_config == "dynamic_types_atelier":
                 types_atelier = get_types_atelier_with_existing(full_df_for_dropdown, field)
                 if types_atelier:
@@ -936,12 +1045,15 @@ if not df_full.empty:
     if 'original_df' not in st.session_state:
         st.session_state.original_df = df.copy()
     
+    # ⭐ Colonnes à désactiver (primary_key + colonnes calculées)
+    disabled_cols = [config['primary_key']] + list(config.get("calculated_columns", {}).keys())
+    
     # Tableau
     edited_df = st.data_editor(
         df,
         use_container_width=True,
         num_rows="fixed",
-        disabled=[config['primary_key']] + list(config.get("calculated_columns", {}).keys()),
+        disabled=disabled_cols,
         column_config=column_config if column_config else None,
         key=f"editor_{selected_table}"
     )
