@@ -248,10 +248,23 @@ st.markdown("*Calcul des besoins par produit jusqu'à fin de campagne*")
 col_param1, col_param2 = st.columns([2, 1])
 
 with col_param1:
+    # Calculer la date fin campagne par défaut (30 juin de l'année en cours ou suivante)
+    today = date.today()
+    if today.month <= 6:
+        # Avant juillet -> fin campagne = 30 juin de cette année
+        default_fin = date(today.year, 6, 30)
+    else:
+        # Après juin -> fin campagne = 30 juin de l'année prochaine
+        default_fin = date(today.year + 1, 6, 30)
+    
+    # S'assurer que la date par défaut est dans le futur
+    if default_fin <= today:
+        default_fin = date(today.year + 1, 6, 30)
+    
     date_fin_campagne = st.date_input(
         "📅 Date fin de campagne",
-        value=date(2025, 6, 30),
-        min_value=date.today(),
+        value=default_fin,
+        min_value=today,
         max_value=date(2026, 6, 30)
     )
 
