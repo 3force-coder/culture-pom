@@ -1,3 +1,13 @@
+"""
+34_Prev_Besoins.py - Analyse des Besoins Campagne
+=================================================
+v2 - Optimisé avec intégration marge et couverture
+   - Radio buttons (évite reset)
+   - Couverture en semaines
+   - Intégration prix/marge
+   - Vue chronologique passages
+"""
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date, timedelta
@@ -7,88 +17,118 @@ from auth import is_authenticated
 
 st.set_page_config(page_title="Besoins Campagne - Culture Pom", page_icon="📊", layout="wide")
 
-# CSS
 st.markdown("""
 <style>
-    .block-container {
-        padding-top: 1.5rem !important;
+    .block-container { padding-top: 1.5rem !important; }
+    .status-ok {
+        background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+        padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #4caf50; margin: 0.3rem 0;
     }
-    .besoin-ok {
-        background-color: #e8f5e9;
-        padding: 0.5rem;
-        border-radius: 0.3rem;
-        border-left: 4px solid #4caf50;
+    .status-warning {
+        background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
+        padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #ff9800; margin: 0.3rem 0;
     }
-    .besoin-warning {
-        background-color: #fff3e0;
-        padding: 0.5rem;
-        border-radius: 0.3rem;
-        border-left: 4px solid #ff9800;
+    .status-danger {
+        background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
+        padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #f44336; margin: 0.3rem 0;
     }
-    .besoin-danger {
-        background-color: #ffebee;
-        padding: 0.5rem;
-        border-radius: 0.3rem;
-        border-left: 4px solid #f44336;
+    .info-card {
+        background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+        padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #2196f3; margin: 0.3rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
 
 if not is_authenticated():
-    st.warning("⚠️ Veuillez vous connecter pour accéder à cette page")
+    st.warning("⚠️ Veuillez vous connecter")
     st.stop()
+
+# Constantes
+DATE_FIN_CAMPAGNE = date(2026, 6, 30)
 
 # ============================================================
 # FONCTIONS
 # ============================================================
 
-def get_besoins_par_produit(date_fin_campagne, semaines_restantes):
-    """Calcule les besoins par produit jusqu'à fin de campagne
-    
-    Logique:
-    - Conso hebdo moyenne = Moyenne des 5 prochaines semaines de previsions_ventes
-    - Besoin = Conso moyenne × Semaines restantes jusqu'à fin campagne
-    """
+@st.cache_data(ttl=60)
+def get_couts_production():
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT type_atelier, cout_tonne FROM production_lignes WHERE is_active = TRUE AND cout_tonne IS NOT NULL")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return {row['type_atelier']: float(row['cout_tonne'] or 0) for row in rows} if rows else {}
+    except:
+        return {}
+
+@st.cache_data(ttl=30)
+def get_prix_ventes():
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'prix_ventes_previsions')")
+        if not cursor.fetchone()['exists']:
+            cursor.close()
+            conn.close()
+            return pd.DataFrame()
+        
+        cursor.execute("SELECT * FROM prix_ventes_previsions")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if rows:
+            df = pd.DataFrame(rows)
+            for col in ['prix_actuel', 'prix_2_semaines', 'prix_1_mois', 'prix_3_mois', 'prix_6_mois']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            return df
+        return pd.DataFrame()
+    except:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=30)
+def get_besoins_complet():
+    """Calcule les besoins avec intégration prix et marge"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Semaine courante
         today = date.today()
+        semaines_restantes = max(1, (DATE_FIN_CAMPAGNE - today).days / 7.0)
         semaine_courante = today.isocalendar()[1]
         annee_courante = today.year
         
-        query = """
-            WITH semaines_5_prochaines AS (
-                -- Récupérer les 5 prochaines semaines de prévisions (triées par date)
-                SELECT 
-                    pv.code_produit_commercial,
-                    pv.quantite_prevue_tonnes,
-                    pv.annee,
-                    pv.semaine,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY pv.code_produit_commercial 
-                        ORDER BY pv.annee, pv.semaine
-                    ) as rn
-                FROM previsions_ventes pv
-                WHERE (pv.annee = %s AND pv.semaine >= %s)
-                   OR (pv.annee > %s)
-            ),
-            conso_5_semaines AS (
-                -- Moyenne limitée aux 5 premières semaines
-                SELECT 
-                    code_produit_commercial,
-                    AVG(quantite_prevue_tonnes) as conso_hebdo_moyenne,
-                    COUNT(*) as nb_semaines_prevues
-                FROM semaines_5_prochaines
-                WHERE rn <= 5
+        # Vérifier colonne tare_theorique_pct
+        cursor.execute("SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'lots_bruts' AND column_name = 'tare_theorique_pct')")
+        tare_col = cursor.fetchone()['exists']
+        tare_expr = "COALESCE(l.tare_lavage_totale_pct, l.tare_theorique_pct, 22)" if tare_col else "COALESCE(l.tare_lavage_totale_pct, 22)"
+        
+        query = f"""
+            WITH conso_hebdo AS (
+                SELECT code_produit_commercial, AVG(quantite_prevue_tonnes) as conso_hebdo
+                FROM (
+                    SELECT code_produit_commercial, quantite_prevue_tonnes,
+                           ROW_NUMBER() OVER (PARTITION BY code_produit_commercial ORDER BY annee, semaine) as rn
+                    FROM previsions_ventes
+                    WHERE (annee = %s AND semaine >= %s) OR annee > %s
+                ) sub WHERE rn <= 5
                 GROUP BY code_produit_commercial
             ),
-            affectations AS (
+            affectations_detail AS (
                 SELECT 
                     pa.code_produit_commercial,
-                    SUM(COALESCE(pa.poids_net_estime_tonnes, pa.quantite_affectee_tonnes * 0.78)) as stock_affecte
+                    COUNT(*) as nb_lots,
+                    SUM(pa.quantite_affectee_tonnes) as total_brut,
+                    SUM(pa.poids_net_estime_tonnes) as total_net,
+                    SUM(pa.quantite_affectee_tonnes * COALESCE(l.prix_achat_euro_tonne, 0)) / 
+                        NULLIF(SUM(pa.quantite_affectee_tonnes), 0) as prix_achat_moyen,
+                    SUM(pa.quantite_affectee_tonnes * {tare_expr}) / 
+                        NULLIF(SUM(pa.quantite_affectee_tonnes), 0) as tare_moyenne
                 FROM previsions_affectations pa
+                JOIN lots_bruts l ON pa.lot_id = l.id
                 WHERE pa.is_active = TRUE
                 GROUP BY pa.code_produit_commercial
             )
@@ -98,29 +138,38 @@ def get_besoins_par_produit(date_fin_campagne, semaines_restantes):
                 pc.type_produit,
                 pc.libelle,
                 pc.atelier,
-                COALESCE(c.conso_hebdo_moyenne, 0) as conso_hebdo_moyenne,
-                COALESCE(c.nb_semaines_prevues, 0) as nb_semaines_prevues,
-                -- Besoin = Conso moyenne × Semaines restantes
-                COALESCE(c.conso_hebdo_moyenne, 0) * %s as besoin_tonnes,
-                COALESCE(a.stock_affecte, 0) as stock_affecte_tonnes,
-                COALESCE(a.stock_affecte, 0) - (COALESCE(c.conso_hebdo_moyenne, 0) * %s) as difference,
+                COALESCE(ch.conso_hebdo, 0) as conso_hebdo,
+                COALESCE(ch.conso_hebdo, 0) * %s as besoin_campagne,
+                COALESCE(ad.nb_lots, 0) as nb_lots,
+                COALESCE(ad.total_brut, 0) as total_brut,
+                COALESCE(ad.total_net, 0) as total_net,
+                COALESCE(ad.prix_achat_moyen, 0) as prix_achat_moyen,
+                COALESCE(ad.tare_moyenne, 22) as tare_moyenne,
+                COALESCE(ad.total_net, 0) - (COALESCE(ch.conso_hebdo, 0) * %s) as solde,
+                -- Couverture en semaines
                 CASE 
-                    WHEN COALESCE(a.stock_affecte, 0) - (COALESCE(c.conso_hebdo_moyenne, 0) * %s) >= 0 THEN 'OK'
-                    WHEN COALESCE(a.stock_affecte, 0) - (COALESCE(c.conso_hebdo_moyenne, 0) * %s) > -100 THEN 'ATTENTION'
-                    ELSE 'CRITIQUE'
-                END as statut
+                    WHEN COALESCE(ch.conso_hebdo, 0) > 0 
+                    THEN COALESCE(ad.total_net, 0) / ch.conso_hebdo
+                    ELSE 0 
+                END as couverture_semaines
             FROM ref_produits_commerciaux pc
-            LEFT JOIN conso_5_semaines c ON pc.code_produit = c.code_produit_commercial
-            LEFT JOIN affectations a ON pc.code_produit = a.code_produit_commercial
+            LEFT JOIN conso_hebdo ch ON pc.code_produit = ch.code_produit_commercial
+            LEFT JOIN affectations_detail ad ON pc.code_produit = ad.code_produit_commercial
             WHERE pc.is_active = TRUE
-              AND COALESCE(c.conso_hebdo_moyenne, 0) > 0
-            ORDER BY difference ASC
+              AND (COALESCE(ch.conso_hebdo, 0) > 0 OR COALESCE(ad.total_net, 0) > 0)
+            ORDER BY 
+                CASE 
+                    WHEN COALESCE(ad.total_net, 0) - (COALESCE(ch.conso_hebdo, 0) * %s) < -100 THEN 1
+                    WHEN COALESCE(ad.total_net, 0) - (COALESCE(ch.conso_hebdo, 0) * %s) < 0 THEN 2
+                    ELSE 3
+                END,
+                COALESCE(ad.total_net, 0) - (COALESCE(ch.conso_hebdo, 0) * %s) ASC
         """
         
         cursor.execute(query, (
-            annee_courante, semaine_courante,
-            annee_courante,
-            semaines_restantes, semaines_restantes, semaines_restantes, semaines_restantes
+            annee_courante, semaine_courante, annee_courante,
+            semaines_restantes, semaines_restantes,
+            semaines_restantes, semaines_restantes, semaines_restantes
         ))
         
         rows = cursor.fetchall()
@@ -129,18 +178,65 @@ def get_besoins_par_produit(date_fin_campagne, semaines_restantes):
         
         if rows:
             df = pd.DataFrame(rows)
-            for col in ['besoin_tonnes', 'stock_affecte_tonnes', 'difference', 'conso_hebdo_moyenne']:
+            numeric_cols = ['conso_hebdo', 'besoin_campagne', 'nb_lots', 'total_brut', 
+                           'total_net', 'prix_achat_moyen', 'tare_moyenne', 'solde', 'couverture_semaines']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            return df, semaines_restantes
+        return pd.DataFrame(), semaines_restantes
+        
+    except Exception as e:
+        st.error(f"Erreur: {str(e)}")
+        return pd.DataFrame(), 0
+
+@st.cache_data(ttl=30)
+def get_lots_affectes_produit(code_produit):
+    """Récupère les lots affectés à un produit avec dates"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'lots_bruts' AND column_name = 'tare_theorique_pct')")
+        tare_col = cursor.fetchone()['exists']
+        tare_expr = "COALESCE(l.tare_lavage_totale_pct, l.tare_theorique_pct, 22)" if tare_col else "COALESCE(l.tare_lavage_totale_pct, 22)"
+        
+        query = f"""
+            SELECT 
+                pa.id,
+                l.code_lot_interne,
+                v.nom_variete,
+                pa.quantite_affectee_tonnes as poids_brut,
+                pa.poids_net_estime_tonnes as poids_net,
+                COALESCE(l.prix_achat_euro_tonne, 0) as prix_achat,
+                {tare_expr} as tare_pct,
+                pa.date_passage_prevue,
+                l.date_entree_stock
+            FROM previsions_affectations pa
+            JOIN lots_bruts l ON pa.lot_id = l.id
+            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+            WHERE pa.code_produit_commercial = %s AND pa.is_active = TRUE
+            ORDER BY pa.date_passage_prevue NULLS LAST, l.prix_achat_euro_tonne ASC
+        """
+        
+        cursor.execute(query, (code_produit,))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if rows:
+            df = pd.DataFrame(rows)
+            for col in ['poids_brut', 'poids_net', 'prix_achat', 'tare_pct']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             return df
         return pd.DataFrame()
-        
-    except Exception as e:
-        st.error(f"Erreur besoins: {str(e)}")
+    except:
         return pd.DataFrame()
 
-def get_besoins_par_semaine(code_produit, nb_semaines=12):
-    """Récupère les besoins semaine par semaine pour un produit"""
+@st.cache_data(ttl=30)
+def get_previsions_semaines(code_produit, nb_semaines=12):
+    """Récupère les prévisions semaine par semaine"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -150,10 +246,7 @@ def get_besoins_par_semaine(code_produit, nb_semaines=12):
         annee_courante = today.year
         
         cursor.execute("""
-            SELECT 
-                annee,
-                semaine,
-                quantite_prevue_tonnes
+            SELECT annee, semaine, quantite_prevue_tonnes
             FROM previsions_ventes
             WHERE code_produit_commercial = %s
               AND ((annee = %s AND semaine >= %s) OR annee > %s)
@@ -167,443 +260,514 @@ def get_besoins_par_semaine(code_produit, nb_semaines=12):
         
         if rows:
             df = pd.DataFrame(rows)
-            df['semaine_label'] = df.apply(lambda x: f"S{x['semaine']}/{x['annee']}", axis=1)
+            df['semaine_label'] = df.apply(lambda x: f"S{x['semaine']}", axis=1)
             df['quantite_prevue_tonnes'] = pd.to_numeric(df['quantite_prevue_tonnes'], errors='coerce').fillna(0)
             return df
         return pd.DataFrame()
-        
-    except Exception as e:
-        st.error(f"Erreur semaines: {str(e)}")
+    except:
         return pd.DataFrame()
 
-def get_stock_total_disponible():
-    """Récupère le stock total disponible (non affecté)"""
+@st.cache_data(ttl=30)
+def get_stock_disponible_variete():
+    """Stock disponible par variété (non affecté)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        cursor.execute("""
-            SELECT 
-                v.nom_variete,
-                SUM(l.poids_total_brut_kg) / 1000 as poids_brut_tonnes,
-                SUM(l.poids_total_brut_kg * (1 - COALESCE(l.tare_lavage_totale_pct, v.taux_dechet_moyen * 100, 22) / 100)) / 1000 as poids_net_tonnes,
-                SUM(COALESCE((
-                    SELECT SUM(pa.quantite_affectee_tonnes)
-                    FROM previsions_affectations pa
-                    WHERE pa.lot_id = l.id AND pa.is_active = TRUE
-                ), 0)) as deja_affecte
-            FROM lots_bruts l
-            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
-            WHERE l.is_active = TRUE
-            GROUP BY v.nom_variete
-            HAVING SUM(l.poids_total_brut_kg) > 0
-            ORDER BY poids_brut_tonnes DESC
-        """)
+        cursor.execute("SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'lots_bruts' AND column_name = 'tare_theorique_pct')")
+        tare_col = cursor.fetchone()['exists']
+        tare_expr = "COALESCE(l.tare_lavage_totale_pct, l.tare_theorique_pct, 22)" if tare_col else "COALESCE(l.tare_lavage_totale_pct, 22)"
         
+        query = f"""
+            WITH lots_stock AS (
+                SELECT 
+                    l.id,
+                    v.nom_variete,
+                    l.poids_total_brut_kg / 1000 as poids_brut,
+                    (l.poids_total_brut_kg / 1000) * (1 - {tare_expr} / 100) as poids_net
+                FROM lots_bruts l
+                LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+                WHERE l.is_active = TRUE AND l.poids_total_brut_kg > 0
+            ),
+            affectations AS (
+                SELECT lot_id, SUM(quantite_affectee_tonnes) as affecte
+                FROM previsions_affectations
+                WHERE is_active = TRUE
+                GROUP BY lot_id
+            )
+            SELECT 
+                ls.nom_variete,
+                SUM(ls.poids_brut) as poids_brut_total,
+                SUM(ls.poids_net) as poids_net_total,
+                SUM(COALESCE(a.affecte, 0)) as affecte_total,
+                SUM(ls.poids_brut - COALESCE(a.affecte, 0)) as disponible_brut
+            FROM lots_stock ls
+            LEFT JOIN affectations a ON ls.id = a.lot_id
+            GROUP BY ls.nom_variete
+            HAVING SUM(ls.poids_brut - COALESCE(a.affecte, 0)) > 0
+            ORDER BY SUM(ls.poids_brut - COALESCE(a.affecte, 0)) DESC
+        """
+        
+        cursor.execute(query)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
         
         if rows:
             df = pd.DataFrame(rows)
-            for col in ['poids_brut_tonnes', 'poids_net_tonnes', 'deja_affecte']:
+            for col in ['poids_brut_total', 'poids_net_total', 'affecte_total', 'disponible_brut']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-            df['disponible_tonnes'] = df['poids_brut_tonnes'] - df['deja_affecte']
             return df
         return pd.DataFrame()
-        
-    except Exception as e:
-        st.error(f"Erreur stock: {str(e)}")
+    except:
         return pd.DataFrame()
 
-def create_tache(titre, description):
-    """Crée une tâche"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        created_by = st.session_state.get('username', 'system')
-        
-        cursor.execute("""
-            INSERT INTO taches (titre, description, statut, created_by, created_at)
-            VALUES (%s, %s, 'A_FAIRE', %s, CURRENT_TIMESTAMP)
-            RETURNING id
-        """, (titre, description, created_by))
-        
-        tache_id = cursor.fetchone()['id']
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        return True, f"✅ Tâche #{tache_id} créée"
-        
-    except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
-        return False, f"❌ Erreur: {str(e)}"
+def calculer_marge_produit(prix_achat, tare_pct, cout_prod, prix_vente):
+    """Calcule la marge pour un produit"""
+    if prix_vente <= 0:
+        return 0, 0
+    cout_matiere = prix_achat / (1 - tare_pct / 100) if tare_pct < 100 else prix_achat
+    cout_revient = cout_matiere + cout_prod
+    marge_pct = ((prix_vente - cout_revient) / cout_revient * 100) if cout_revient > 0 else 0
+    return cout_revient, marge_pct
 
 # ============================================================
 # INTERFACE
 # ============================================================
 
-st.title("📊 Besoins Campagne")
-st.markdown("*Calcul des besoins par produit jusqu'à fin de campagne*")
+st.title("📊 Analyse des Besoins")
 
-# Paramètres campagne
-col_param1, col_param2 = st.columns([2, 1])
+# Calcul dates
+today = date.today()
+semaines_restantes = max(1, (DATE_FIN_CAMPAGNE - today).days / 7.0)
 
-with col_param1:
-    # Calculer la date fin campagne par défaut (30 juin de l'année en cours ou suivante)
-    today = date.today()
-    if today.month <= 6:
-        # Avant juillet -> fin campagne = 30 juin de cette année
-        default_fin = date(today.year, 6, 30)
-    else:
-        # Après juin -> fin campagne = 30 juin de l'année prochaine
-        default_fin = date(today.year + 1, 6, 30)
-    
-    # S'assurer que la date par défaut est dans le futur
-    if default_fin <= today:
-        default_fin = date(today.year + 1, 6, 30)
-    
-    date_fin_campagne = st.date_input(
-        "📅 Date fin de campagne",
-        value=default_fin,
-        min_value=today,
-        max_value=date(2026, 6, 30)
-    )
-
-with col_param2:
-    # Calculer semaines restantes
-    today = date.today()
-    semaines_restantes = max(0, (date_fin_campagne - today).days // 7)
-    st.metric("Semaines restantes", semaines_restantes)
-
+st.caption(f"Campagne jusqu'au {DATE_FIN_CAMPAGNE.strftime('%d/%m/%Y')} • {semaines_restantes:.0f} semaines restantes")
 st.markdown("---")
 
-# ============================================================
-# KPIs GLOBAUX
-# ============================================================
+# Charger données
+besoins_df, sem_rest = get_besoins_complet()
+prix_df = get_prix_ventes()
+couts_prod = get_couts_production()
+stock_variete_df = get_stock_disponible_variete()
 
-besoins_df = get_besoins_par_produit(date_fin_campagne, semaines_restantes)
-stock_df = get_stock_total_disponible()
-
+# KPIs globaux
 if not besoins_df.empty:
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4 = st.columns(4)
     
-    besoin_total = besoins_df['besoin_tonnes'].sum()
-    stock_affecte = besoins_df['stock_affecte_tonnes'].sum()
-    difference = stock_affecte - besoin_total
-    
-    nb_ok = len(besoins_df[besoins_df['statut'] == 'OK'])
-    nb_attention = len(besoins_df[besoins_df['statut'] == 'ATTENTION'])
-    nb_critique = len(besoins_df[besoins_df['statut'] == 'CRITIQUE'])
+    nb_critique = len(besoins_df[besoins_df['solde'] < -100])
+    nb_attention = len(besoins_df[(besoins_df['solde'] >= -100) & (besoins_df['solde'] < 0)])
+    nb_ok = len(besoins_df[besoins_df['solde'] >= 0])
+    manque_total = abs(besoins_df[besoins_df['solde'] < 0]['solde'].sum())
     
     with col1:
-        st.metric("🎯 Besoin Total", f"{besoin_total:,.0f} T")
-    
+        st.metric("🔴 Critique", nb_critique, help="Manque > 100T")
     with col2:
-        st.metric("📦 Stock Affecté", f"{stock_affecte:,.0f} T")
-    
+        st.metric("🟠 Attention", nb_attention, help="Manque < 100T")
     with col3:
-        delta_color = "normal" if difference >= 0 else "inverse"
-        st.metric("📈 Différence", f"{difference:+,.0f} T", delta_color=delta_color)
-    
+        st.metric("🟢 OK", nb_ok, help="Stock suffisant")
     with col4:
-        if not stock_df.empty:
-            stock_dispo = stock_df['disponible_tonnes'].sum()
-            st.metric("📋 Stock Non Affecté", f"{stock_dispo:,.0f} T")
-    
-    with col5:
-        st.metric("📊 Produits", f"{len(besoins_df)}")
-    
-    # Résumé statuts
-    col_s1, col_s2, col_s3 = st.columns(3)
-    
-    with col_s1:
-        st.markdown(f"""
-        <div class="besoin-ok">
-            <strong>✅ OK</strong>: {nb_ok} produits
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col_s2:
-        st.markdown(f"""
-        <div class="besoin-warning">
-            <strong>⚠️ ATTENTION</strong>: {nb_attention} produits
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col_s3:
-        st.markdown(f"""
-        <div class="besoin-danger">
-            <strong>🔴 CRITIQUE</strong>: {nb_critique} produits
-        </div>
-        """, unsafe_allow_html=True)
+        st.metric("📉 Manque total", f"{manque_total:,.0f} T")
+
+st.markdown("---")
+
+# Navigation RADIO
+onglet = st.radio(
+    "Navigation",
+    options=["📋 Vue Synthèse", "🔍 Détail Produit", "📦 Stock Disponible"],
+    horizontal=True,
+    label_visibility="collapsed"
+)
 
 st.markdown("---")
 
 # ============================================================
-# ONGLETS
+# ONGLET 1: VUE SYNTHÈSE
 # ============================================================
 
-tab1, tab2, tab3 = st.tabs(["📋 Par Produit", "📅 Par Semaine", "📦 Stock Disponible"])
-
-# ============================================================
-# TAB 1: BESOINS PAR PRODUIT
-# ============================================================
-
-with tab1:
+if onglet == "📋 Vue Synthèse":
     st.subheader("📋 Besoins par Produit")
     
     if not besoins_df.empty:
-        # Filtres - Ligne 1 : Statut et Marque
-        col_f1, col_f2 = st.columns(2)
+        # Filtres
+        col_f1, col_f2, col_f3 = st.columns(3)
         
         with col_f1:
-            statut_filter = st.multiselect(
-                "Filtrer par statut",
-                ["OK", "ATTENTION", "CRITIQUE"],
-                default=["CRITIQUE", "ATTENTION"],
-                key="filter_statut"
-            )
+            statuts = ["Tous", "🔴 Critique", "🟠 Attention", "🟢 OK"]
+            filtre_statut = st.selectbox("Statut", statuts, key="f_statut")
         
         with col_f2:
             marques = ["Toutes"] + sorted(besoins_df['marque'].dropna().unique().tolist())
-            marque_filter = st.selectbox("Filtrer par marque", marques, key="filter_marque_besoin")
-        
-        # Filtres - Ligne 2 : Libellé et Atelier
-        col_f3, col_f4 = st.columns(2)
+            filtre_marque = st.selectbox("Marque", marques, key="f_marque")
         
         with col_f3:
-            libelles = ["Tous"] + sorted(besoins_df['libelle'].dropna().unique().tolist())
-            libelle_filter = st.selectbox("Filtrer par libellé produit", libelles, key="filter_libelle")
-        
-        with col_f4:
-            ateliers = ["Tous"] + sorted([a for a in besoins_df['atelier'].dropna().unique().tolist() if a])
-            atelier_filter = st.selectbox("Filtrer par atelier", ateliers, key="filter_atelier")
+            types = ["Tous"] + sorted(besoins_df['type_produit'].dropna().unique().tolist())
+            filtre_type = st.selectbox("Type", types, key="f_type")
         
         # Appliquer filtres
         df_filtered = besoins_df.copy()
         
-        if statut_filter:
-            df_filtered = df_filtered[df_filtered['statut'].isin(statut_filter)]
+        if filtre_statut == "🔴 Critique":
+            df_filtered = df_filtered[df_filtered['solde'] < -100]
+        elif filtre_statut == "🟠 Attention":
+            df_filtered = df_filtered[(df_filtered['solde'] >= -100) & (df_filtered['solde'] < 0)]
+        elif filtre_statut == "🟢 OK":
+            df_filtered = df_filtered[df_filtered['solde'] >= 0]
         
-        if marque_filter != "Toutes":
-            df_filtered = df_filtered[df_filtered['marque'] == marque_filter]
+        if filtre_marque != "Toutes":
+            df_filtered = df_filtered[df_filtered['marque'] == filtre_marque]
         
-        if libelle_filter != "Tous":
-            df_filtered = df_filtered[df_filtered['libelle'] == libelle_filter]
+        if filtre_type != "Tous":
+            df_filtered = df_filtered[df_filtered['type_produit'] == filtre_type]
         
-        if atelier_filter != "Tous":
-            df_filtered = df_filtered[df_filtered['atelier'] == atelier_filter]
+        st.markdown("---")
         
         if not df_filtered.empty:
-            # Préparer affichage avec libellé
-            df_display = df_filtered[[
-                'marque', 'libelle', 'type_produit', 'atelier', 'besoin_tonnes', 'stock_affecte_tonnes',
-                'difference', 'conso_hebdo_moyenne', 'statut'
-            ]].copy()
+            # Enrichir avec prix et marge
+            enriched_data = []
             
-            df_display.columns = [
-                'Marque', 'Libellé', 'Type Produit', 'Atelier', 'Besoin (T)', 'Stock Affecté (T)',
-                'Différence (T)', 'Conso Hebdo (T)', 'Statut'
-            ]
+            for _, row in df_filtered.iterrows():
+                code = row['code_produit']
+                prix_row = prix_df[prix_df['code_produit_commercial'] == code] if not prix_df.empty else pd.DataFrame()
+                prix_vente = float(prix_row.iloc[0]['prix_actuel']) if not prix_row.empty else 0
+                
+                atelier = row['atelier'] or 'SBU'
+                cout_prod = couts_prod.get(atelier, 45.0)
+                cout_revient, marge_pct = calculer_marge_produit(
+                    row['prix_achat_moyen'], row['tare_moyenne'], cout_prod, prix_vente
+                )
+                
+                # Statut
+                if row['solde'] < -100:
+                    statut = "🔴"
+                elif row['solde'] < 0:
+                    statut = "🟠"
+                else:
+                    statut = "🟢"
+                
+                enriched_data.append({
+                    'Statut': statut,
+                    'Marque': row['marque'],
+                    'Type': row['type_produit'],
+                    'Conso/sem': row['conso_hebdo'],
+                    'Besoin': row['besoin_campagne'],
+                    'Affecté': row['total_net'],
+                    'Solde': row['solde'],
+                    'Couverture': row['couverture_semaines'],
+                    'Prix vente': prix_vente,
+                    'Marge %': marge_pct,
+                    'code_produit': code
+                })
+            
+            df_display = pd.DataFrame(enriched_data)
             
             # Formater
-            df_display['Besoin (T)'] = df_display['Besoin (T)'].apply(lambda x: f"{x:,.0f}")
-            df_display['Stock Affecté (T)'] = df_display['Stock Affecté (T)'].apply(lambda x: f"{x:,.0f}")
-            df_display['Différence (T)'] = df_display['Différence (T)'].apply(lambda x: f"{x:+,.0f}")
-            df_display['Conso Hebdo (T)'] = df_display['Conso Hebdo (T)'].apply(lambda x: f"{x:.1f}")
+            df_show = df_display.drop(columns=['code_produit']).copy()
+            df_show['Conso/sem'] = df_show['Conso/sem'].apply(lambda x: f"{x:.1f} T")
+            df_show['Besoin'] = df_show['Besoin'].apply(lambda x: f"{x:,.0f} T")
+            df_show['Affecté'] = df_show['Affecté'].apply(lambda x: f"{x:,.0f} T")
+            df_show['Solde'] = df_show['Solde'].apply(lambda x: f"{x:+,.0f} T")
+            df_show['Couverture'] = df_show['Couverture'].apply(lambda x: f"{x:.0f} sem")
+            df_show['Prix vente'] = df_show['Prix vente'].apply(lambda x: f"{x:,.0f} €" if x > 0 else "—")
+            df_show['Marge %'] = df_show['Marge %'].apply(lambda x: f"{x:+.1f}%" if x != 0 else "—")
             
-            # Tableau avec sélection
-            event = st.dataframe(
-                df_display,
-                use_container_width=True,
-                hide_index=True,
-                on_select="rerun",
-                selection_mode="multi-row",
-                key="besoins_table"
-            )
+            st.dataframe(df_show, use_container_width=True, hide_index=True)
             
-            # Actions sur sélection
-            selected_rows = event.selection.rows if hasattr(event, 'selection') else []
+            st.markdown("---")
             
-            if len(selected_rows) > 0:
-                st.markdown("---")
-                
-                # Bouton créer tâche
-                if st.button("📝 Créer tâche d'achat", type="primary", use_container_width=True):
-                    for idx in selected_rows:
-                        row = df_filtered.iloc[idx]
-                        if row['difference'] < 0:
-                            titre = f"ACHETER - {row['marque']} {row['libelle']}"
-                            desc = f"Type: {row['type_produit']} | Atelier: {row['atelier'] or 'N/A'}\nManque estimé: {abs(row['difference']):,.0f} T jusqu'au {date_fin_campagne.strftime('%d/%m/%Y')}"
-                            success, msg = create_tache(titre, desc)
-                            if success:
-                                st.success(msg)
-                            else:
-                                st.error(msg)
-                    st.rerun()
+            # Résumé par statut
+            st.markdown("#### 📊 Résumé")
+            
+            col_r1, col_r2, col_r3 = st.columns(3)
+            
+            critiques = df_filtered[df_filtered['solde'] < -100]
+            if not critiques.empty:
+                with col_r1:
+                    manque_crit = abs(critiques['solde'].sum())
+                    st.markdown(f"""
+                    <div class="status-danger">
+                        <h4>🔴 Critiques ({len(critiques)})</h4>
+                        <p>Manque total: <b>{manque_crit:,.0f} T</b></p>
+                        <p>À traiter en priorité</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            attention = df_filtered[(df_filtered['solde'] >= -100) & (df_filtered['solde'] < 0)]
+            if not attention.empty:
+                with col_r2:
+                    manque_att = abs(attention['solde'].sum())
+                    st.markdown(f"""
+                    <div class="status-warning">
+                        <h4>🟠 Attention ({len(attention)})</h4>
+                        <p>Manque total: <b>{manque_att:,.0f} T</b></p>
+                        <p>À surveiller</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            ok = df_filtered[df_filtered['solde'] >= 0]
+            if not ok.empty:
+                with col_r3:
+                    surplus = ok['solde'].sum()
+                    st.markdown(f"""
+                    <div class="status-ok">
+                        <h4>🟢 OK ({len(ok)})</h4>
+                        <p>Surplus total: <b>{surplus:,.0f} T</b></p>
+                        <p>Stock suffisant</p>
+                    </div>
+                    """, unsafe_allow_html=True)
             
             # Export
+            st.markdown("---")
             csv = df_filtered.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "📥 Exporter CSV",
-                csv,
-                f"besoins_campagne_{date.today().strftime('%Y%m%d')}.csv",
-                "text/csv"
-            )
+            st.download_button("📥 Exporter CSV", csv, f"besoins_{date.today().strftime('%Y%m%d')}.csv", "text/csv")
         else:
             st.info("Aucun produit correspondant aux filtres")
-    else:
-        st.info("Aucune prévision de vente disponible")
-
-# ============================================================
-# TAB 2: BESOINS PAR SEMAINE
-# ============================================================
-
-with tab2:
-    st.subheader("📅 Prévisions par Semaine")
-    
-    if not besoins_df.empty:
-        # Sélection produit avec libellé
-        produits_list = besoins_df.apply(lambda x: f"{x['marque']} - {x['libelle']} ({x['type_produit']})", axis=1).tolist()
-        selected_produit = st.selectbox("Sélectionner un produit", produits_list, key="select_produit_semaine")
-        
-        # Récupérer code produit
-        idx = produits_list.index(selected_produit)
-        code_produit = besoins_df.iloc[idx]['code_produit']
-        
-        # Charger données semaine
-        semaines_df = get_besoins_par_semaine(code_produit, nb_semaines=16)
-        
-        if not semaines_df.empty:
-            # Graphique
-            st.markdown("#### 📈 Évolution des besoins")
-            
-            st.bar_chart(
-                semaines_df.set_index('semaine_label')['quantite_prevue_tonnes'],
-                use_container_width=True
-            )
-            
-            # Tableau détaillé
-            st.markdown("#### 📋 Détail par semaine")
-            
-            df_sem_display = semaines_df[['semaine_label', 'quantite_prevue_tonnes']].copy()
-            df_sem_display.columns = ['Semaine', 'Quantité (T)']
-            df_sem_display['Quantité (T)'] = df_sem_display['Quantité (T)'].apply(lambda x: f"{x:.1f}")
-            
-            st.dataframe(df_sem_display, use_container_width=True, hide_index=True)
-            
-            # Totaux
-            total_sem = semaines_df['quantite_prevue_tonnes'].sum()
-            moy_sem = semaines_df['quantite_prevue_tonnes'].mean()
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Total sur la période", f"{total_sem:,.1f} T")
-            with col2:
-                st.metric("Moyenne hebdomadaire", f"{moy_sem:.1f} T/sem")
-        else:
-            st.info("Aucune prévision disponible pour ce produit")
     else:
         st.info("Aucune donnée disponible")
 
 # ============================================================
-# TAB 3: STOCK DISPONIBLE
+# ONGLET 2: DÉTAIL PRODUIT
 # ============================================================
 
-with tab3:
-    st.subheader("📦 Stock Disponible par Variété")
+elif onglet == "🔍 Détail Produit":
+    st.subheader("🔍 Analyse Détaillée par Produit")
     
-    if not stock_df.empty:
-        # KPIs stock
-        col1, col2, col3 = st.columns(3)
+    if not besoins_df.empty:
+        # Sélection produit
+        produits_list = [f"{row['marque']} - {row['type_produit']}" for _, row in besoins_df.iterrows()]
+        selected = st.selectbox("Sélectionner un produit", produits_list, key="detail_produit")
         
-        total_brut = stock_df['poids_brut_tonnes'].sum()
-        total_dispo = stock_df['disponible_tonnes'].sum()
-        total_affecte = stock_df['deja_affecte'].sum()
+        idx = produits_list.index(selected)
+        produit = besoins_df.iloc[idx]
+        code_produit = produit['code_produit']
+        
+        st.markdown("---")
+        
+        # KPIs produit
+        col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("📦 Stock Brut Total", f"{total_brut:,.0f} T")
+            st.metric("📈 Conso hebdo", f"{produit['conso_hebdo']:.1f} T/sem")
+        
         with col2:
-            st.metric("✅ Déjà Affecté", f"{total_affecte:,.0f} T")
+            st.metric("📦 Besoin campagne", f"{produit['besoin_campagne']:,.0f} T")
+        
+        with col3:
+            solde = produit['solde']
+            delta_color = "normal" if solde >= 0 else "inverse"
+            st.metric("⚖️ Solde", f"{solde:+,.0f} T", delta_color=delta_color)
+        
+        with col4:
+            couv = produit['couverture_semaines']
+            st.metric("📅 Couverture", f"{couv:.0f} sem", 
+                     f"sur {sem_rest:.0f}" if couv < sem_rest else "OK")
+        
+        st.markdown("---")
+        
+        # 2 colonnes : Coûts et Prévisions
+        col_left, col_right = st.columns(2)
+        
+        with col_left:
+            st.markdown("#### 💰 Analyse financière")
+            
+            prix_row = prix_df[prix_df['code_produit_commercial'] == code_produit] if not prix_df.empty else pd.DataFrame()
+            prix_vente = float(prix_row.iloc[0]['prix_actuel']) if not prix_row.empty else 0
+            
+            atelier = produit['atelier'] or 'SBU'
+            cout_prod = couts_prod.get(atelier, 45.0)
+            prix_achat = produit['prix_achat_moyen']
+            tare = produit['tare_moyenne']
+            
+            cout_matiere = prix_achat / (1 - tare / 100) if tare < 100 else prix_achat
+            cout_revient = cout_matiere + cout_prod
+            marge_pct = ((prix_vente - cout_revient) / cout_revient * 100) if cout_revient > 0 and prix_vente > 0 else 0
+            
+            # Card marge
+            if marge_pct >= 10:
+                card_class = "status-ok"
+                icon = "✅"
+            elif marge_pct >= 0:
+                card_class = "status-warning"
+                icon = "⚠️"
+            else:
+                card_class = "status-danger"
+                icon = "🔴"
+            
+            st.markdown(f"""
+            <div class="{card_class}">
+                <h4>{icon} Marge: {marge_pct:+.1f}%</h4>
+                <table style="width:100%">
+                    <tr><td>Prix achat moyen</td><td style="text-align:right">{prix_achat:,.0f} €/T</td></tr>
+                    <tr><td>Tare moyenne</td><td style="text-align:right">{tare:.1f}%</td></tr>
+                    <tr><td>→ Coût matière net</td><td style="text-align:right">{cout_matiere:,.0f} €/T</td></tr>
+                    <tr><td>Coût production</td><td style="text-align:right">{cout_prod:,.0f} €/T</td></tr>
+                    <tr><td><b>Coût de revient</b></td><td style="text-align:right"><b>{cout_revient:,.0f} €/T</b></td></tr>
+                    <tr><td colspan="2"><hr></td></tr>
+                    <tr><td>Prix de vente</td><td style="text-align:right"><b>{prix_vente:,.0f} €/T</b></td></tr>
+                </table>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            if marge_pct < 10:
+                prix_cible = cout_revient * 1.10
+                st.info(f"💡 Prix vente min pour 10%: **{prix_cible:,.0f} €/T**")
+        
+        with col_right:
+            st.markdown("#### 📈 Prévisions semaines")
+            
+            prev_df = get_previsions_semaines(code_produit, 12)
+            
+            if not prev_df.empty:
+                st.bar_chart(prev_df.set_index('semaine_label')['quantite_prevue_tonnes'])
+                
+                col_t1, col_t2 = st.columns(2)
+                with col_t1:
+                    st.metric("Total 12 sem", f"{prev_df['quantite_prevue_tonnes'].sum():,.0f} T")
+                with col_t2:
+                    st.metric("Moyenne", f"{prev_df['quantite_prevue_tonnes'].mean():.1f} T/sem")
+            else:
+                st.info("Aucune prévision disponible")
+        
+        st.markdown("---")
+        
+        # Lots affectés
+        st.markdown("#### 📦 Lots affectés")
+        
+        lots_df = get_lots_affectes_produit(code_produit)
+        
+        if not lots_df.empty:
+            st.success(f"{len(lots_df)} lot(s) affecté(s) • {lots_df['poids_net'].sum():,.0f} T net")
+            
+            # Tableau lots
+            df_lots_show = lots_df[['code_lot_interne', 'nom_variete', 'poids_brut', 'poids_net', 
+                                    'prix_achat', 'tare_pct', 'date_passage_prevue']].copy()
+            df_lots_show.columns = ['Lot', 'Variété', 'Brut (T)', 'Net (T)', 'Prix €/T', 'Tare %', 'Passage prévu']
+            
+            df_lots_show['Brut (T)'] = df_lots_show['Brut (T)'].apply(lambda x: f"{x:.1f}")
+            df_lots_show['Net (T)'] = df_lots_show['Net (T)'].apply(lambda x: f"{x:.1f}")
+            df_lots_show['Prix €/T'] = df_lots_show['Prix €/T'].apply(lambda x: f"{x:,.0f}")
+            df_lots_show['Tare %'] = df_lots_show['Tare %'].apply(lambda x: f"{x:.0f}%")
+            df_lots_show['Passage prévu'] = df_lots_show['Passage prévu'].apply(
+                lambda x: x.strftime('%d/%m/%Y') if pd.notna(x) else "—"
+            )
+            
+            st.dataframe(df_lots_show, use_container_width=True, hide_index=True)
+            
+            # Analyse prix
+            prix_min = lots_df['prix_achat'].min()
+            prix_max = lots_df['prix_achat'].max()
+            prix_moy = lots_df['prix_achat'].mean()
+            
+            st.markdown(f"""
+            **Analyse prix lots:** Min {prix_min:,.0f} €/T • Moy {prix_moy:,.0f} €/T • Max {prix_max:,.0f} €/T
+            """)
+        else:
+            st.warning("⚠️ Aucun lot affecté")
+            st.info("👉 Allez sur la page **Affectations** pour affecter des lots")
+        
+        # Actions rapides
+        st.markdown("---")
+        st.markdown("#### ⚡ Actions rapides")
+        
+        col_a1, col_a2 = st.columns(2)
+        
+        with col_a1:
+            if st.button("📋 Aller aux Affectations", use_container_width=True):
+                st.switch_page("pages/32_Prev_Affectations.py")
+        
+        with col_a2:
+            if st.button("💰 Aller à Simulation", use_container_width=True):
+                st.switch_page("pages/33_Prev_Simulation.py")
+    else:
+        st.info("Aucune donnée disponible")
+
+# ============================================================
+# ONGLET 3: STOCK DISPONIBLE
+# ============================================================
+
+elif onglet == "📦 Stock Disponible":
+    st.subheader("📦 Stock Disponible par Variété")
+    st.markdown("*Stock brut non encore affecté à un produit*")
+    
+    if not stock_variete_df.empty:
+        # KPIs
+        col1, col2, col3 = st.columns(3)
+        
+        total_brut = stock_variete_df['poids_brut_total'].sum()
+        total_affecte = stock_variete_df['affecte_total'].sum()
+        total_dispo = stock_variete_df['disponible_brut'].sum()
+        
+        with col1:
+            st.metric("📦 Stock brut total", f"{total_brut:,.0f} T")
+        with col2:
+            st.metric("✅ Déjà affecté", f"{total_affecte:,.0f} T")
         with col3:
             st.metric("📋 Disponible", f"{total_dispo:,.0f} T")
         
         st.markdown("---")
         
-        # Tableau par variété
-        df_stock_display = stock_df[[
-            'nom_variete', 'poids_brut_tonnes', 'deja_affecte', 'disponible_tonnes'
-        ]].copy()
+        # Tableau
+        df_stock_show = stock_variete_df[['nom_variete', 'poids_brut_total', 'affecte_total', 'disponible_brut']].copy()
+        df_stock_show.columns = ['Variété', 'Stock brut (T)', 'Affecté (T)', 'Disponible (T)']
         
-        df_stock_display.columns = ['Variété', 'Stock Brut (T)', 'Affecté (T)', 'Disponible (T)']
+        df_stock_show['Stock brut (T)'] = df_stock_show['Stock brut (T)'].apply(lambda x: f"{x:,.0f}")
+        df_stock_show['Affecté (T)'] = df_stock_show['Affecté (T)'].apply(lambda x: f"{x:,.0f}")
+        df_stock_show['Disponible (T)'] = df_stock_show['Disponible (T)'].apply(lambda x: f"{x:,.0f}")
         
-        df_stock_display['Stock Brut (T)'] = df_stock_display['Stock Brut (T)'].apply(lambda x: f"{x:,.0f}")
-        df_stock_display['Affecté (T)'] = df_stock_display['Affecté (T)'].apply(lambda x: f"{x:,.0f}")
-        df_stock_display['Disponible (T)'] = df_stock_display['Disponible (T)'].apply(lambda x: f"{x:,.0f}")
-        
-        st.dataframe(df_stock_display, use_container_width=True, hide_index=True)
+        st.dataframe(df_stock_show, use_container_width=True, hide_index=True)
         
         # Graphique
         st.markdown("---")
-        st.markdown("#### 📊 Répartition par variété")
+        st.markdown("#### 📊 Répartition")
         
-        chart_data = stock_df[['nom_variete', 'disponible_tonnes']].copy()
-        chart_data = chart_data[chart_data['disponible_tonnes'] > 0]
-        chart_data = chart_data.set_index('nom_variete')
+        chart_df = stock_variete_df[['nom_variete', 'disponible_brut']].copy()
+        chart_df = chart_df[chart_df['disponible_brut'] > 10]  # Filtrer petites valeurs
+        chart_df = chart_df.set_index('nom_variete')
         
-        if not chart_data.empty:
-            st.bar_chart(chart_data['disponible_tonnes'], use_container_width=True)
+        if not chart_df.empty:
+            st.bar_chart(chart_df['disponible_brut'])
+        
+        # Lien rapide
+        st.markdown("---")
+        if st.button("📋 Aller aux Affectations pour affecter ce stock", use_container_width=True):
+            st.switch_page("pages/32_Prev_Affectations.py")
     else:
         st.info("Aucun stock disponible")
-
-st.markdown("---")
 
 # ============================================================
 # AIDE
 # ============================================================
 
+st.markdown("---")
+
 with st.expander("ℹ️ Aide et explications"):
     st.markdown(f"""
     ### Calcul des besoins
     
-    **Période analysée**: De aujourd'hui ({date.today().strftime('%d/%m/%Y')}) jusqu'au {date_fin_campagne.strftime('%d/%m/%Y')} ({semaines_restantes} semaines)
+    **Période**: Aujourd'hui → {DATE_FIN_CAMPAGNE.strftime('%d/%m/%Y')} ({sem_rest:.0f} semaines)
     
-    **Conso hebdo moyenne** = Moyenne des prévisions de ventes des prochaines semaines (table `previsions_ventes`)
+    **Formules:**
+    - **Conso hebdo** = Moyenne des 5 prochaines semaines de prévisions
+    - **Besoin** = Conso hebdo × {sem_rest:.0f} semaines
+    - **Solde** = Stock affecté - Besoin
+    - **Couverture** = Stock affecté / Conso hebdo (en semaines)
     
-    **Besoin** = Conso hebdo moyenne × {semaines_restantes} semaines restantes
+    **Statuts:**
+    - 🔴 **Critique**: Manque > 100 T
+    - 🟠 **Attention**: Manque ≤ 100 T
+    - 🟢 **OK**: Stock suffisant
     
-    **Stock affecté** = Somme des affectations actives (poids net estimé)
+    ### Marge
     
-    **Différence** = Stock affecté - Besoin
-    - ✅ **OK** : Différence ≥ 0 (stock suffisant)
-    - ⚠️ **ATTENTION** : -100 T < Différence < 0 (manque léger)
-    - 🔴 **CRITIQUE** : Différence ≤ -100 T (manque important)
+    - **Coût matière net** = Prix achat / (1 - Tare%)
+    - **Coût revient** = Coût matière + Coût production
+    - **Marge %** = (Prix vente - Coût revient) / Coût revient × 100
     
-    ### Exemple de calcul
+    ### Actions recommandées
     
-    Pour un produit avec:
-    - Conso moyenne = 50 T/semaine
-    - Semaines restantes = {semaines_restantes}
-    - Stock affecté = 800 T
-    
-    → Besoin = 50 × {semaines_restantes} = {50 * semaines_restantes} T
-    → Différence = 800 - {50 * semaines_restantes} = {800 - 50 * semaines_restantes} T
-    
-    ### Actions
-    
-    - **Créer tâche d'achat** : Génère une tâche pour les produits sélectionnés en manque
-    - **Exporter CSV** : Télécharge les données pour analyse externe
-    
-    ### Données nécessaires
-    
-    - Table `previsions_ventes` : Prévisions hebdomadaires par produit
-    - Table `previsions_affectations` : Affectations lots → produits
-    - Table `lots_bruts` : Stock de lots disponibles
+    1. **Produits critiques** → Acheter ou réaffecter lots
+    2. **Marge < 10%** → Revoir affectations (lots moins chers) ou prix vente
+    3. **Couverture faible** → Anticiper achats
     """)
 
 show_footer()
