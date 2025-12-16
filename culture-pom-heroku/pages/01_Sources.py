@@ -342,27 +342,24 @@ TABLES_CONFIG = {
         }
     },
     
-    # ⭐ MODIFIÉ : Produits Commerciaux avec ligne_production_id
+    # Produits Commerciaux - Configuration standard
     "Produits Commerciaux": {
         "table": "ref_produits_commerciaux",
-        # ⭐ Colonnes affichées : ligne_prod remplace atelier (colonne calculée depuis ligne_production_id)
-        "columns": ["code_produit", "marque", "libelle", "poids_unitaire", "unite_poids", "poids", "type_produit", "ligne_prod", "code_variete"],
-        "hidden_columns": ["is_bio", "notes", "is_active", "atelier", "ligne_production_id"],  # ⭐ atelier et ligne_production_id cachés
+        "columns": ["code_produit", "marque", "libelle", "poids_unitaire", "unite_poids", "poids", "type_produit", "code_variete"],
+        "hidden_columns": ["is_bio", "notes", "is_active"],
         "primary_key": "id",
-        "editable": ["marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "ligne_production_id", "code_variete"],  # ⭐ ligne_production_id éditable
+        "editable": ["marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "code_variete"],
         "has_updated_at": True,
         "dropdown_fields": {
             "marque": "dynamic_from_db",
             "unite_poids": "dynamic_from_db",
             "type_produit": "dynamic_from_db",
-            "ligne_production_id": "dynamic_lignes_production",  # ⭐ NOUVEAU : dropdown lignes production
             "code_variete": "dynamic_varietes"
         },
         "filter_columns": ["poids", "marque", "type_produit"],
         "required_fields": ["code_produit", "marque", "libelle"],
         "calculated_columns": {
-            "poids": ["poids_unitaire", "unite_poids"],
-            "ligne_prod": ["ligne_production_id"]  # ⭐ Colonne calculée depuis ligne_production_id
+            "poids": ["poids_unitaire", "unite_poids"]
         }
     },
     
