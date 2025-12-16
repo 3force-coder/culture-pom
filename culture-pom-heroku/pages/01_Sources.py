@@ -185,28 +185,28 @@ def get_unique_values_from_column(df, column_name):
     values = [str(v) for v in values if str(v).strip() != '']
     return sorted(list(set(values)))
 
-# ⭐ NOUVELLE FONCTION : Récupérer les types d'atelier depuis production_lignes
+# ⭐ FONCTION : Récupérer les libellés des lignes de production pour dropdown atelier
 def get_types_atelier():
-    """Récupère les types d'atelier distincts depuis production_lignes"""
+    """Récupère les libellés des lignes de production (pour dropdown atelier)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT DISTINCT type_atelier 
+            SELECT DISTINCT libelle 
             FROM production_lignes 
             WHERE is_active = TRUE 
-            ORDER BY type_atelier
+            ORDER BY libelle
         """)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        return [row['type_atelier'] for row in rows] if rows else []
+        return [row['libelle'] for row in rows] if rows else []
     except Exception as e:
         # Table n'existe peut-être pas encore
         return []
 
 def get_types_atelier_with_existing(df, column_name):
-    """Récupère types atelier + valeurs déjà présentes"""
+    """Récupère libellés lignes production + valeurs déjà présentes"""
     active = get_types_atelier()
     existing = df[column_name].dropna().unique().tolist() if column_name in df.columns else []
     existing = [str(v) for v in existing if str(v).strip() != '']
