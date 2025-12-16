@@ -342,21 +342,22 @@ TABLES_CONFIG = {
         }
     },
     
-    # Produits Commerciaux - Configuration standard
+    # Produits Commerciaux - avec atelier
     "Produits Commerciaux": {
         "table": "ref_produits_commerciaux",
-        "columns": ["code_produit", "marque", "libelle", "poids_unitaire", "unite_poids", "poids", "type_produit", "code_variete"],
+        "columns": ["code_produit", "marque", "libelle", "poids_unitaire", "unite_poids", "poids", "type_produit", "atelier", "code_variete"],
         "hidden_columns": ["is_bio", "notes", "is_active"],
         "primary_key": "id",
-        "editable": ["marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "code_variete"],
+        "editable": ["marque", "libelle", "poids_unitaire", "unite_poids", "type_produit", "atelier", "code_variete"],
         "has_updated_at": True,
         "dropdown_fields": {
             "marque": "dynamic_from_db",
             "unite_poids": "dynamic_from_db",
             "type_produit": "dynamic_from_db",
+            "atelier": "dynamic_types_atelier",
             "code_variete": "dynamic_varietes"
         },
-        "filter_columns": ["poids", "marque", "type_produit"],
+        "filter_columns": ["poids", "marque", "type_produit", "atelier"],
         "required_fields": ["code_produit", "marque", "libelle"],
         "calculated_columns": {
             "poids": ["poids_unitaire", "unite_poids"]
