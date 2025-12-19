@@ -106,17 +106,23 @@ def can_delete_tache():
 # ==========================================
 
 def get_users_list():
-    """Récupère la liste des utilisateurs pour assignation"""
+    """Récupère la liste des utilisateurs pour assignation depuis users_app"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT username, name FROM users WHERE is_active = TRUE ORDER BY name")
+        cursor.execute("""
+            SELECT username, 
+                   COALESCE(prenom || ' ' || nom, prenom, nom, username) as name
+            FROM users_app 
+            WHERE is_active = TRUE 
+            ORDER BY nom, prenom
+        """)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
         return [(row['username'], row['name']) for row in rows]
-    except:
-        # Fallback si table users n'existe pas ou erreur
+    except Exception as e:
+        # Fallback si erreur
         return [('admin_3force', 'Admin 3Force'), ('user_judumas', 'Julien Dumas')]
 
 def get_taches(statut_filter=None, priorite_filter=None, assigne_filter=None):
