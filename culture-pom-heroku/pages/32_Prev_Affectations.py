@@ -443,51 +443,17 @@ def create_affectation(code_produit, lot_id, quantite_tonnes, tare_pct, tare_sou
             emplacement_id = empl_result['emplacement_id']
             statut_stock = empl_result['statut_lavage'] or 'BRUT'
         else:
-            # Lot PRÉVU sans stock réel → créer un emplacement virtuel
-            # Utiliser les colonnes de lots_bruts qui existent
+            # Lot PRÉVU sans stock réel → créer un emplacement virtuel minimal
+            # On utilise des valeurs par défaut pour éviter les problèmes de colonnes
             cursor.execute("""
-                SELECT 
-                    l.code_lot_interne,
-                    COALESCE(l.site_stockage, 'THEORIQUE') as site,
-                    COALESCE(l.emplacement_stockage, 'PREVU') as empl,
-                    COALESCE(l.nombre_unites, 0) as nb_unites,
-                    COALESCE(l.type_conditionnement, 'Pallox') as type_cond,
-                    COALESCE(l.poids_total_brut_kg, 0) as poids_brut
-                FROM lots_bruts l 
-                WHERE l.id = %s
+                INSERT INTO stock_emplacements (
+                    lot_id, site_stockage, emplacement_stockage,
+                    nombre_unites, type_conditionnement, poids_total_kg,
+                    statut_lavage, is_active
+                ) VALUES (%s, 'THEORIQUE', 'PREVU', 0, 'Pallox', 0, 'BRUT', TRUE)
+                RETURNING id
             """, (lot_id,))
-            lot_info = cursor.fetchone()
-            
-            if lot_info:
-                # Créer l'emplacement virtuel
-                cursor.execute("""
-                    INSERT INTO stock_emplacements (
-                        lot_id, site_stockage, emplacement_stockage,
-                        nombre_unites, type_conditionnement, poids_total_kg,
-                        statut_lavage, is_active
-                    ) VALUES (%s, %s, %s, %s, %s, %s, 'BRUT', TRUE)
-                    RETURNING id
-                """, (
-                    lot_id, 
-                    lot_info['site'], 
-                    lot_info['empl'],
-                    lot_info['nb_unites'],
-                    lot_info['type_cond'],
-                    lot_info['poids_brut']
-                ))
-                emplacement_id = cursor.fetchone()['id']
-            else:
-                # Fallback : créer un emplacement minimal
-                cursor.execute("""
-                    INSERT INTO stock_emplacements (
-                        lot_id, site_stockage, emplacement_stockage,
-                        nombre_unites, type_conditionnement, poids_total_kg,
-                        statut_lavage, is_active
-                    ) VALUES (%s, 'THEORIQUE', 'PREVU', 0, 'Pallox', 0, 'BRUT', TRUE)
-                    RETURNING id
-                """, (lot_id,))
-                emplacement_id = cursor.fetchone()['id']
-            
+            emplacement_id = cursor.fetchone()['id']
             statut_stock = 'BRUT'
         
         # Calcul poids net
