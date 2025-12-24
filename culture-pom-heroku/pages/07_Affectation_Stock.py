@@ -425,7 +425,7 @@ def get_affectations_par_produit(code_produit=None):
 def create_affectation(code_produit, lot_id, emplacement_id, 
                        statut_stock, quantite_tonnes,
                        poids_net_estime, tare_pct, tare_source):
-    """Crée une nouvelle affectation GLOBALE (sans semaine)"""
+    """Crée une nouvelle affectation CT (Court Terme) avec année/semaine courante"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -439,17 +439,19 @@ def create_affectation(code_produit, lot_id, emplacement_id,
         
         created_by = st.session_state.get('username', 'system')
         
-        # On met annee=NULL et semaine=NULL pour les affectations globales
+        # Récupérer année et semaine courante (contrainte NOT NULL sur ces colonnes)
+        semaine_courante, annee_courante = get_semaine_actuelle()
+        
         cursor.execute("""
             INSERT INTO previsions_affectations (
                 code_produit_commercial, annee, semaine,
                 lot_id, emplacement_id, statut_stock,
                 quantite_affectee_tonnes, quantite_affectee_pallox,
                 poids_net_estime_tonnes, tare_utilisee_pct, tare_source,
-                created_by
-            ) VALUES (%s, NULL, NULL, %s, %s, %s, %s, NULL, %s, %s, %s, %s)
+                created_by, type_affectation
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, 'CT')
             RETURNING id
-        """, (code_produit, lot_id, emplacement_id, statut_stock,
+        """, (code_produit, annee_courante, semaine_courante, lot_id, emplacement_id, statut_stock,
               quantite_tonnes, poids_net_estime, tare_pct, tare_source,
               created_by))
         
