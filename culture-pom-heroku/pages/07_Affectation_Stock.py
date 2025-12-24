@@ -42,7 +42,7 @@ require_access("COMMERCIAL")
 
 
 st.title("📦 Affectation Stock aux Prévisions")
-st.markdown("*Affecter les lots BRUT ou LAVÉ aux prévisions de vente*")
+st.markdown("*Affecter les lots BRUT ou LAVÉ aux prévisions de vente (5 semaines)*")
 st.markdown("---")
 
 # ==========================================
@@ -56,11 +56,11 @@ def get_semaine_actuelle():
     return iso_calendar[1], iso_calendar[0]
 
 def get_semaines_previsions():
-    """Retourne les 3 semaines de prévisions (S+1, S+2, S+3)"""
+    """Retourne les 5 semaines de prévisions (S+1 à S+5)"""
     semaine_actuelle, annee_actuelle = get_semaine_actuelle()
     semaines = []
     
-    for i in range(1, 4):
+    for i in range(1, 6):  # 5 semaines au lieu de 3
         sem = semaine_actuelle + i
         annee = annee_actuelle
         if sem > 52:
@@ -73,8 +73,12 @@ def get_semaines_previsions():
 def format_semaine(annee, semaine):
     return f"S{semaine:02d}/{annee}"
 
-def get_previsions_avec_affectations():
-    """Récupère les prévisions avec les affectations consolidées"""
+
+def get_previsions_par_produit():
+    """
+    Récupère les prévisions AGRÉGÉES par produit sur 5 semaines
+    avec les affectations consolidées
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -85,32 +89,44 @@ def get_previsions_avec_affectations():
         query = f"""
         SELECT 
             pv.code_produit_commercial,
-            pv.annee,
-            pv.semaine,
             pc.marque,
             pc.libelle,
-            pv.quantite_prevue_tonnes as prevu,
             
-            -- Affecté LAVÉ
-            COALESCE(SUM(CASE WHEN pa.statut_stock = 'LAVÉ' AND pa.is_active = TRUE 
-                         THEN pa.quantite_affectee_tonnes ELSE 0 END), 0) as affecte_lave,
+            -- Total prévu sur 5 semaines
+            SUM(pv.quantite_prevue_tonnes) as prevu_total,
             
-            -- Affecté BRUT (brut)
-            COALESCE(SUM(CASE WHEN pa.statut_stock = 'BRUT' AND pa.is_active = TRUE 
-                         THEN pa.quantite_affectee_tonnes ELSE 0 END), 0) as affecte_brut,
+            -- Affecté LAVÉ (global)
+            COALESCE((
+                SELECT SUM(pa.poids_net_estime_tonnes) 
+                FROM previsions_affectations pa 
+                WHERE pa.code_produit_commercial = pv.code_produit_commercial 
+                  AND pa.is_active = TRUE 
+                  AND pa.statut_stock = 'LAVÉ'
+            ), 0) as affecte_lave,
             
-            -- Affecté BRUT net estimé
-            COALESCE(SUM(CASE WHEN pa.statut_stock = 'BRUT' AND pa.is_active = TRUE 
-                         THEN pa.poids_net_estime_tonnes ELSE 0 END), 0) as affecte_brut_net
+            -- Affecté BRUT brut (global)
+            COALESCE((
+                SELECT SUM(pa.quantite_affectee_tonnes) 
+                FROM previsions_affectations pa 
+                WHERE pa.code_produit_commercial = pv.code_produit_commercial 
+                  AND pa.is_active = TRUE 
+                  AND pa.statut_stock = 'BRUT'
+            ), 0) as affecte_brut,
+            
+            -- Affecté BRUT net estimé (global)
+            COALESCE((
+                SELECT SUM(pa.poids_net_estime_tonnes) 
+                FROM previsions_affectations pa 
+                WHERE pa.code_produit_commercial = pv.code_produit_commercial 
+                  AND pa.is_active = TRUE 
+                  AND pa.statut_stock = 'BRUT'
+            ), 0) as affecte_brut_net
             
         FROM previsions_ventes pv
         LEFT JOIN ref_produits_commerciaux pc ON pv.code_produit_commercial = pc.code_produit
-        LEFT JOIN previsions_affectations pa ON pv.code_produit_commercial = pa.code_produit_commercial
-            AND pv.annee = pa.annee AND pv.semaine = pa.semaine
         WHERE {conditions}
-        GROUP BY pv.code_produit_commercial, pv.annee, pv.semaine, 
-                 pc.marque, pc.libelle, pv.quantite_prevue_tonnes
-        ORDER BY pv.annee, pv.semaine, pc.marque, pc.libelle
+        GROUP BY pv.code_produit_commercial, pc.marque, pc.libelle
+        ORDER BY pc.marque, pc.libelle
         """
         
         cursor.execute(query)
@@ -122,11 +138,11 @@ def get_previsions_avec_affectations():
             df = pd.DataFrame(rows)
             # Calculs
             df['total_affecte_net'] = df['affecte_lave'] + df['affecte_brut_net']
-            df['delta'] = df['prevu'] - df['total_affecte_net']
+            df['delta'] = df['prevu_total'] - df['total_affecte_net']
             df['besoin_lavage'] = df['affecte_brut']
             
             # Convertir en numérique
-            for col in ['prevu', 'affecte_lave', 'affecte_brut', 'affecte_brut_net', 
+            for col in ['prevu_total', 'affecte_lave', 'affecte_brut', 'affecte_brut_net', 
                         'total_affecte_net', 'delta', 'besoin_lavage']:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
@@ -137,106 +153,81 @@ def get_previsions_avec_affectations():
         st.error(f"❌ Erreur : {str(e)}")
         return pd.DataFrame()
 
-def get_stock_disponible(type_stock=None):
-    """Récupère le stock disponible (BRUT ou LAVÉ) avec calcul tare"""
+
+def get_previsions_par_semaine(code_produit):
+    """
+    Récupère les prévisions par semaine pour un produit donné
+    avec la répartition FIFO de l'affecté
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Filtre type stock
-        type_filter = ""
-        if type_stock:
-            type_filter = f"AND COALESCE(se.type_stock, se.statut_lavage, 'BRUT') = '{type_stock}'"
+        semaines = get_semaines_previsions()
+        conditions = " OR ".join([f"(annee = {a} AND semaine = {s})" for a, s in semaines])
         
+        # Prévisions par semaine
         query = f"""
-        SELECT 
-            se.id as emplacement_id,
-            se.lot_id,
-            l.code_lot_interne,
-            l.nom_usage,
-            COALESCE(v.nom_variete, l.code_variete) as variete,
-            l.code_variete,
-            se.site_stockage,
-            se.emplacement_stockage,
-            se.nombre_unites,
-            se.poids_total_kg,
-            se.type_conditionnement,
-            COALESCE(se.type_stock, se.statut_lavage, 'BRUT') as type_stock,
-            
-            -- Tare et source
-            CASE 
-                WHEN COALESCE(se.type_stock, se.statut_lavage) = 'LAVÉ' THEN 0
-                WHEN lj.tare_reelle_pct IS NOT NULL THEN lj.tare_reelle_pct
-                ELSE COALESCE(v.taux_dechet_moyen, 0.22) * 100
-            END as tare_pct,
-            
-            CASE 
-                WHEN COALESCE(se.type_stock, se.statut_lavage) = 'LAVÉ' THEN 'AUCUNE'
-                WHEN lj.tare_reelle_pct IS NOT NULL THEN 'REELLE'
-                ELSE 'THEORIQUE'
-            END as tare_source,
-            
-            -- Quantité déjà affectée sur ce lot/emplacement
-            COALESCE(aff.tonnes_affectees, 0) as deja_affecte_tonnes,
-            COALESCE(aff.pallox_affectes, 0) as deja_affecte_pallox
-
-        FROM stock_emplacements se
-        JOIN lots_bruts l ON se.lot_id = l.id
-        LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
-        LEFT JOIN lavages_jobs lj ON se.lavage_job_id = lj.id AND lj.statut = 'TERMINÉ'
-        LEFT JOIN (
-            SELECT emplacement_id, 
-                   SUM(quantite_affectee_tonnes) as tonnes_affectees,
-                   SUM(quantite_affectee_pallox) as pallox_affectes
-            FROM previsions_affectations
-            WHERE is_active = TRUE
-            GROUP BY emplacement_id
-        ) aff ON se.id = aff.emplacement_id
-        WHERE se.is_active = TRUE
-          AND se.nombre_unites > 0
-          {type_filter}
-        ORDER BY l.code_lot_interne, se.site_stockage
+        SELECT annee, semaine, quantite_prevue_tonnes as prevu
+        FROM previsions_ventes
+        WHERE code_produit_commercial = %s AND ({conditions})
+        ORDER BY annee, semaine
         """
         
-        cursor.execute(query)
+        cursor.execute(query, (code_produit,))
         rows = cursor.fetchall()
+        
+        if not rows:
+            cursor.close()
+            conn.close()
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(rows)
+        df['prevu'] = pd.to_numeric(df['prevu'], errors='coerce').fillna(0)
+        
+        # Total affecté pour ce produit
+        cursor.execute("""
+            SELECT COALESCE(SUM(poids_net_estime_tonnes), 0) as total_affecte
+            FROM previsions_affectations
+            WHERE code_produit_commercial = %s AND is_active = TRUE
+        """, (code_produit,))
+        
+        result = cursor.fetchone()
+        total_affecte = float(result['total_affecte']) if result else 0
+        
         cursor.close()
         conn.close()
         
-        if rows:
-            df = pd.DataFrame(rows)
+        # Répartition FIFO : on couvre les semaines les plus proches en premier
+        reste_a_affecter = total_affecte
+        couvert_list = []
+        delta_list = []
+        
+        for _, row in df.iterrows():
+            prevu = float(row['prevu'])
+            if reste_a_affecter >= prevu:
+                couvert = prevu
+                reste_a_affecter -= prevu
+            else:
+                couvert = reste_a_affecter
+                reste_a_affecter = 0
             
-            # Conversions numériques
-            numeric_cols = ['nombre_unites', 'poids_total_kg', 'tare_pct', 
-                           'deja_affecte_tonnes', 'deja_affecte_pallox']
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-            
-            # Calculer disponible
-            df['poids_dispo_kg'] = df['poids_total_kg'] - (df['deja_affecte_tonnes'] * 1000)
-            df['poids_dispo_tonnes'] = df['poids_dispo_kg'] / 1000
-            
-            # Poids net estimé (après tare)
-            df['poids_net_estime_kg'] = df.apply(
-                lambda r: r['poids_dispo_kg'] if r['type_stock'] == 'LAVÉ' 
-                else r['poids_dispo_kg'] * (1 - r['tare_pct'] / 100),
-                axis=1
-            )
-            df['poids_net_estime_tonnes'] = df['poids_net_estime_kg'] / 1000
-            
-            # Filtrer ceux avec du stock disponible
-            df = df[df['poids_dispo_kg'] > 0]
-            
-            return df
-        return pd.DataFrame()
+            couvert_list.append(couvert)
+            delta_list.append(prevu - couvert)
+        
+        df['couvert'] = couvert_list
+        df['delta'] = delta_list
+        df['semaine_label'] = df.apply(lambda r: f"S{int(r['semaine']):02d}", axis=1)
+        
+        return df
         
     except Exception as e:
         st.error(f"❌ Erreur : {str(e)}")
         return pd.DataFrame()
 
+
 def get_stock_par_lot():
-    """Récupère le stock agrégé par LOT (LAVÉ + BRUT combinés)"""
+    """Récupère le stock agrégé par LOT (LAVÉ + BRUT combinés) avec nom et producteur"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -247,6 +238,8 @@ def get_stock_par_lot():
                 l.id as lot_id,
                 l.code_lot_interne,
                 l.nom_usage,
+                l.code_producteur,
+                COALESCE(p.nom, l.code_producteur) as producteur_nom,
                 COALESCE(v.nom_variete, l.code_variete) as variete,
                 l.code_variete,
                 se.site_stockage,
@@ -272,6 +265,7 @@ def get_stock_par_lot():
             FROM stock_emplacements se
             JOIN lots_bruts l ON se.lot_id = l.id
             LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+            LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
             LEFT JOIN lavages_jobs lj ON se.lavage_job_id = lj.id AND lj.statut = 'TERMINÉ'
             LEFT JOIN (
                 SELECT emplacement_id, SUM(quantite_affectee_tonnes) as tonnes_affectees
@@ -286,6 +280,8 @@ def get_stock_par_lot():
             lot_id,
             code_lot_interne,
             nom_usage,
+            code_producteur,
+            producteur_nom,
             variete,
             code_variete,
             MIN(site_stockage) as site_principal,
@@ -313,7 +309,7 @@ def get_stock_par_lot():
             
         FROM stock_detail
         WHERE (poids_total_kg - deja_affecte_tonnes * 1000) > 0
-        GROUP BY lot_id, code_lot_interne, nom_usage, variete, code_variete
+        GROUP BY lot_id, code_lot_interne, nom_usage, code_producteur, producteur_nom, variete, code_variete
         HAVING (
             SUM(CASE WHEN type_stock = 'LAVÉ' THEN (poids_total_kg - deja_affecte_tonnes * 1000) ELSE 0 END) +
             SUM(CASE WHEN type_stock IN ('BRUT', 'GRENAILLES') THEN (poids_total_kg - deja_affecte_tonnes * 1000) ELSE 0 END)
@@ -345,6 +341,7 @@ def get_stock_par_lot():
         st.error(f"❌ Erreur get_stock_par_lot : {str(e)}")
         return pd.DataFrame()
 
+
 def get_premier_emplacement_lot(lot_id, type_stock):
     """Récupère le premier emplacement disponible d'un lot pour un type de stock"""
     try:
@@ -372,8 +369,9 @@ def get_premier_emplacement_lot(lot_id, type_stock):
         st.error(f"❌ Erreur : {str(e)}")
         return None
 
-def get_affectations_existantes():
-    """Récupère les affectations existantes"""
+
+def get_affectations_par_produit(code_produit=None):
+    """Récupère les affectations existantes (optionnellement filtrées par produit)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -382,8 +380,6 @@ def get_affectations_existantes():
         SELECT 
             pa.id,
             pa.code_produit_commercial,
-            pa.annee,
-            pa.semaine,
             pa.lot_id,
             pa.emplacement_id,
             pa.statut_stock,
@@ -395,6 +391,8 @@ def get_affectations_existantes():
             pa.created_by,
             pa.created_at,
             l.code_lot_interne,
+            l.nom_usage,
+            l.code_producteur,
             COALESCE(v.nom_variete, l.code_variete) as variete,
             pc.marque,
             pc.libelle
@@ -403,10 +401,14 @@ def get_affectations_existantes():
         LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
         LEFT JOIN ref_produits_commerciaux pc ON pa.code_produit_commercial = pc.code_produit
         WHERE pa.is_active = TRUE
-        ORDER BY pa.annee, pa.semaine, pc.marque, pa.created_at DESC
         """
         
-        cursor.execute(query)
+        if code_produit:
+            query += " AND pa.code_produit_commercial = %s"
+            cursor.execute(query + " ORDER BY pa.created_at DESC", (code_produit,))
+        else:
+            cursor.execute(query + " ORDER BY pc.marque, pc.libelle, pa.created_at DESC")
+        
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -419,10 +421,11 @@ def get_affectations_existantes():
         st.error(f"❌ Erreur : {str(e)}")
         return pd.DataFrame()
 
-def create_affectation(code_produit, annee, semaine, lot_id, emplacement_id, 
-                       statut_stock, quantite_tonnes, quantite_pallox,
+
+def create_affectation(code_produit, lot_id, emplacement_id, 
+                       statut_stock, quantite_tonnes,
                        poids_net_estime, tare_pct, tare_source):
-    """Crée une nouvelle affectation"""
+    """Crée une nouvelle affectation GLOBALE (sans semaine)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -430,15 +433,13 @@ def create_affectation(code_produit, annee, semaine, lot_id, emplacement_id,
         # Convertir types
         lot_id = int(lot_id)
         emplacement_id = int(emplacement_id)
-        annee = int(annee)
-        semaine = int(semaine)
         quantite_tonnes = float(quantite_tonnes)
-        quantite_pallox = int(quantite_pallox) if quantite_pallox else None
         poids_net_estime = float(poids_net_estime) if poids_net_estime else None
         tare_pct = float(tare_pct) if tare_pct else None
         
         created_by = st.session_state.get('username', 'system')
         
+        # On met annee=NULL et semaine=NULL pour les affectations globales
         cursor.execute("""
             INSERT INTO previsions_affectations (
                 code_produit_commercial, annee, semaine,
@@ -446,10 +447,10 @@ def create_affectation(code_produit, annee, semaine, lot_id, emplacement_id,
                 quantite_affectee_tonnes, quantite_affectee_pallox,
                 poids_net_estime_tonnes, tare_utilisee_pct, tare_source,
                 created_by
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, NULL, NULL, %s, %s, %s, %s, NULL, %s, %s, %s, %s)
             RETURNING id
-        """, (code_produit, annee, semaine, lot_id, emplacement_id, statut_stock,
-              quantite_tonnes, quantite_pallox, poids_net_estime, tare_pct, tare_source,
+        """, (code_produit, lot_id, emplacement_id, statut_stock,
+              quantite_tonnes, poids_net_estime, tare_pct, tare_source,
               created_by))
         
         new_id = cursor.fetchone()['id']
@@ -463,6 +464,7 @@ def create_affectation(code_produit, annee, semaine, lot_id, emplacement_id,
         if 'conn' in locals():
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
+
 
 def delete_affectation(affectation_id):
     """Supprime (désactive) une affectation - SOFT DELETE"""
@@ -487,6 +489,7 @@ def delete_affectation(affectation_id):
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
+
 def get_produits_commerciaux():
     """Récupère les produits commerciaux"""
     try:
@@ -508,7 +511,7 @@ def get_produits_commerciaux():
 
 
 # ==========================================
-# ⭐ FONCTIONS AMÉLIORÉES - STATUT DELTA
+# ⭐ FONCTIONS STATUT DELTA
 # ==========================================
 
 def get_statut_delta(delta, prevu):
@@ -533,15 +536,13 @@ def get_statut_delta(delta, prevu):
     else:
         return "❌"  # Manque >= 50%
 
-def get_statut_counts(df):
-    """
-    Compte les statuts par catégorie pour un DataFrame
-    Retourne un dict {ok: n, warning: n, critical: n}
-    """
+
+def get_statut_counts(df, col_delta='delta', col_prevu='prevu_total'):
+    """Compte les statuts par catégorie"""
     counts = {'ok': 0, 'warning': 0, 'critical': 0, 'none': 0}
     
     for _, row in df.iterrows():
-        statut = get_statut_delta(row['delta'], row['prevu'])
+        statut = get_statut_delta(row[col_delta], row[col_prevu])
         if statut == "✅":
             counts['ok'] += 1
         elif statut == "⚠️":
@@ -555,37 +556,37 @@ def get_statut_counts(df):
 
 
 # ==========================================
-# KPIs AMÉLIORÉS
+# KPIs GLOBAUX
 # ==========================================
 
-previsions = get_previsions_avec_affectations()
+previsions_produits = get_previsions_par_produit()
 
-if not previsions.empty:
+if not previsions_produits.empty:
     # KPIs globaux
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
-        total_prevu = previsions['prevu'].sum()
-        st.metric("📊 Total Prévu", f"{total_prevu:.0f} T")
+        total_prevu = previsions_produits['prevu_total'].sum()
+        st.metric("📊 Prévu 5 sem.", f"{total_prevu:.0f} T")
     
     with col2:
-        total_affecte = previsions['total_affecte_net'].sum()
+        total_affecte = previsions_produits['total_affecte_net'].sum()
         st.metric("📦 Total Affecté", f"{total_affecte:.0f} T")
     
     with col3:
-        besoin_lavage = previsions['besoin_lavage'].sum()
+        besoin_lavage = previsions_produits['besoin_lavage'].sum()
         st.metric("🧼 Besoin Lavage", f"{besoin_lavage:.0f} T")
     
     with col4:
-        delta_total = previsions['delta'].sum()
+        delta_total = previsions_produits['delta'].sum()
         delta_color = "normal" if delta_total <= 0 else "inverse"
         st.metric("📉 Delta Global", f"{delta_total:.0f} T", delta_color=delta_color)
     
     with col5:
-        counts_global = get_statut_counts(previsions)
+        counts_global = get_statut_counts(previsions_produits)
         nb_complets = counts_global['ok']
-        nb_total = len(previsions)
-        st.metric("✅ Prévisions OK", f"{nb_complets}/{nb_total}")
+        nb_total = len(previsions_produits)
+        st.metric("✅ Produits OK", f"{nb_complets}/{nb_total}")
 
 st.markdown("---")
 
@@ -596,35 +597,32 @@ st.markdown("---")
 tab1, tab2, tab3 = st.tabs(["📊 Vue Consolidée", "➕ Affecter un Lot", "📋 Affectations"])
 
 # ==========================================
-# ONGLET 1 : VUE CONSOLIDÉE AMÉLIORÉE
+# ONGLET 1 : VUE CONSOLIDÉE PAR PRODUIT
 # ==========================================
 
 with tab1:
-    st.subheader("📊 Vue Consolidée - Prévisions vs Affectations")
+    st.subheader("📊 Vue Consolidée - Prévisions 5 semaines par Produit")
     
-    if previsions.empty:
-        st.info("📭 Aucune prévision trouvée pour les 3 prochaines semaines")
+    if previsions_produits.empty:
+        st.info("📭 Aucune prévision trouvée pour les 5 prochaines semaines")
     else:
-        # ==========================================
-        # FILTRES AMÉLIORÉS
-        # ==========================================
-        
+        # Filtres
         col_f1, col_f2 = st.columns(2)
         
         with col_f1:
-            # Filtre semaine
-            semaines_dispo = previsions.apply(lambda r: f"S{int(r['semaine']):02d}/{int(r['annee'])}", axis=1).unique().tolist()
-            filtre_semaine = st.selectbox("Filtrer par semaine", ["Toutes"] + semaines_dispo, key="filtre_sem_conso")
-        
-        with col_f2:
-            # Filtre marque
-            marques_dispo = sorted(previsions['marque'].dropna().unique().tolist())
+            marques_dispo = sorted(previsions_produits['marque'].dropna().unique().tolist())
             filtre_marque = st.selectbox("Filtrer par marque", ["Toutes"] + marques_dispo, key="filtre_marque_conso")
         
+        with col_f2:
+            # Filtre par statut
+            filtre_statut = st.selectbox("Filtrer par statut", 
+                ["Tous", "❌ Manque critique", "⚠️ Manque partiel", "✅ Couvert"],
+                key="filtre_statut_conso")
+        
         # Filtre produit multi-sélection avec recherche
-        produits_dispo = sorted(previsions['libelle'].dropna().unique().tolist())
+        produits_dispo = sorted(previsions_produits['libelle'].dropna().unique().tolist())
         filtre_produits = st.multiselect(
-            "🔍 Rechercher/Sélectionner produits (tapez pour filtrer, ex: 'vapeur')",
+            "🔍 Rechercher/Sélectionner produits",
             options=produits_dispo,
             default=[],
             key="filtre_produits_conso",
@@ -633,58 +631,38 @@ with tab1:
         
         st.markdown("---")
         
-        # ==========================================
-        # PRÉPARATION DONNÉES
-        # ==========================================
-        
-        # Appliquer filtre marque AVANT agrégation
-        df_filtered = previsions.copy()
+        # Appliquer filtres
+        df_filtered = previsions_produits.copy()
         if filtre_marque != "Toutes":
             df_filtered = df_filtered[df_filtered['marque'] == filtre_marque]
         
-        # Appliquer filtre produits AVANT agrégation
         if filtre_produits:
             df_filtered = df_filtered[df_filtered['libelle'].isin(filtre_produits)]
+        
+        # Ajouter colonne statut pour filtrage
+        df_filtered['Statut'] = df_filtered.apply(
+            lambda r: get_statut_delta(r['delta'], r['prevu_total']), axis=1
+        )
+        
+        if filtre_statut == "❌ Manque critique":
+            df_filtered = df_filtered[df_filtered['Statut'] == "❌"]
+        elif filtre_statut == "⚠️ Manque partiel":
+            df_filtered = df_filtered[df_filtered['Statut'] == "⚠️"]
+        elif filtre_statut == "✅ Couvert":
+            df_filtered = df_filtered[df_filtered['Statut'] == "✅"]
         
         if df_filtered.empty:
             st.warning("⚠️ Aucun résultat avec ces filtres")
         else:
-            # ⭐ Si "Toutes" → agréger par produit (somme des semaines)
-            if filtre_semaine == "Toutes":
-                # Calculer la période dynamique
-                sem_min = int(df_filtered['semaine'].min())
-                sem_max = int(df_filtered['semaine'].max())
-                periode_label = f"S{sem_min}-{sem_max}"
-                
-                # Agrégation par produit (somme sur les semaines)
-                df_display = df_filtered.groupby(['code_produit_commercial', 'marque', 'libelle']).agg({
-                    'prevu': 'sum',
-                    'affecte_lave': 'sum',
-                    'affecte_brut': 'sum',
-                    'affecte_brut_net': 'sum',
-                    'total_affecte_net': 'sum',
-                    'delta': 'sum',
-                    'besoin_lavage': 'sum'
-                }).reset_index()
-                
-                # Colonne période pour "Toutes"
-                df_display['Semaine'] = periode_label
-            else:
-                # Filtrer par semaine spécifique
-                parts = filtre_semaine.split('/')
-                sem = int(parts[0].replace('S', ''))
-                annee = int(parts[1])
-                df_display = df_filtered[(df_filtered['semaine'] == sem) & (df_filtered['annee'] == annee)].copy()
-                df_display['Semaine'] = df_display.apply(lambda r: f"S{int(r['semaine']):02d}", axis=1)
-            
-            # Formater pour affichage
-            df_display['Prévu (T)'] = df_display['prevu'].round(1)
+            # Préparer affichage
+            df_display = df_filtered.copy()
+            df_display['Prévu 5s (T)'] = df_display['prevu_total'].round(1)
             df_display['LAVÉ (T)'] = df_display['affecte_lave'].round(1)
             df_display['BRUT net (T)'] = df_display['affecte_brut_net'].round(1)
             df_display['Total (T)'] = df_display['total_affecte_net'].round(1)
             df_display['Delta (T)'] = df_display['delta'].round(1)
             
-            # ⭐ NOUVELLE COLONNE : % Lavé = LAVÉ / Total affecté (si Total > 0)
+            # % Lavé
             def calc_pct_lave(row):
                 total = row['total_affecte_net']
                 lave = row['affecte_lave']
@@ -698,213 +676,191 @@ with tab1:
             
             df_display['% Lavé'] = df_display.apply(calc_pct_lave, axis=1)
             
-            # ⭐ Statut basé sur % du prévu
-            df_display['Statut'] = df_display.apply(
-                lambda r: get_statut_delta(r['delta'], r['prevu']), 
-                axis=1
-            )
-            
-            # Affichage avec tooltips améliorés (avec % Lavé) + SÉLECTION
+            # Affichage tableau avec sélection
             event = st.dataframe(
-                df_display[['Semaine', 'marque', 'libelle', 'Prévu (T)', 'LAVÉ (T)', 
+                df_display[['marque', 'libelle', 'Prévu 5s (T)', 'LAVÉ (T)', 
                            'BRUT net (T)', 'Total (T)', 'Delta (T)', '% Lavé', 'Statut']],
                 column_config={
-                    "Semaine": st.column_config.TextColumn(
-                        "Sem", 
-                        width="small",
-                        help="Semaine ou période"
-                    ),
-                    "marque": st.column_config.TextColumn(
-                        "Marque", 
-                        width="small"
-                    ),
-                    "libelle": st.column_config.TextColumn(
-                        "Produit", 
-                        width="large"
-                    ),
-                    "Prévu (T)": st.column_config.NumberColumn(
-                        "Prévu", 
-                        format="%.1f",
-                        help="Quantité prévue en tonnes"
-                    ),
-                    "LAVÉ (T)": st.column_config.NumberColumn(
-                        "LAVÉ", 
-                        format="%.1f",
-                        help="Stock LAVÉ affecté"
-                    ),
-                    "BRUT net (T)": st.column_config.NumberColumn(
-                        "BRUT net*", 
-                        format="%.1f", 
-                        help="Stock BRUT après tare (~22%)"
-                    ),
-                    "Total (T)": st.column_config.NumberColumn(
-                        "Total", 
-                        format="%.1f",
-                        help="LAVÉ + BRUT net*"
-                    ),
-                    "Delta (T)": st.column_config.NumberColumn(
-                        "Delta", 
-                        format="%.1f",
-                        help="Prévu - Total"
-                    ),
-                    "% Lavé": st.column_config.TextColumn(
-                        "% Lavé",
-                        width="small",
-                        help="Part du LAVÉ dans le total affecté. S+1 devrait être ~100%"
-                    ),
-                    "Statut": st.column_config.TextColumn(
-                        "Statut", 
-                        width="small",
-                        help="✅ OK | ⚠️ <50% | ❌ ≥50%"
-                    ),
+                    "marque": st.column_config.TextColumn("Marque", width="small"),
+                    "libelle": st.column_config.TextColumn("Produit", width="large"),
+                    "Prévu 5s (T)": st.column_config.NumberColumn("Prévu 5s", format="%.1f", help="Total prévu sur 5 semaines"),
+                    "LAVÉ (T)": st.column_config.NumberColumn("LAVÉ", format="%.1f"),
+                    "BRUT net (T)": st.column_config.NumberColumn("BRUT net*", format="%.1f"),
+                    "Total (T)": st.column_config.NumberColumn("Total", format="%.1f"),
+                    "Delta (T)": st.column_config.NumberColumn("Delta", format="%.1f"),
+                    "% Lavé": st.column_config.TextColumn("% Lavé", width="small"),
+                    "Statut": st.column_config.TextColumn("Statut", width="small"),
                 },
                 use_container_width=True,
                 hide_index=True,
                 on_select="rerun",
                 selection_mode="single-row",
-                key="table_previsions_suivi"
+                key="table_previsions_produits"
             )
             
-            st.caption("*BRUT net = estimation après application de la tare (réelle si connue, sinon théorique ~22%)")
+            st.caption("*BRUT net = estimation après tare (~22%)")
             
-            # ⭐ NOUVEAU : Bouton "Créer tâche" si ligne sélectionnée avec delta > 0
+            # Si produit sélectionné → afficher vue par semaine
             selected_rows = event.selection.rows if hasattr(event, 'selection') else []
             
             if len(selected_rows) > 0:
                 selected_idx = selected_rows[0]
                 selected_row = df_display.iloc[selected_idx]
-                delta = selected_row['delta']
+                code_produit = selected_row['code_produit_commercial']
                 
-                if delta > 0:
-                    st.markdown("---")
-                    col_info, col_btn = st.columns([3, 1])
+                st.markdown("---")
+                st.markdown(f"### 📅 Répartition par Semaine : **{selected_row['marque']} - {selected_row['libelle']}**")
+                
+                # Récupérer détail par semaine
+                df_semaines = get_previsions_par_semaine(code_produit)
+                
+                if not df_semaines.empty:
+                    # Afficher les métriques par semaine
+                    cols = st.columns(len(df_semaines) + 1)
                     
-                    with col_info:
-                        st.warning(f"📋 **{selected_row['marque']} - {selected_row['libelle']}** ({selected_row['Semaine']}) : Manque **{delta:.1f} T**")
+                    for i, (_, sem_row) in enumerate(df_semaines.iterrows()):
+                        with cols[i]:
+                            delta_sem = sem_row['delta']
+                            statut_sem = get_statut_delta(delta_sem, sem_row['prevu'])
+                            
+                            st.metric(
+                                sem_row['semaine_label'],
+                                f"{sem_row['couvert']:.0f} / {sem_row['prevu']:.0f} T",
+                                f"{'-' if delta_sem > 0 else '+'}{abs(delta_sem):.0f} T",
+                                delta_color="normal" if delta_sem <= 0 else "inverse"
+                            )
+                            st.markdown(f"<div style='text-align:center'>{statut_sem}</div>", unsafe_allow_html=True)
                     
-                    with col_btn:
-                        if st.button("📋 Créer tâche", type="primary", use_container_width=True):
-                            # Pré-remplir les infos pour la page Tâches
+                    # Total
+                    with cols[-1]:
+                        total_prevu_sem = df_semaines['prevu'].sum()
+                        total_couvert = df_semaines['couvert'].sum()
+                        delta_tot = df_semaines['delta'].sum()
+                        
+                        st.metric(
+                            "🎯 Total",
+                            f"{total_couvert:.0f} / {total_prevu_sem:.0f} T",
+                            f"{'-' if delta_tot > 0 else '+'}{abs(delta_tot):.0f} T",
+                            delta_color="normal" if delta_tot <= 0 else "inverse"
+                        )
+                
+                # Boutons actions
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if selected_row['delta'] > 0:
+                        if st.button("📋 Créer tâche manque stock", type="secondary", use_container_width=True):
                             st.session_state['tache_prefill_titre'] = f"Manque stock {selected_row['marque']} {selected_row['libelle']}"
                             st.session_state['tache_prefill_source_type'] = 'prevision'
-                            st.session_state['tache_prefill_source_label'] = f"{selected_row['marque']} - {selected_row['libelle']} - {selected_row['Semaine']} - Delta: {delta:.1f}T"
-                            
-                            st.success("✅ Redirection vers Tâches...")
+                            st.session_state['tache_prefill_source_label'] = f"{selected_row['marque']} - {selected_row['libelle']} - Delta: {selected_row['delta']:.1f}T"
                             st.switch_page("pages/17_Taches.py")
-                else:
-                    st.success(f"✅ **{selected_row['marque']} - {selected_row['libelle']}** : Stock suffisant")
-        
-        # ⭐ AMÉLIORATION : Totaux par semaine enrichis
-        st.markdown("---")
-        st.markdown("### 📊 Totaux par Semaine")
-        
-        totaux = previsions.groupby(['annee', 'semaine']).agg({
-            'prevu': 'sum',
-            'affecte_lave': 'sum',
-            'affecte_brut': 'sum',
-            'total_affecte_net': 'sum',
-            'delta': 'sum'
-        }).reset_index()
-        
-        cols = st.columns(len(totaux) + 1)
-        
-        for i, (_, row) in enumerate(totaux.iterrows()):
-            with cols[i]:
-                sem_label = f"S{int(row['semaine']):02d}"
-                delta = row['delta']
                 
-                # Compter statuts pour cette semaine
-                df_sem = previsions[(previsions['semaine'] == row['semaine']) & 
-                                    (previsions['annee'] == row['annee'])]
-                counts = get_statut_counts(df_sem)
-                
-                # Afficher métrique
-                st.metric(
-                    sem_label,
-                    f"{row['total_affecte_net']:.0f} / {row['prevu']:.0f} T",
-                    f"{'↑' if delta > 0 else '↓'} Delta: {abs(delta):.0f} T",
-                    delta_color="normal" if delta <= 0 else "inverse"
-                )
-                
-                # Détail statuts sous la métrique
-                st.markdown(
-                    f"<div class='kpi-detail'>✅ {counts['ok']} | ⚠️ {counts['warning']} | ❌ {counts['critical']}</div>",
-                    unsafe_allow_html=True
-                )
-        
-        # Total global
-        with cols[-1]:
-            delta_tot = totaux['delta'].sum()
-            counts_all = get_statut_counts(previsions)
-            
-            st.metric(
-                "🎯 Total",
-                f"{totaux['total_affecte_net'].sum():.0f} / {totaux['prevu'].sum():.0f} T",
-                f"{'↑' if delta_tot > 0 else '↓'} Delta: {abs(delta_tot):.0f} T",
-                delta_color="normal" if delta_tot <= 0 else "inverse"
-            )
-            
-            st.markdown(
-                f"<div class='kpi-detail'>✅ {counts_all['ok']} | ⚠️ {counts_all['warning']} | ❌ {counts_all['critical']}</div>",
-                unsafe_allow_html=True
-            )
+                with col2:
+                    if st.button("➕ Affecter un lot à ce produit", type="primary", use_container_width=True):
+                        st.session_state['produit_preselect'] = code_produit
+                        st.session_state['produit_preselect_label'] = f"{selected_row['marque']} - {selected_row['libelle']}"
+                        st.rerun()
+
 
 # ==========================================
 # ONGLET 2 : AFFECTER UN LOT
 # ==========================================
 
 with tab2:
-    st.subheader("➕ Affecter un Lot à une Prévision")
+    st.subheader("➕ Affecter un Lot à un Produit")
     
-    # Étape 1 : Sélectionner prévision
-    st.markdown("### 1️⃣ Sélectionner la Prévision")
+    # Étape 1 : Sélectionner produit
+    st.markdown("### 1️⃣ Sélectionner le Produit Commercial")
     
-    col1, col2 = st.columns(2)
+    produits = get_produits_commerciaux()
+    produit_options = [f"{p['marque']} - {p['libelle']}" for p in produits]
+    produit_codes = [p['code_produit'] for p in produits]
     
-    with col1:
-        semaines = get_semaines_previsions()
-        sem_options = [f"S{s:02d}/{a}" for a, s in semaines]
-        selected_sem = st.selectbox("Semaine", sem_options, key="select_sem_affect")
-        
-        # Parser
-        parts = selected_sem.split('/')
-        selected_semaine = int(parts[0].replace('S', ''))
-        selected_annee = int(parts[1])
+    # Pré-sélection si vient de l'onglet 1
+    default_idx = 0
+    if 'produit_preselect' in st.session_state:
+        try:
+            default_idx = produit_codes.index(st.session_state['produit_preselect'])
+        except ValueError:
+            default_idx = 0
+        # Nettoyer
+        del st.session_state['produit_preselect']
+        if 'produit_preselect_label' in st.session_state:
+            del st.session_state['produit_preselect_label']
     
-    with col2:
-        produits = get_produits_commerciaux()
-        produit_options = [f"{p['marque']} - {p['libelle']}" for p in produits]
-        produit_codes = [p['code_produit'] for p in produits]
-        selected_produit_idx = st.selectbox("Produit", range(len(produit_options)), 
-                                            format_func=lambda i: produit_options[i],
-                                            key="select_produit_affect")
-        selected_code_produit = produit_codes[selected_produit_idx] if produits else None
+    selected_produit_idx = st.selectbox(
+        "Produit commercial", 
+        range(len(produit_options)), 
+        format_func=lambda i: produit_options[i],
+        index=default_idx,
+        key="select_produit_affect"
+    )
+    selected_code_produit = produit_codes[selected_produit_idx] if produits else None
+    
+    # Afficher résumé prévisions du produit
+    if selected_code_produit:
+        produit_info = previsions_produits[previsions_produits['code_produit_commercial'] == selected_code_produit]
+        if not produit_info.empty:
+            p = produit_info.iloc[0]
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Prévu 5 sem.", f"{p['prevu_total']:.0f} T")
+            with col2:
+                st.metric("Affecté", f"{p['total_affecte_net']:.0f} T")
+            with col3:
+                st.metric("Delta", f"{p['delta']:.0f} T", 
+                         delta_color="normal" if p['delta'] <= 0 else "inverse")
+            with col4:
+                statut = get_statut_delta(p['delta'], p['prevu_total'])
+                st.metric("Statut", statut)
     
     st.markdown("---")
     
-    # Étape 2 : Stock disponible PAR LOT (agrégé BRUT + LAVÉ)
+    # Étape 2 : Stock disponible PAR LOT
     st.markdown("### 2️⃣ Sélectionner le Lot")
-    st.caption("*Le tableau affiche le stock disponible par lot : LAVÉ + BRUT (avec estimation après tare)*")
     
     stock_par_lot = get_stock_par_lot()
     
     if stock_par_lot.empty:
         st.warning("⚠️ Aucun stock disponible")
     else:
-        # Filtres
-        col1, col2 = st.columns(2)
+        # Filtres améliorés
+        col1, col2, col3 = st.columns(3)
         with col1:
             varietes = ["Toutes"] + sorted(stock_par_lot['variete'].dropna().unique().tolist())
-            filtre_variete = st.selectbox("Filtrer par variété", varietes, key="filtre_var_stock")
+            filtre_variete = st.selectbox("Variété", varietes, key="filtre_var_stock")
         with col2:
             sites = ["Tous"] + sorted(stock_par_lot['site_principal'].dropna().unique().tolist())
-            filtre_site = st.selectbox("Filtrer par site", sites, key="filtre_site_stock")
+            filtre_site = st.selectbox("Site", sites, key="filtre_site_stock")
+        with col3:
+            producteurs = ["Tous"] + sorted(stock_par_lot['producteur_nom'].dropna().unique().tolist())
+            filtre_producteur = st.selectbox("Producteur", producteurs, key="filtre_prod_stock")
         
+        # ⭐ NOUVEAU : Champ de recherche texte
+        recherche_lot = st.text_input(
+            "🔍 Rechercher un lot (code, nom, producteur...)",
+            placeholder="Ex: AGATA, BOSSELER, COLLOT...",
+            key="recherche_lot"
+        )
+        
+        # Appliquer filtres
         stock_filtre = stock_par_lot.copy()
         if filtre_variete != "Toutes":
             stock_filtre = stock_filtre[stock_filtre['variete'] == filtre_variete]
         if filtre_site != "Tous":
             stock_filtre = stock_filtre[stock_filtre['site_principal'] == filtre_site]
+        if filtre_producteur != "Tous":
+            stock_filtre = stock_filtre[stock_filtre['producteur_nom'] == filtre_producteur]
+        
+        # Recherche texte
+        if recherche_lot:
+            recherche_lower = recherche_lot.lower()
+            stock_filtre = stock_filtre[
+                stock_filtre['code_lot_interne'].str.lower().str.contains(recherche_lower, na=False) |
+                stock_filtre['nom_usage'].str.lower().str.contains(recherche_lower, na=False) |
+                stock_filtre['producteur_nom'].str.lower().str.contains(recherche_lower, na=False) |
+                stock_filtre['variete'].str.lower().str.contains(recherche_lower, na=False)
+            ]
         
         if not stock_filtre.empty:
             st.caption(f"💡 {len(stock_filtre)} lot(s) disponible(s)")
@@ -913,33 +869,37 @@ with tab2:
             df_stock = stock_filtre.copy().reset_index(drop=True)
             df_stock['_idx'] = df_stock.index
             
-            # Colonnes affichage
+            # Colonnes affichage - ⭐ AJOUT Nom Lot et Producteur
             df_stock['Code Lot'] = df_stock['code_lot_interne']
+            df_stock['Nom Lot'] = df_stock['nom_usage']
+            df_stock['Producteur'] = df_stock['producteur_nom']
             df_stock['Variété'] = df_stock['variete']
             df_stock['Site'] = df_stock['site_principal']
             df_stock['LAVÉ (T)'] = df_stock['stock_lave_tonnes'].round(2)
             df_stock['BRUT (T)'] = df_stock['stock_brut_tonnes'].round(2)
             df_stock['BRUT net* (T)'] = df_stock['stock_brut_net_tonnes'].round(2)
             df_stock['Total net (T)'] = df_stock['total_net_tonnes'].round(2)
-            df_stock['Tare moy %'] = df_stock['tare_moyenne_pct'].round(1)
+            df_stock['Tare %'] = df_stock['tare_moyenne_pct'].round(1)
             
             column_config = {
                 "_idx": None,
                 "lot_id": None,
-                "Code Lot": st.column_config.TextColumn("Code Lot", width="large"),
+                "Code Lot": st.column_config.TextColumn("Code Lot", width="medium"),
+                "Nom Lot": st.column_config.TextColumn("Nom Lot", width="large"),
+                "Producteur": st.column_config.TextColumn("Producteur", width="medium"),
                 "Variété": st.column_config.TextColumn("Variété", width="medium"),
-                "Site": st.column_config.TextColumn("Site", width="medium"),
-                "LAVÉ (T)": st.column_config.NumberColumn("LAVÉ", format="%.1f", help="Stock déjà lavé"),
-                "BRUT (T)": st.column_config.NumberColumn("BRUT", format="%.1f", help="Stock brut"),
-                "BRUT net* (T)": st.column_config.NumberColumn("BRUT net*", format="%.1f", help="BRUT après tare estimée"),
-                "Total net (T)": st.column_config.NumberColumn("Total net", format="%.1f", help="LAVÉ + BRUT net"),
-                "Tare moy %": st.column_config.NumberColumn("Tare %", format="%.1f"),
+                "Site": st.column_config.TextColumn("Site", width="small"),
+                "LAVÉ (T)": st.column_config.NumberColumn("LAVÉ", format="%.1f"),
+                "BRUT (T)": st.column_config.NumberColumn("BRUT", format="%.1f"),
+                "BRUT net* (T)": st.column_config.NumberColumn("BRUT net*", format="%.1f"),
+                "Total net (T)": st.column_config.NumberColumn("Total net", format="%.1f"),
+                "Tare %": st.column_config.NumberColumn("Tare %", format="%.1f"),
             }
             
             # Tableau sélectionnable
             event = st.dataframe(
-                df_stock[['_idx', 'lot_id', 'Code Lot', 'Variété', 'Site', 
-                         'LAVÉ (T)', 'BRUT (T)', 'BRUT net* (T)', 'Total net (T)', 'Tare moy %']],
+                df_stock[['_idx', 'lot_id', 'Code Lot', 'Nom Lot', 'Producteur', 'Variété', 'Site', 
+                         'LAVÉ (T)', 'BRUT (T)', 'BRUT net* (T)', 'Total net (T)', 'Tare %']],
                 column_config=column_config,
                 use_container_width=True,
                 hide_index=True,
@@ -960,7 +920,7 @@ with tab2:
                 selected_lot = df_stock.iloc[selected_idx]
                 
                 # Résumé du lot
-                st.success(f"✅ Lot sélectionné : **{selected_lot['Code Lot']}** - {selected_lot['Variété']}")
+                st.success(f"✅ Lot : **{selected_lot['Code Lot']}** - {selected_lot['Nom Lot']} ({selected_lot['Producteur']})")
                 
                 col1, col2, col3 = st.columns(3)
                 with col1:
@@ -1044,18 +1004,14 @@ with tab2:
                         
                         # Créer affectation LAVÉ si > 0
                         if affecte_lave > 0:
-                            # Récupérer le premier emplacement LAVÉ
                             empl_lave = get_premier_emplacement_lot(selected_lot['lot_id'], 'LAVÉ')
                             if empl_lave:
                                 success, msg = create_affectation(
                                     code_produit=selected_code_produit,
-                                    annee=selected_annee,
-                                    semaine=selected_semaine,
                                     lot_id=selected_lot['lot_id'],
                                     emplacement_id=empl_lave['emplacement_id'],
                                     statut_stock='LAVÉ',
                                     quantite_tonnes=affecte_lave,
-                                    quantite_pallox=None,
                                     poids_net_estime=affecte_lave,
                                     tare_pct=0,
                                     tare_source='AUCUNE'
@@ -1067,18 +1023,14 @@ with tab2:
                         
                         # Créer affectation BRUT si > 0
                         if affecte_brut_brut > 0 and error_msg is None:
-                            # Récupérer le premier emplacement BRUT
                             empl_brut = get_premier_emplacement_lot(selected_lot['lot_id'], 'BRUT')
                             if empl_brut:
                                 success, msg = create_affectation(
                                     code_produit=selected_code_produit,
-                                    annee=selected_annee,
-                                    semaine=selected_semaine,
                                     lot_id=selected_lot['lot_id'],
                                     emplacement_id=empl_brut['emplacement_id'],
                                     statut_stock='BRUT',
                                     quantite_tonnes=affecte_brut_brut,
-                                    quantite_pallox=None,
                                     poids_net_estime=affecte_brut,
                                     tare_pct=tare_pct,
                                     tare_source=selected_lot.get('tare_source', 'THEORIQUE')
@@ -1095,7 +1047,7 @@ with tab2:
                             st.balloons()
                             
                             if besoin_lavage > 0:
-                                st.warning(f"⚠️ {besoin_lavage:.1f} T de BRUT à laver ! Pensez à créer un job lavage.")
+                                st.warning(f"⚠️ {besoin_lavage:.1f} T de BRUT à laver !")
                             
                             st.rerun()
                         else:
@@ -1106,6 +1058,7 @@ with tab2:
         else:
             st.warning("⚠️ Aucun lot correspond aux filtres")
 
+
 # ==========================================
 # ONGLET 3 : AFFECTATIONS EXISTANTES
 # ==========================================
@@ -1113,7 +1066,7 @@ with tab2:
 with tab3:
     st.subheader("📋 Affectations Existantes")
     
-    affectations = get_affectations_existantes()
+    affectations = get_affectations_par_produit()
     
     if affectations.empty:
         st.info("📭 Aucune affectation")
@@ -1122,21 +1075,19 @@ with tab3:
         col1, col2 = st.columns(2)
         
         with col1:
-            semaines_aff = affectations.apply(
-                lambda r: f"S{int(r['semaine']):02d}/{int(r['annee'])}", axis=1
+            produits_aff = affectations.apply(
+                lambda r: f"{r['marque']} - {r['libelle']}", axis=1
             ).unique().tolist()
-            filtre_sem_aff = st.selectbox("Semaine", ["Toutes"] + semaines_aff, key="filtre_sem_aff")
+            filtre_produit_aff = st.selectbox("Produit", ["Tous"] + produits_aff, key="filtre_prod_aff")
         
         with col2:
             types_aff = affectations['statut_stock'].unique().tolist()
             filtre_type_aff = st.selectbox("Type stock", ["Tous"] + types_aff, key="filtre_type_aff")
         
         df_aff = affectations.copy()
-        if filtre_sem_aff != "Toutes":
-            parts = filtre_sem_aff.split('/')
-            sem = int(parts[0].replace('S', ''))
-            annee = int(parts[1])
-            df_aff = df_aff[(df_aff['semaine'] == sem) & (df_aff['annee'] == annee)]
+        if filtre_produit_aff != "Tous":
+            df_aff['produit_label'] = df_aff.apply(lambda r: f"{r['marque']} - {r['libelle']}", axis=1)
+            df_aff = df_aff[df_aff['produit_label'] == filtre_produit_aff]
         if filtre_type_aff != "Tous":
             df_aff = df_aff[df_aff['statut_stock'] == filtre_type_aff]
         
@@ -1144,13 +1095,14 @@ with tab3:
         
         # Affichage
         for _, row in df_aff.iterrows():
-            with st.expander(f"#{row['id']} - {row['marque']} {row['libelle']} - S{int(row['semaine']):02d}"):
+            with st.expander(f"#{row['id']} - {row['marque']} {row['libelle']} - {row['code_lot_interne']}"):
                 col1, col2 = st.columns(2)
                 
                 with col1:
                     st.write(f"**Produit** : {row['marque']} - {row['libelle']}")
-                    st.write(f"**Semaine** : S{int(row['semaine']):02d}/{int(row['annee'])}")
                     st.write(f"**Lot** : {row['code_lot_interne']}")
+                    st.write(f"**Nom** : {row['nom_usage']}")
+                    st.write(f"**Producteur** : {row['code_producteur']}")
                     st.write(f"**Variété** : {row['variete']}")
                 
                 with col2:
@@ -1158,8 +1110,10 @@ with tab3:
                     st.write(f"**Quantité** : {row['quantite_affectee_tonnes']:.2f} T")
                     if row['statut_stock'] == 'BRUT':
                         st.write(f"**Net estimé** : {row['poids_net_estime_tonnes']:.2f} T")
-                        st.write(f"**Tare** : {row['tare_utilisee_pct']:.1f}% ({row['tare_source']})")
+                        tare = row['tare_utilisee_pct']
+                        st.write(f"**Tare** : {tare:.1f}% ({row['tare_source']})" if tare else "N/A")
                     st.write(f"**Créé par** : {row['created_by']}")
+                    st.write(f"**Date** : {row['created_at']}")
                 
                 # Bouton supprimer
                 if st.button(f"🗑️ Supprimer", key=f"del_aff_{row['id']}"):
