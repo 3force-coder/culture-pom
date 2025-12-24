@@ -51,6 +51,39 @@ if not is_authenticated():
     st.stop()
 
 # ============================================================
+# CONSTANTES CAMPAGNE - DYNAMIQUES
+# ============================================================
+
+def get_campagne_info():
+    """Calcule les dates de la campagne courante (Juillet N à Juin N+1)"""
+    today = date.today()
+    
+    # Si on est entre Juillet et Décembre → campagne N / N+1
+    # Si on est entre Janvier et Juin → campagne N-1 / N
+    if today.month >= 7:
+        annee_debut = today.year
+        annee_fin = today.year + 1
+    else:
+        annee_debut = today.year - 1
+        annee_fin = today.year
+    
+    date_debut = date(annee_debut, 7, 1)
+    date_fin = date(annee_fin, 6, 30)
+    
+    semaines_restantes = max(0, (date_fin - today).days // 7)
+    
+    return {
+        'annee_debut': annee_debut,
+        'annee_fin': annee_fin,
+        'date_debut': date_debut,
+        'date_fin': date_fin,
+        'semaines_restantes': semaines_restantes,
+        'label': f"{annee_debut}-{annee_fin}"
+    }
+
+CAMPAGNE = get_campagne_info()
+
+# ============================================================
 # FONCTIONS DONNÉES
 # ============================================================
 
@@ -70,16 +103,20 @@ def get_sites_production():
         conn.close()
         return [row['site'] for row in rows] if rows else []
     except Exception as e:
-        st.error(f"Erreur sites: {str(e)}")
         return []
 
+
 def get_kpis_globaux(site_filter=None):
-    """Récupère les KPIs globaux du module prévisions"""
+    """Récupère les KPIs globaux du module prévisions - VERSION CORRIGÉE"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # KPI 1: Stock brut total (tonnes)
+        today = date.today()
+        semaine_courante = today.isocalendar()[1]
+        annee_courante = today.year
+        
+        # KPI 1: Stock brut total (tonnes) - lots actifs
         query_stock = """
             SELECT COALESCE(SUM(poids_total_brut_kg), 0) / 1000 as stock_brut_tonnes
             FROM lots_bruts 
@@ -89,16 +126,22 @@ def get_kpis_globaux(site_filter=None):
         stock_brut = float(cursor.fetchone()['stock_brut_tonnes'] or 0)
         
         # KPI 2: Stock net estimé (avec tare moyenne 22%)
-        stock_net = stock_brut * 0.78  # Approximation
+        stock_net = stock_brut * 0.78
         
-        # KPI 3: Besoins jusqu'à fin campagne (30/06/2025)
+        # KPI 3: Besoins jusqu'à fin campagne - REQUÊTE CORRIGÉE
+        # On prend toutes les prévisions de la semaine courante jusqu'à fin juin de l'année de fin de campagne
         query_besoins = """
             SELECT COALESCE(SUM(quantite_prevue_tonnes), 0) as besoin_total
             FROM previsions_ventes
-            WHERE (annee = 2024 AND semaine >= EXTRACT(WEEK FROM CURRENT_DATE))
-               OR (annee = 2025 AND semaine <= 26)
+            WHERE (
+                -- Semaines restantes cette année
+                (annee = %s AND semaine >= %s)
+                OR
+                -- Toutes les semaines de l'année suivante jusqu'à S26 (fin juin)
+                (annee = %s AND semaine <= 26)
+            )
         """
-        cursor.execute(query_besoins)
+        cursor.execute(query_besoins, (annee_courante, semaine_courante, CAMPAGNE['annee_fin']))
         besoin_total = float(cursor.fetchone()['besoin_total'] or 0)
         
         # KPI 4: Lots affectés
@@ -108,25 +151,19 @@ def get_kpis_globaux(site_filter=None):
             FROM previsions_affectations
             WHERE is_active = TRUE
         """
-        if site_filter:
-            query_affectes += f" AND site = '{site_filter}'"
         cursor.execute(query_affectes)
         result = cursor.fetchone()
         nb_lots_affectes = result['nb_lots_affectes'] or 0
         tonnes_affectees = float(result['tonnes_affectees'] or 0)
         
-        # KPI 5: Produits avec prévisions
+        # KPI 5: Produits avec prévisions actives
         query_produits = """
             SELECT COUNT(DISTINCT code_produit_commercial) as nb_produits
             FROM previsions_ventes
+            WHERE (annee = %s AND semaine >= %s) OR (annee = %s AND semaine <= 26)
         """
-        cursor.execute(query_produits)
+        cursor.execute(query_produits, (annee_courante, semaine_courante, CAMPAGNE['annee_fin']))
         nb_produits = cursor.fetchone()['nb_produits'] or 0
-        
-        # KPI 6: Semaines restantes campagne
-        today = date.today()
-        fin_campagne = date(2025, 6, 30)
-        semaines_restantes = max(0, (fin_campagne - today).days // 7)
         
         cursor.close()
         conn.close()
@@ -138,7 +175,7 @@ def get_kpis_globaux(site_filter=None):
             'nb_lots_affectes': nb_lots_affectes,
             'tonnes_affectees': tonnes_affectees,
             'nb_produits': nb_produits,
-            'semaines_restantes': semaines_restantes,
+            'semaines_restantes': CAMPAGNE['semaines_restantes'],
             'difference': stock_net - besoin_total
         }
         
@@ -146,14 +183,19 @@ def get_kpis_globaux(site_filter=None):
         st.error(f"Erreur KPIs: {str(e)}")
         return None
 
+
 def get_alertes_produits(site_filter=None):
-    """Récupère les alertes par produit (manque/surplus)"""
+    """Récupère les alertes par produit (manque/surplus) - VERSION CORRIGÉE"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
+        today = date.today()
+        semaine_courante = today.isocalendar()[1]
+        annee_courante = today.year
+        
         # Besoins par produit jusqu'à fin campagne
-        query = """
+        query = f"""
             WITH besoins AS (
                 SELECT 
                     pv.code_produit_commercial,
@@ -163,8 +205,8 @@ def get_alertes_produits(site_filter=None):
                     SUM(pv.quantite_prevue_tonnes) as besoin_tonnes
                 FROM previsions_ventes pv
                 JOIN ref_produits_commerciaux pc ON pv.code_produit_commercial = pc.code_produit
-                WHERE (pv.annee = 2024 AND pv.semaine >= EXTRACT(WEEK FROM CURRENT_DATE))
-                   OR (pv.annee = 2025 AND pv.semaine <= 26)
+                WHERE (pv.annee = %s AND pv.semaine >= %s)
+                   OR (pv.annee = %s AND pv.semaine <= 26)
                 GROUP BY pv.code_produit_commercial, pc.marque, pc.type_produit, pc.atelier
             ),
             affectations AS (
@@ -193,14 +235,13 @@ def get_alertes_produits(site_filter=None):
             ORDER BY difference ASC
         """
         
-        cursor.execute(query)
+        cursor.execute(query, (annee_courante, semaine_courante, CAMPAGNE['annee_fin']))
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
         
         if rows:
             df = pd.DataFrame(rows)
-            # Convertir colonnes numériques
             for col in ['besoin_tonnes', 'stock_affecte', 'difference']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -211,11 +252,16 @@ def get_alertes_produits(site_filter=None):
         st.error(f"Erreur alertes: {str(e)}")
         return pd.DataFrame()
 
+
 def get_consommation_semaine():
-    """Récupère la consommation moyenne par semaine"""
+    """Récupère la consommation par semaine (12 prochaines semaines)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        
+        today = date.today()
+        semaine_courante = today.isocalendar()[1]
+        annee_courante = today.year
         
         query = """
             SELECT 
@@ -223,27 +269,30 @@ def get_consommation_semaine():
                 pv.annee,
                 SUM(pv.quantite_prevue_tonnes) as total_tonnes
             FROM previsions_ventes pv
-            WHERE pv.annee >= 2024
+            WHERE (pv.annee = %s AND pv.semaine >= %s)
+               OR (pv.annee > %s)
             GROUP BY pv.annee, pv.semaine
             ORDER BY pv.annee, pv.semaine
-            LIMIT 20
+            LIMIT 12
         """
         
-        cursor.execute(query)
+        cursor.execute(query, (annee_courante, semaine_courante, annee_courante))
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
         
         if rows:
             df = pd.DataFrame(rows)
-            df['semaine_label'] = df.apply(lambda x: f"S{x['semaine']}/{x['annee']}", axis=1)
             df['total_tonnes'] = pd.to_numeric(df['total_tonnes'], errors='coerce').fillna(0)
+            df['semaine_label'] = df.apply(
+                lambda r: f"S{int(r['semaine']):02d}", axis=1
+            )
             return df
         return pd.DataFrame()
         
     except Exception as e:
-        st.error(f"Erreur conso: {str(e)}")
         return pd.DataFrame()
+
 
 def get_stock_par_marque():
     """Récupère le stock affecté par marque"""
@@ -254,8 +303,7 @@ def get_stock_par_marque():
         query = """
             SELECT 
                 pc.marque,
-                COUNT(DISTINCT pa.lot_id) as nb_lots,
-                SUM(pa.quantite_affectee_tonnes) as tonnes_affectees
+                SUM(COALESCE(pa.poids_net_estime_tonnes, pa.quantite_affectee_tonnes * 0.78)) as tonnes_affectees
             FROM previsions_affectations pa
             JOIN ref_produits_commerciaux pc ON pa.code_produit_commercial = pc.code_produit
             WHERE pa.is_active = TRUE
@@ -275,27 +323,27 @@ def get_stock_par_marque():
         return pd.DataFrame()
         
     except Exception as e:
-        st.error(f"Erreur stock marque: {str(e)}")
         return pd.DataFrame()
+
 
 # ============================================================
 # INTERFACE
 # ============================================================
 
 st.title("📊 Dashboard Prévisions")
-st.markdown("*Vue synthétique des prévisions et affectations - Campagne 2024-2025*")
+st.markdown(f"*Vue synthétique des prévisions et affectations - Campagne {CAMPAGNE['label']}*")
 
-# Filtre site
-col_filter, col_refresh = st.columns([3, 1])
+# Filtres
+col_site, col_refresh = st.columns([4, 1])
 
-with col_filter:
+with col_site:
     sites = get_sites_production()
     site_options = ["Tous les sites"] + sites
     selected_site = st.selectbox("🏭 Site", site_options, key="filter_site")
     site_filter = None if selected_site == "Tous les sites" else selected_site
 
 with col_refresh:
-    st.write("")  # Spacer
+    st.write("")
     if st.button("🔄 Actualiser", use_container_width=True):
         st.rerun()
 
@@ -328,7 +376,7 @@ if kpis:
         st.metric(
             "🎯 Besoin Campagne",
             f"{kpis['besoin_total_tonnes']:,.0f} T",
-            help="Besoin total jusqu'au 30/06/2025"
+            help=f"Besoin total jusqu'au {CAMPAGNE['date_fin'].strftime('%d/%m/%Y')}"
         )
     
     with col4:
@@ -352,7 +400,7 @@ if kpis:
         st.metric(
             "📅 Semaines Restantes",
             f"{kpis['semaines_restantes']}",
-            help="Semaines jusqu'au 30/06/2025"
+            help=f"Semaines jusqu'au {CAMPAGNE['date_fin'].strftime('%d/%m/%Y')}"
         )
 
 st.markdown("---")
@@ -405,18 +453,16 @@ if not alertes_df.empty:
     if not alertes_critiques.empty:
         st.markdown("#### ⚠️ Produits en Manque (Top 10)")
         
-        # Formater pour affichage
         df_display = alertes_critiques[['marque', 'type_produit', 'besoin_tonnes', 'stock_affecte', 'difference']].copy()
         df_display.columns = ['Marque', 'Type Produit', 'Besoin (T)', 'Stock Affecté (T)', 'Manque (T)']
         
-        # Formater les nombres
         df_display['Besoin (T)'] = df_display['Besoin (T)'].apply(lambda x: f"{x:,.0f}")
         df_display['Stock Affecté (T)'] = df_display['Stock Affecté (T)'].apply(lambda x: f"{x:,.0f}")
         df_display['Manque (T)'] = df_display['Manque (T)'].apply(lambda x: f"{x:,.0f}")
         
         st.dataframe(df_display, use_container_width=True, hide_index=True)
     
-    # Tableau des surplus (si besoin de vendre)
+    # Tableau des surplus
     alertes_surplus = alertes_df[alertes_df['statut'] == 'SURPLUS'].head(5)
     
     if not alertes_surplus.empty:
@@ -432,7 +478,7 @@ if not alertes_df.empty:
         st.dataframe(df_display, use_container_width=True, hide_index=True)
 
 else:
-    st.info("Aucune donnée de prévision disponible. Vérifiez que la table `previsions_ventes` contient des données.")
+    st.info("Aucune donnée de prévision disponible. Vérifiez que la table `previsions_ventes` contient des données pour la période courante.")
 
 st.markdown("---")
 
@@ -453,7 +499,7 @@ with col_chart1:
             use_container_width=True
         )
     else:
-        st.info("Aucune donnée de consommation")
+        st.info("Aucune donnée de prévision")
 
 with col_chart2:
     st.subheader("🏷️ Stock Affecté par Marque")
@@ -461,7 +507,6 @@ with col_chart2:
     stock_marque_df = get_stock_par_marque()
     
     if not stock_marque_df.empty and stock_marque_df['tonnes_affectees'].sum() > 0:
-        # Pie chart avec Streamlit
         chart_data = stock_marque_df.set_index('marque')['tonnes_affectees']
         st.bar_chart(chart_data, use_container_width=True)
     else:
@@ -508,10 +553,10 @@ st.markdown("---")
 # ============================================================
 
 with st.expander("ℹ️ Informations Campagne"):
-    st.markdown("""
-    **Campagne actuelle** : 2024-2025  
-    **Période** : 01/07/2024 → 30/06/2025  
-    **Fin de campagne** : Semaine 26 (30 juin 2025)
+    st.markdown(f"""
+    **Campagne actuelle** : {CAMPAGNE['label']}  
+    **Période** : {CAMPAGNE['date_debut'].strftime('%d/%m/%Y')} → {CAMPAGNE['date_fin'].strftime('%d/%m/%Y')}  
+    **Fin de campagne** : Semaine 26 ({CAMPAGNE['date_fin'].strftime('%d/%m/%Y')})
     
     **Calculs utilisés** :
     - **Tare** : Priorité = Réelle (lavage) > Lot > Variété > 22% défaut
