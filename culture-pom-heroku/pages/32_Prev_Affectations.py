@@ -444,18 +444,21 @@ def create_affectation(code_produit, lot_id, quantite_tonnes, tare_pct, tare_sou
             statut_stock = empl_result['statut_lavage'] or 'BRUT'
         else:
             # Lot PRÉVU sans stock réel → créer un emplacement virtuel
-            # Récupérer infos du lot pour créer l'emplacement
+            # Utiliser les colonnes de lots_bruts qui existent
             cursor.execute("""
-                SELECT code_lot_interne, site_stockage, emplacement_stockage,
-                       nombre_unites, type_conditionnement, poids_total_brut_kg
-                FROM lots_bruts WHERE id = %s
+                SELECT 
+                    l.code_lot_interne,
+                    COALESCE(l.site_stockage, 'THEORIQUE') as site,
+                    COALESCE(l.emplacement_stockage, 'PREVU') as empl,
+                    COALESCE(l.nombre_unites, 0) as nb_unites,
+                    COALESCE(l.type_conditionnement, 'Pallox') as type_cond,
+                    COALESCE(l.poids_total_brut_kg, 0) as poids_brut
+                FROM lots_bruts l 
+                WHERE l.id = %s
             """, (lot_id,))
             lot_info = cursor.fetchone()
             
             if lot_info:
-                site = lot_info['site_stockage'] or 'THEORIQUE'
-                empl = lot_info['emplacement_stockage'] or 'PREVU'
-                
                 # Créer l'emplacement virtuel
                 cursor.execute("""
                     INSERT INTO stock_emplacements (
@@ -465,10 +468,12 @@ def create_affectation(code_produit, lot_id, quantite_tonnes, tare_pct, tare_sou
                     ) VALUES (%s, %s, %s, %s, %s, %s, 'BRUT', TRUE)
                     RETURNING id
                 """, (
-                    lot_id, site, empl,
-                    lot_info['nombre_unites'] or 0,
-                    lot_info['type_conditionnement'] or 'Pallox',
-                    lot_info['poids_total_brut_kg'] or 0
+                    lot_id, 
+                    lot_info['site'], 
+                    lot_info['empl'],
+                    lot_info['nb_unites'],
+                    lot_info['type_cond'],
+                    lot_info['poids_brut']
                 ))
                 emplacement_id = cursor.fetchone()['id']
             else:
