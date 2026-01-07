@@ -67,17 +67,18 @@ def safe_int(value, default=0):
 # ==========================================
 
 def get_magasins_dropdown():
-    """Liste des magasins pour dropdown"""
+    """⭐ V4: Liste des magasins - Affiche nom_client - ville (enseigne si existante)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        # ⭐ V4: Utilise nom_client comme base, ajoute enseigne si existante
         cursor.execute("""
             SELECT m.id, 
-                   COALESCE(e.libelle, m.nom_client) || ' - ' || m.ville || ' (' || COALESCE(m.departement, '??') || ')' as label
+                   m.nom_client || ' - ' || m.ville || ' (' || COALESCE(m.departement, '??') || ')' || COALESCE(' - ' || e.libelle, '') as label
             FROM crm_magasins m
             LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
             WHERE m.is_active = TRUE
-            ORDER BY COALESCE(e.libelle, m.nom_client), m.ville
+            ORDER BY m.nom_client, m.ville
         """)
         rows = cursor.fetchall()
         cursor.close()
@@ -92,7 +93,6 @@ def get_marques_for_magasin(magasin_id):
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        # Table: crm_magasins_marques (avec 's')
         cursor.execute("""
             SELECT m.id, m.nom
             FROM ref_marques_concurrentes m
@@ -278,14 +278,15 @@ def delete_ligne_releve(ligne_id):
         return False
 
 def get_historique_releves(limit=50):
-    """Récupère l'historique des relevés"""
+    """⭐ V4: Récupère l'historique des relevés avec nom_client"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
             SELECT 
                 rp.id, rp.date_releve, 
-                COALESCE(e.libelle, m.nom_client) as enseigne, 
+                m.nom_client,
+                COALESCE(e.libelle, '') as enseigne, 
                 m.ville, m.departement,
                 COUNT(rpl.id) as nb_lignes,
                 rp.created_by, rp.created_at
@@ -294,7 +295,7 @@ def get_historique_releves(limit=50):
             LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
             LEFT JOIN crm_releves_prix_lignes rpl ON rp.id = rpl.releve_id
             WHERE rp.is_active = TRUE
-            GROUP BY rp.id, rp.date_releve, e.libelle, m.nom_client, m.ville, m.departement, rp.created_by, rp.created_at
+            GROUP BY rp.id, rp.date_releve, m.nom_client, e.libelle, m.ville, m.departement, rp.created_by, rp.created_at
             ORDER BY rp.date_releve DESC, rp.created_at DESC
             LIMIT %s
         """, (limit,))
@@ -408,15 +409,16 @@ with tab1:
         
         with col1:
             if magasins:
-                magasin_options = [(0, "-- Sélectionner un magasin --")] + magasins
+                st.info(f"📋 {len(magasins)} client(s) disponible(s)")
+                magasin_options = [(0, "-- Sélectionner un client --")] + magasins
                 selected_magasin = st.selectbox(
-                    "🏪 Magasin *",
+                    "🏪 Client *",
                     options=magasin_options,
                     format_func=lambda x: x[1],
                     key="sel_magasin"
                 )
             else:
-                st.warning("Aucun magasin disponible")
+                st.warning("Aucun client disponible")
                 selected_magasin = (0, "")
         
         with col2:
@@ -450,7 +452,7 @@ with tab1:
                         marque_options = [(0, "-- Marque --")] + marques
                         sel_marque = st.selectbox("🏷️ Marque *", marque_options, format_func=lambda x: x[1], key="add_marque")
                     else:
-                        st.warning("Aucune marque pour ce magasin")
+                        st.warning("Aucune marque pour ce client")
                         sel_marque = (0, "")
                     
                     # Type produit
@@ -501,8 +503,10 @@ with tab1:
                         prix_kg = prix_unitaire / poids_kg
                         st.metric("Prix/kg", f"{prix_kg:.2f} €")
                 
-                # Bouton ajouter
-                if st.button("➕ Ajouter au relevé", type="primary", key="btn_add_ligne"):
+                # ⭐ V4: Protection double-clic
+                is_adding = st.session_state.get('is_adding_ligne', False)
+                
+                if st.button("➕ Ajouter au relevé", type="primary", key="btn_add_ligne", disabled=is_adding):
                     # Validation
                     errors = []
                     if sel_marque[0] <= 0:
@@ -519,14 +523,17 @@ with tab1:
                     if errors:
                         st.error("❌ " + ", ".join(errors))
                     else:
+                        st.session_state['is_adding_ligne'] = True
                         success, result = add_ligne_releve(
                             releve_id, sel_marque[0], sel_cond[0], sel_type[0],
                             poids_kg, is_bio, prix_unitaire
                         )
                         if success:
                             st.success("✅ Ligne ajoutée")
+                            st.session_state.pop('is_adding_ligne', None)
                             st.rerun()
                         else:
+                            st.session_state.pop('is_adding_ligne', None)
                             st.error(f"❌ {result}")
                 
                 # ==========================================
@@ -564,7 +571,7 @@ with tab1:
                 else:
                     st.info("Aucun produit ajouté. Utilisez le formulaire ci-dessus.")
         else:
-            st.info("👆 Sélectionnez un magasin pour commencer")
+            st.info("👆 Sélectionnez un client pour commencer")
 
 # ==========================================
 # ONGLET 2 : HISTORIQUE
@@ -578,12 +585,19 @@ with tab2:
     if not df_hist.empty:
         st.info(f"📊 **{len(df_hist)} relevé(s)**")
         
-        # Tableau
+        # ⭐ V4: Afficher nom_client et enseigne
         df_display = df_hist.copy()
         df_display['date_releve'] = pd.to_datetime(df_display['date_releve']).dt.strftime('%d/%m/%Y')
+        
+        # Créer colonne Client avec enseigne si existante
+        df_display['client'] = df_display.apply(
+            lambda r: f"{r['nom_client']} ({r['enseigne']})" if r['enseigne'] else r['nom_client'],
+            axis=1
+        )
+        
         df_display = df_display.rename(columns={
             'date_releve': 'Date',
-            'enseigne': 'Enseigne',
+            'client': 'Client',
             'ville': 'Ville',
             'departement': 'Dept',
             'nb_lignes': 'Produits',
@@ -591,7 +605,7 @@ with tab2:
         })
         
         st.dataframe(
-            df_display[['Date', 'Enseigne', 'Ville', 'Dept', 'Produits', 'Par']],
+            df_display[['Date', 'Client', 'Ville', 'Dept', 'Produits', 'Par']],
             use_container_width=True,
             hide_index=True
         )
@@ -627,7 +641,7 @@ with tab3:
         st.markdown(f"""
         <div class="kpi-card">
             <div class="kpi-value">{kpis['nb_magasins']}</div>
-            <div class="kpi-label">🏪 Magasins</div>
+            <div class="kpi-label">🏪 Clients</div>
         </div>
         """, unsafe_allow_html=True)
     with col4:
@@ -743,7 +757,7 @@ with tab3:
                 # Tableau
                 df_dept_display = df_dept.rename(columns={
                     'departement': 'Dept',
-                    'nb_magasins': 'Magasins',
+                    'nb_magasins': 'Clients',
                     'nb_releves': 'Relevés',
                     'prix_kg_moyen': 'Prix/kg moy.',
                     'prix_kg_min': 'Min',
