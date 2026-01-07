@@ -66,15 +66,17 @@ def safe_str(value, default=''):
 # ==========================================
 
 def get_magasins_dropdown():
+    """⭐ V6: Récupère TOUS les clients - Affiche nom_client - ville (enseigne si existante)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        # ⭐ V6: Utilise nom_client comme base, ajoute enseigne si existante
         cursor.execute("""
-            SELECT m.id, COALESCE(e.libelle, m.nom_client) || ' - ' || m.ville as nom 
+            SELECT m.id, m.nom_client || ' - ' || m.ville || COALESCE(' (' || e.libelle || ')', '') as nom 
             FROM crm_magasins m
             LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
             WHERE m.is_active = TRUE 
-            ORDER BY e.libelle, m.ville
+            ORDER BY m.nom_client, m.ville
         """)
         rows = cursor.fetchall()
         cursor.close()
@@ -123,7 +125,6 @@ def get_kpis_animations():
         
         kpis = {}
         
-        # ✅ CORRECTION: Utiliser alias 'as nb' et accès dict
         cursor.execute("SELECT COUNT(*) as nb FROM crm_animations WHERE is_active = TRUE AND statut = 'PLANIFIEE'")
         kpis['planifiees'] = cursor.fetchone()['nb']
         
@@ -149,14 +150,16 @@ def get_kpis_animations():
         return None
 
 def get_animations(filtres=None):
+    """⭐ V6: Récupère les animations avec nom_client comme base"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ⭐ V6: Utilise nom_client comme base pour l'affichage
         query = """
             SELECT 
                 a.id, a.date_animation, a.date_fin, a.statut,
-                m.id as magasin_id, COALESCE(e.libelle, m.nom_client) as enseigne, m.ville,
+                m.id as magasin_id, m.nom_client, COALESCE(e.libelle, '') as enseigne, m.ville,
                 u.id as commercial_id, COALESCE(u.prenom || ' ' || u.nom, 'Non assigné') as commercial,
                 ta.id as type_animation_id, ta.libelle as type_animation,
                 a.description, a.resultats, a.prochaine_animation_date
@@ -176,12 +179,15 @@ def get_animations(filtres=None):
             if filtres.get('commercial_id') and filtres['commercial_id'] != 0:
                 query += " AND a.commercial_id = %s"
                 params.append(filtres['commercial_id'])
-            if filtres.get('type_animation_id') and filtres['type_animation_id'] != 0:
-                query += " AND a.type_animation_id = %s"
-                params.append(filtres['type_animation_id'])
             if filtres.get('statut') and filtres['statut'] != 'Tous':
                 query += " AND a.statut = %s"
                 params.append(filtres['statut'])
+            if filtres.get('date_debut'):
+                query += " AND a.date_animation >= %s"
+                params.append(filtres['date_debut'])
+            if filtres.get('date_fin'):
+                query += " AND a.date_animation <= %s"
+                params.append(filtres['date_fin'])
         
         query += " ORDER BY a.date_animation DESC"
         
@@ -202,24 +208,15 @@ def create_animation(data):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ✅ CORRECTION: Convertir tous les types numpy
         cursor.execute("""
-            INSERT INTO crm_animations (
-                magasin_id, commercial_id, type_animation_id, date_animation, date_fin,
-                statut, description, resultats, prochaine_animation_date, created_by
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO crm_animations (magasin_id, commercial_id, type_animation_id, 
+                                        date_animation, date_fin, statut, description, created_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """, (
-            convert_to_native(data['magasin_id']),
-            convert_to_native(data.get('commercial_id')),
-            convert_to_native(data.get('type_animation_id')),
-            data['date_animation'],
-            data.get('date_fin'),
-            data.get('statut', 'PLANIFIEE'),
-            data.get('description'),
-            data.get('resultats'),
-            data.get('prochaine_animation_date'),
-            data.get('created_by')
+            data['magasin_id'], data.get('commercial_id'), data.get('type_animation_id'),
+            data['date_animation'], data.get('date_fin'), data['statut'],
+            data.get('description'), data.get('created_by')
         ))
         
         anim_id = cursor.fetchone()['id']
@@ -236,25 +233,24 @@ def update_animation(anim_id, data):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ✅ CORRECTION: Convertir tous les types numpy avant UPDATE
+        # Convertir types
+        anim_id = convert_to_native(anim_id)
+        magasin_id = convert_to_native(data.get('magasin_id'))
+        commercial_id = convert_to_native(data.get('commercial_id'))
+        type_animation_id = convert_to_native(data.get('type_animation_id'))
+        
         cursor.execute("""
             UPDATE crm_animations SET
                 magasin_id = %s, commercial_id = %s, type_animation_id = %s,
-                date_animation = %s, date_fin = %s, statut = %s,
-                description = %s, resultats = %s, prochaine_animation_date = %s,
+                date_animation = %s, date_fin = %s, statut = %s, description = %s,
+                resultats = %s, prochaine_animation_date = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
         """, (
-            convert_to_native(data['magasin_id']),
-            convert_to_native(data.get('commercial_id')),
-            convert_to_native(data.get('type_animation_id')),
-            data.get('date_animation'),
-            data.get('date_fin'),
-            data.get('statut'),
-            data.get('description'),
-            data.get('resultats'),
-            data.get('prochaine_animation_date'),
-            convert_to_native(anim_id)
+            magasin_id, commercial_id, type_animation_id,
+            data.get('date_animation'), data.get('date_fin'), data.get('statut'),
+            data.get('description'), data.get('resultats'),
+            data.get('prochaine_animation_date'), anim_id
         ))
         
         conn.commit()
@@ -269,8 +265,7 @@ def delete_animation(anim_id):
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        # ✅ CORRECTION: Convertir anim_id
-        cursor.execute("UPDATE crm_animations SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s", (convert_to_native(anim_id),))
+        cursor.execute("UPDATE crm_animations SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s", (anim_id,))
         conn.commit()
         cursor.close()
         conn.close()
@@ -279,30 +274,34 @@ def delete_animation(anim_id):
         return False, f"❌ Erreur : {str(e)}"
 
 # ==========================================
-# INTERFACE
+# KPIs
 # ==========================================
 
-# KPIs
 kpis = get_kpis_animations()
+
 if kpis:
     col1, col2, col3, col4 = st.columns(4)
+    
     with col1:
-        st.metric("📅 Planifiées", kpis['planifiees'])
+        st.metric("📋 Planifiées", kpis['planifiees'])
     with col2:
-        st.metric("▶️ En cours", kpis['en_cours'])
+        st.metric("🔄 En cours", kpis['en_cours'])
     with col3:
         st.metric("✅ Terminées", kpis['terminees'])
     with col4:
-        st.metric("⏰ Dans 14 jours", kpis['prochaines'])
-else:
-    st.warning("⚠️ Impossible de charger les KPIs")
+        st.metric("📅 Prochaines 14j", kpis['prochaines'])
 
 st.markdown("---")
 
-tab1, tab2 = st.tabs(["📋 Liste Animations", "➕ Nouvelle Animation"])
+# ==========================================
+# INTERFACE
+# ==========================================
+
+tab1, tab2 = st.tabs(["📋 Liste", "➕ Nouvelle"])
 
 with tab1:
-    # Filtres
+    st.subheader("📋 Liste des animations")
+    
     magasins = get_magasins_dropdown()
     commerciaux = get_commerciaux()
     types_animation = get_types_animation()
@@ -310,97 +309,84 @@ with tab1:
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        mag_opts = [(0, 'Tous')] + magasins
-        filtre_mag = st.selectbox("Magasin", mag_opts, format_func=lambda x: x[1], key="f_mag")
+        mag_options = [(0, 'Tous les clients')] + magasins
+        filtre_magasin = st.selectbox("Client", mag_options, format_func=lambda x: x[1], key="f_mag_a")
     with col2:
-        comm_opts = [(0, 'Tous')] + commerciaux
-        filtre_comm = st.selectbox("Commercial", comm_opts, format_func=lambda x: x[1], key="f_comm")
+        comm_options = [(0, 'Tous')] + commerciaux
+        filtre_commercial = st.selectbox("Commercial", comm_options, format_func=lambda x: x[1], key="f_comm_a")
     with col3:
-        type_opts = [(0, 'Tous')] + types_animation
-        filtre_type = st.selectbox("Type animation", type_opts, format_func=lambda x: x[1], key="f_type")
+        filtre_statut = st.selectbox("Statut", ['Tous', 'PLANIFIEE', 'EN_COURS', 'TERMINEE', 'ANNULEE'], key="f_stat_a")
     with col4:
-        filtre_statut = st.selectbox("Statut", ['Tous', 'PLANIFIEE', 'EN_COURS', 'TERMINEE', 'ANNULEE'], key="f_stat")
+        filtre_date = st.date_input("À partir du", value=None, key="f_date_a")
+    
+    filtres = {
+        'magasin_id': filtre_magasin[0],
+        'commercial_id': filtre_commercial[0],
+        'statut': filtre_statut,
+        'date_debut': filtre_date
+    }
     
     st.markdown("---")
-    
-    # Charger animations
-    filtres = {
-        'magasin_id': filtre_mag[0],
-        'commercial_id': filtre_comm[0],
-        'type_animation_id': filtre_type[0],
-        'statut': filtre_statut
-    }
     
     df = get_animations(filtres)
     
     if not df.empty:
-        st.info(f"📊 {len(df)} animation(s) trouvée(s)")
+        st.markdown(f"**{len(df)} animation(s) trouvée(s)**")
         
-        for _, anim in df.iterrows():
-            statut = safe_str(anim.get('statut'), 'PLANIFIEE')
-            if statut == 'PLANIFIEE':
-                statut_class = "anim-planifiee"
-                statut_icon = "📅"
-            elif statut == 'EN_COURS':
-                statut_class = "anim-encours"
-                statut_icon = "▶️"
-            elif statut == 'TERMINEE':
-                statut_class = "anim-terminee"
+        for idx, anim in df.iterrows():
+            statut_class = f"anim-{anim['statut'].lower().replace('_', '')}"
+            if anim['statut'] == 'PLANIFIEE':
+                statut_icon = "📋"
+            elif anim['statut'] == 'EN_COURS':
+                statut_icon = "🔄"
+            elif anim['statut'] == 'TERMINEE':
                 statut_icon = "✅"
             else:
-                statut_class = "anim-annulee"
                 statut_icon = "❌"
             
-            date_str = anim['date_animation'].strftime('%d/%m/%Y') if anim.get('date_animation') else 'N/A'
+            date_str = anim['date_animation'].strftime('%d/%m/%Y') if anim['date_animation'] else ''
+            date_fin_str = f" → {anim['date_fin'].strftime('%d/%m/%Y')}" if anim['date_fin'] else ''
             
-            with st.expander(f"{statut_icon} {date_str} - {safe_str(anim.get('enseigne'))} {safe_str(anim.get('ville'))} - {safe_str(anim.get('type_animation'), 'N/A')}"):
-                st.markdown(f"""<div class="{statut_class}">
-                    <strong>Magasin</strong> : {safe_str(anim.get('enseigne'))} - {safe_str(anim.get('ville'))}<br>
-                    <strong>Commercial</strong> : {safe_str(anim.get('commercial'), 'Non assigné')}<br>
-                    <strong>Type</strong> : {safe_str(anim.get('type_animation'), 'Non défini')}<br>
-                    <strong>Date</strong> : {date_str}{' au ' + anim['date_fin'].strftime('%d/%m/%Y') if anim.get('date_fin') else ''}<br>
-                    <strong>Statut</strong> : {statut}
-                </div>""", unsafe_allow_html=True)
+            # ⭐ V6: Affiche nom_client et enseigne séparément
+            client_display = anim['nom_client']
+            if anim['enseigne']:
+                client_display += f" ({anim['enseigne']})"
+            
+            with st.expander(f"{statut_icon} {date_str}{date_fin_str} | {client_display} - {anim['ville']} | {anim['type_animation'] or 'N/A'}"):
+                col1, col2 = st.columns(2)
                 
-                if anim.get('description'):
-                    st.markdown(f"**Description** : {anim['description']}")
-                if anim.get('resultats'):
-                    st.markdown(f"**Résultats** : {anim['resultats']}")
-                if anim.get('prochaine_animation_date'):
-                    proch_date = anim['prochaine_animation_date']
-                    if hasattr(proch_date, 'strftime'):
-                        st.markdown(f"**Prochaine animation** : {proch_date.strftime('%d/%m/%Y')}")
+                with col1:
+                    st.markdown(f"**Commercial :** {anim['commercial']}")
+                    st.markdown(f"**Statut :** {anim['statut']}")
                 
-                # Actions
-                col_actions = st.columns(4)
+                with col2:
+                    st.markdown(f"**Type :** {anim['type_animation'] or 'N/A'}")
+                    if anim['prochaine_animation_date']:
+                        proch_str = anim['prochaine_animation_date'].strftime('%d/%m/%Y')
+                        st.info(f"📅 Prochaine : {proch_str}")
                 
-                with col_actions[0]:
-                    if can_edit("CRM") and statut == 'PLANIFIEE':
-                        if st.button("▶️ Démarrer", key=f"start_{anim['id']}"):
-                            update_data = anim.to_dict()
-                            update_data['statut'] = 'EN_COURS'
-                            success, msg = update_animation(anim['id'], update_data)
-                            if success:
-                                st.success("✅ Animation démarrée")
-                                st.rerun()
-                            else:
-                                st.error(msg)
+                if anim['description']:
+                    st.markdown(f"**📝 Description :** {anim['description']}")
+                if anim['resultats']:
+                    st.success(f"📊 Résultats : {anim['resultats']}")
                 
-                with col_actions[1]:
-                    if can_edit("CRM") and statut == 'EN_COURS':
-                        if st.button("✅ Terminer", key=f"finish_{anim['id']}"):
-                            st.session_state['finish_animation_id'] = anim['id']
-                            st.session_state['finish_animation_data'] = anim.to_dict()
-                            st.rerun()
+                col_a, col_b, col_c = st.columns([1, 1, 1])
                 
-                with col_actions[2]:
+                with col_a:
                     if can_edit("CRM"):
                         if st.button("✏️ Modifier", key=f"edit_{anim['id']}"):
                             st.session_state['edit_animation_id'] = anim['id']
                             st.session_state['edit_animation_data'] = anim.to_dict()
                             st.rerun()
                 
-                with col_actions[3]:
+                with col_b:
+                    if can_edit("CRM") and anim['statut'] == 'EN_COURS':
+                        if st.button("✅ Terminer", key=f"finish_{anim['id']}"):
+                            st.session_state['finish_animation_id'] = anim['id']
+                            st.session_state['finish_animation_data'] = anim.to_dict()
+                            st.rerun()
+                
+                with col_c:
                     if can_delete("CRM"):
                         if st.button("🗑️ Supprimer", key=f"del_{anim['id']}", type="secondary"):
                             st.session_state['confirm_delete_animation'] = anim['id']
@@ -411,7 +397,7 @@ with tab1:
                     st.warning("⚠️ Confirmer la suppression ?")
                     col_yes, col_no = st.columns(2)
                     with col_yes:
-                        if st.button("✅ Confirmer", key="confirm_yes_a"):
+                        if st.button("✅ Confirmer", key=f"confirm_yes_a_{anim['id']}"):
                             success, msg = delete_animation(anim['id'])
                             if success:
                                 st.success(msg)
@@ -420,7 +406,7 @@ with tab1:
                             else:
                                 st.error(msg)
                     with col_no:
-                        if st.button("❌ Annuler", key="confirm_no_a"):
+                        if st.button("❌ Annuler", key=f"confirm_no_a_{anim['id']}"):
                             st.session_state.pop('confirm_delete_animation', None)
                             st.rerun()
                 
@@ -429,16 +415,19 @@ with tab1:
                     st.markdown("---")
                     st.subheader("✅ Terminer l'animation")
                     
-                    finish_resultats = st.text_area("Résultats de l'animation *", key="finish_res_a")
-                    finish_prochaine = st.date_input("Date prochaine animation", value=None, key="finish_proch_a")
+                    finish_resultats = st.text_area("Résultats de l'animation *", key=f"finish_res_a_{anim['id']}")
+                    finish_prochaine = st.date_input("Date prochaine animation", value=None, key=f"finish_proch_a_{anim['id']}")
                     
                     col_save, col_cancel = st.columns(2)
                     
                     with col_save:
-                        if st.button("💾 Enregistrer", type="primary", key="btn_save_finish_a"):
+                        # ⭐ V6: Protection double-clic
+                        is_finishing = st.session_state.get('is_finishing_animation', False)
+                        if st.button("💾 Enregistrer", type="primary", key=f"btn_save_finish_a_{anim['id']}", disabled=is_finishing):
                             if not finish_resultats:
                                 st.error("❌ Résultats obligatoires")
                             else:
+                                st.session_state['is_finishing_animation'] = True
                                 update_data = anim.to_dict()
                                 update_data['statut'] = 'TERMINEE'
                                 update_data['resultats'] = finish_resultats
@@ -449,15 +438,18 @@ with tab1:
                                     st.success("✅ Animation terminée")
                                     st.session_state.pop('finish_animation_id', None)
                                     st.session_state.pop('finish_animation_data', None)
+                                    st.session_state.pop('is_finishing_animation', None)
                                     st.balloons()
                                     st.rerun()
                                 else:
+                                    st.session_state.pop('is_finishing_animation', None)
                                     st.error(msg)
                     
                     with col_cancel:
-                        if st.button("❌ Annuler", key="btn_cancel_finish_a"):
+                        if st.button("❌ Annuler", key=f"btn_cancel_finish_a_{anim['id']}"):
                             st.session_state.pop('finish_animation_id', None)
                             st.session_state.pop('finish_animation_data', None)
+                            st.session_state.pop('is_finishing_animation', None)
                             st.rerun()
         
         # Formulaire modification
@@ -471,7 +463,7 @@ with tab1:
             
             with col1:
                 current_mag = next((i for i, m in enumerate(magasins) if m[0] == data.get('magasin_id')), 0)
-                edit_magasin = st.selectbox("Magasin *", magasins, index=current_mag, format_func=lambda x: x[1], key="edit_mag_a")
+                edit_magasin = st.selectbox("Client *", magasins, index=current_mag, format_func=lambda x: x[1], key="edit_mag_a")
                 
                 comm_list = [(None, 'Non assigné')] + commerciaux
                 current_comm = next((i for i, c in enumerate(comm_list) if c[0] == data.get('commercial_id')), 0)
@@ -499,7 +491,10 @@ with tab1:
             col_save, col_cancel = st.columns(2)
             
             with col_save:
-                if st.button("💾 Enregistrer", type="primary", key="btn_save_a"):
+                # ⭐ V6: Protection double-clic
+                is_saving = st.session_state.get('is_saving_animation', False)
+                if st.button("💾 Enregistrer", type="primary", key="btn_save_a", disabled=is_saving):
+                    st.session_state['is_saving_animation'] = True
                     update_data = {
                         'magasin_id': edit_magasin[0],
                         'commercial_id': edit_commercial[0] if edit_commercial else None,
@@ -516,14 +511,17 @@ with tab1:
                         st.success(msg)
                         st.session_state.pop('edit_animation_id', None)
                         st.session_state.pop('edit_animation_data', None)
+                        st.session_state.pop('is_saving_animation', None)
                         st.rerun()
                     else:
+                        st.session_state.pop('is_saving_animation', None)
                         st.error(msg)
             
             with col_cancel:
                 if st.button("❌ Annuler", key="btn_cancel_a"):
                     st.session_state.pop('edit_animation_id', None)
                     st.session_state.pop('edit_animation_data', None)
+                    st.session_state.pop('is_saving_animation', None)
                     st.rerun()
     else:
         st.info("Aucune animation trouvée")
@@ -539,12 +537,14 @@ with tab2:
         types_animation = get_types_animation()
         
         if not magasins:
-            st.warning("⚠️ Aucun magasin disponible")
+            st.warning("⚠️ Aucun client disponible")
         else:
+            st.info(f"📋 {len(magasins)} client(s) disponible(s)")
+            
             col1, col2 = st.columns(2)
             
             with col1:
-                new_magasin = st.selectbox("Magasin *", magasins, format_func=lambda x: x[1], key="new_mag_a")
+                new_magasin = st.selectbox("Client *", magasins, format_func=lambda x: x[1], key="new_mag_a")
                 comm_list = [(None, 'Non assigné')] + commerciaux
                 new_commercial = st.selectbox("Commercial", comm_list, format_func=lambda x: x[1], key="new_comm_a")
                 type_list = [(None, 'Non défini')] + types_animation
@@ -557,7 +557,11 @@ with tab2:
             
             new_desc = st.text_area("Description", key="new_desc_a")
             
-            if st.button("✅ Créer l'animation", type="primary", key="btn_create_a"):
+            # ⭐ V6: Protection double-clic
+            is_creating = st.session_state.get('is_creating_animation', False)
+            
+            if st.button("✅ Créer l'animation", type="primary", key="btn_create_a", disabled=is_creating):
+                st.session_state['is_creating_animation'] = True
                 data = {
                     'magasin_id': new_magasin[0],
                     'commercial_id': new_commercial[0] if new_commercial else None,
@@ -572,7 +576,13 @@ with tab2:
                 if success:
                     st.success(msg)
                     st.balloons()
+                    for k in list(st.session_state.keys()):
+                        if k.startswith('new_'):
+                            st.session_state.pop(k, None)
+                    st.session_state.pop('is_creating_animation', None)
+                    st.rerun()
                 else:
+                    st.session_state.pop('is_creating_animation', None)
                     st.error(msg)
 
 show_footer()
