@@ -30,17 +30,18 @@ st.markdown("---")
 # ==========================================
 
 def get_magasins_dropdown():
-    """⭐ V2: Récupère la liste des magasins avec JOIN ref_enseignes"""
+    """⭐ V3: Récupère TOUS les clients (avec ou sans enseigne) - Affiche nom_client - ville"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        # ⭐ V3: Utilise nom_client comme base, ajoute enseigne si existante
         cursor.execute("""
             SELECT m.id, m.code_magasin, 
-                   COALESCE(e.libelle, m.nom_client) || ' - ' || m.ville as nom 
+                   m.nom_client || ' - ' || m.ville || COALESCE(' (' || e.libelle || ')', '') as nom 
             FROM crm_magasins m
             LEFT JOIN ref_enseignes e ON m.enseigne_id = e.id
             WHERE m.is_active = TRUE 
-            ORDER BY e.libelle, m.ville
+            ORDER BY m.nom_client, m.ville
         """)
         rows = cursor.fetchall()
         cursor.close()
@@ -51,15 +52,17 @@ def get_magasins_dropdown():
         return []
 
 def get_contacts(filtres=None):
-    """⭐ V2: Récupère les contacts avec JOIN ref_enseignes"""
+    """⭐ V3: Récupère les contacts avec nom_client comme base"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
+        # ⭐ V3: Utilise nom_client comme base pour l'affichage
         query = """
             SELECT 
                 c.id, c.magasin_id, 
-                COALESCE(e.libelle, m.nom_client) as enseigne, 
+                m.nom_client,
+                COALESCE(e.libelle, '') as enseigne,
                 m.ville,
                 c.nom, c.prenom, c.fonction, c.telephone, c.email,
                 c.is_principal, c.commentaires
@@ -73,18 +76,18 @@ def get_contacts(filtres=None):
         if filtres:
             if filtres.get('magasin_id') and filtres['magasin_id'] != 0:
                 query += " AND c.magasin_id = %s"
-                params.append(int(filtres['magasin_id']))  # ⭐ Conversion int
+                params.append(int(filtres['magasin_id']))
             if filtres.get('fonction') and filtres['fonction'] != 'Tous':
                 query += " AND c.fonction = %s"
                 params.append(filtres['fonction'])
             if filtres.get('search'):
-                # ⭐ V2: Recherche sur e.libelle au lieu de m.enseigne
-                query += " AND (LOWER(c.nom) LIKE %s OR LOWER(c.prenom) LIKE %s OR LOWER(COALESCE(e.libelle, m.nom_client)) LIKE %s)"
+                # ⭐ V3: Recherche sur nom_client
+                query += " AND (LOWER(c.nom) LIKE %s OR LOWER(c.prenom) LIKE %s OR LOWER(m.nom_client) LIKE %s)"
                 search = f"%{filtres['search'].lower()}%"
                 params.extend([search, search, search])
         
-        # ⭐ V2: ORDER BY avec COALESCE
-        query += " ORDER BY COALESCE(e.libelle, m.nom_client), c.is_principal DESC, c.nom"
+        # ⭐ V3: ORDER BY nom_client
+        query += " ORDER BY m.nom_client, m.ville, c.is_principal DESC, c.nom"
         
         cursor.execute(query, params)
         rows = cursor.fetchall()
@@ -115,7 +118,6 @@ def create_contact(data):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ⭐ Conversion int pour magasin_id
         magasin_id = int(data['magasin_id'])
         
         # Si principal, retirer le principal existant
@@ -146,7 +148,6 @@ def update_contact(contact_id, data):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ⭐ Conversion int pour les IDs
         contact_id = int(contact_id)
         magasin_id = int(data['magasin_id'])
         
@@ -180,7 +181,6 @@ def delete_contact(contact_id):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ⭐ CORRECTION : Conversion int() pour éviter numpy.int64
         contact_id = int(contact_id)
         
         cursor.execute("UPDATE crm_contacts SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s", (contact_id,))
@@ -192,20 +192,22 @@ def delete_contact(contact_id):
         return False, f"❌ Erreur : {str(e)}"
 
 # ==========================================
-# ONGLETS
+# INTERFACE
 # ==========================================
 
 tab1, tab2 = st.tabs(["📋 Liste Contacts", "➕ Nouveau Contact"])
 
 with tab1:
+    st.subheader("📋 Liste des contacts")
+    
     magasins = get_magasins_dropdown()
     fonctions = get_fonctions()
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        mag_options = [(0, '', 'Tous les magasins')] + magasins
-        filtre_magasin = st.selectbox("Magasin", mag_options, format_func=lambda x: x[2], key="f_mag_c")
+        mag_options = [(0, '', 'Tous les clients')] + magasins
+        filtre_magasin = st.selectbox("Client", mag_options, format_func=lambda x: x[2], key="f_mag_c")
     with col2:
         filtre_fonction = st.selectbox("Fonction", ['Tous'] + fonctions, key="f_fonc_c")
     with col3:
@@ -224,9 +226,10 @@ with tab1:
     if not df.empty:
         st.markdown(f"**{len(df)} contact(s) trouvé(s)**")
         
-        display_df = df[['enseigne', 'ville', 'nom', 'prenom', 'fonction', 'telephone', 'email', 'is_principal']].copy()
+        # ⭐ V3: Affiche nom_client et enseigne séparément
+        display_df = df[['nom_client', 'enseigne', 'ville', 'nom', 'prenom', 'fonction', 'telephone', 'email', 'is_principal']].copy()
         display_df['is_principal'] = display_df['is_principal'].apply(lambda x: '⭐' if x else '')
-        display_df.columns = ['Enseigne', 'Ville', 'Nom', 'Prénom', 'Fonction', 'Téléphone', 'Email', '⭐']
+        display_df.columns = ['Client', 'Enseigne', 'Ville', 'Nom', 'Prénom', 'Fonction', 'Téléphone', 'Email', '⭐']
         display_df = display_df.fillna('')
         
         event = st.dataframe(
@@ -249,10 +252,11 @@ with tab1:
             card_class = "contact-principal" if contact['is_principal'] else "contact-normal"
             principal_badge = "⭐ Contact Principal" if contact['is_principal'] else ""
             
+            # ⭐ V3: Affiche nom_client
             st.markdown(f"""
             <div class="{card_class}">
                 <h4>{contact['prenom'] or ''} {contact['nom'] or ''} {principal_badge}</h4>
-                <p><strong>Magasin :</strong> {contact['enseigne']} - {contact['ville']}</p>
+                <p><strong>Client :</strong> {contact['nom_client']} - {contact['ville']} {('(' + contact['enseigne'] + ')') if contact['enseigne'] else ''}</p>
                 <p><strong>Fonction :</strong> {contact['fonction'] or 'N/A'}</p>
                 <p>📞 {contact['telephone'] or 'N/A'} | ✉️ {contact['email'] or 'N/A'}</p>
             </div>
@@ -266,7 +270,6 @@ with tab1:
             with col_a:
                 if can_edit("CRM"):
                     if st.button("✏️ Modifier", key="btn_edit_c"):
-                        # ⭐ Conversion int pour stocker en session
                         st.session_state['edit_contact_id'] = int(contact['id'])
                         st.session_state['edit_contact_data'] = contact.to_dict()
                         st.rerun()
@@ -274,17 +277,14 @@ with tab1:
             with col_b:
                 if can_delete("CRM"):
                     if st.button("🗑️ Supprimer", key="btn_del_c", type="secondary"):
-                        # ⭐ Conversion int pour stocker en session
                         st.session_state['confirm_delete_contact'] = int(contact['id'])
                         st.rerun()
             
-            # ⭐ Comparaison avec int converti
             if st.session_state.get('confirm_delete_contact') == int(contact['id']):
                 st.warning("⚠️ Confirmer la suppression ?")
                 col_yes, col_no = st.columns(2)
                 with col_yes:
                     if st.button("✅ Confirmer", key="confirm_yes_c"):
-                        # ⭐ L'ID est déjà un int dans session_state
                         success, msg = delete_contact(st.session_state['confirm_delete_contact'])
                         if success:
                             st.success(msg)
@@ -308,7 +308,7 @@ with tab1:
             
             with col1:
                 current_mag = next((i for i, m in enumerate(magasins) if m[0] == data.get('magasin_id')), 0)
-                edit_magasin = st.selectbox("Magasin *", magasins, index=current_mag, format_func=lambda x: x[2], key="edit_mag_c")
+                edit_magasin = st.selectbox("Client *", magasins, index=current_mag, format_func=lambda x: x[2], key="edit_mag_c")
                 edit_nom = st.text_input("Nom", value=data.get('nom', '') or '', key="edit_nom_c")
                 edit_prenom = st.text_input("Prénom", value=data.get('prenom', '') or '', key="edit_pren_c")
                 edit_fonction = st.text_input("Fonction", value=data.get('fonction', '') or '', key="edit_fonc_c")
@@ -323,10 +323,13 @@ with tab1:
             col_save, col_cancel = st.columns(2)
             
             with col_save:
-                if st.button("💾 Enregistrer", type="primary", key="btn_save_c"):
+                # ⭐ V3: Protection double-clic avec disabled
+                is_saving = st.session_state.get('is_saving_edit', False)
+                if st.button("💾 Enregistrer", type="primary", key="btn_save_c", disabled=is_saving):
                     if not edit_nom and not edit_prenom:
                         st.error("❌ Nom ou prénom requis")
                     else:
+                        st.session_state['is_saving_edit'] = True
                         update_data = {
                             'magasin_id': edit_magasin[0],
                             'nom': edit_nom or None, 'prenom': edit_prenom or None,
@@ -339,14 +342,17 @@ with tab1:
                             st.success(msg)
                             st.session_state.pop('edit_contact_id', None)
                             st.session_state.pop('edit_contact_data', None)
+                            st.session_state.pop('is_saving_edit', None)
                             st.rerun()
                         else:
+                            st.session_state.pop('is_saving_edit', None)
                             st.error(msg)
             
             with col_cancel:
                 if st.button("❌ Annuler", key="btn_cancel_c"):
                     st.session_state.pop('edit_contact_id', None)
                     st.session_state.pop('edit_contact_data', None)
+                    st.session_state.pop('is_saving_edit', None)
                     st.rerun()
     else:
         st.info("Aucun contact trouvé")
@@ -360,12 +366,14 @@ with tab2:
         magasins = get_magasins_dropdown()
         
         if not magasins:
-            st.warning("⚠️ Aucun magasin disponible")
+            st.warning("⚠️ Aucun client disponible. Créez d'abord un client dans la page Clients.")
         else:
+            st.info(f"📋 {len(magasins)} client(s) disponible(s)")
+            
             col1, col2 = st.columns(2)
             
             with col1:
-                new_magasin = st.selectbox("Magasin *", magasins, format_func=lambda x: x[2], key="new_mag_c")
+                new_magasin = st.selectbox("Client *", magasins, format_func=lambda x: x[2], key="new_mag_c")
                 new_nom = st.text_input("Nom", key="new_nom_c")
                 new_prenom = st.text_input("Prénom", key="new_pren_c")
                 new_fonction = st.text_input("Fonction", key="new_fonc_c")
@@ -377,10 +385,16 @@ with tab2:
             
             new_comments = st.text_area("Commentaires", key="new_com_c")
             
-            if st.button("✅ Créer le contact", type="primary", key="btn_create_c"):
+            # ⭐ V3: Protection double-clic
+            is_creating = st.session_state.get('is_creating_contact', False)
+            
+            if st.button("✅ Créer le contact", type="primary", key="btn_create_c", disabled=is_creating):
                 if not new_nom and not new_prenom:
                     st.error("❌ Nom ou prénom requis")
                 else:
+                    # Activer la protection
+                    st.session_state['is_creating_contact'] = True
+                    
                     data = {
                         'magasin_id': new_magasin[0],
                         'nom': new_nom or None, 'prenom': new_prenom or None,
@@ -392,7 +406,14 @@ with tab2:
                     if success:
                         st.success(msg)
                         st.balloons()
+                        # Nettoyer session_state pour réinitialiser le formulaire
+                        for k in list(st.session_state.keys()):
+                            if k.startswith('new_'):
+                                st.session_state.pop(k, None)
+                        st.session_state.pop('is_creating_contact', None)
+                        st.rerun()
                     else:
+                        st.session_state.pop('is_creating_contact', None)
                         st.error(msg)
 
 show_footer()
