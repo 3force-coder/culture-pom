@@ -1104,12 +1104,15 @@ with tab1:
                     col_save, col_cancel = st.columns(2)
                     
                     with col_save:
-                        if st.button("💾 Enregistrer", type="primary", use_container_width=True, key="btn_save_edit"):
+                        # ⭐ V8: Protection double-clic
+                        is_saving = st.session_state.get('is_saving_edit', False)
+                        if st.button("💾 Enregistrer", type="primary", use_container_width=True, key="btn_save_edit", disabled=is_saving):
                             if not edit_nom_client:
                                 st.error("❌ Le nom client est obligatoire")
                             elif not adresse_data_edit['ville']:
                                 st.error("❌ La ville est obligatoire")
                             else:
+                                st.session_state['is_saving_edit'] = True
                                 update_data = {
                                     'nom_client': edit_nom_client,
                                     'ville': adresse_data_edit['ville'],
@@ -1138,8 +1141,10 @@ with tab1:
                                     
                                     st.success(msg)
                                     st.session_state.pop('edit_mode', None)
+                                    st.session_state.pop('is_saving_edit', None)
                                     st.rerun()
                                 else:
+                                    st.session_state.pop('is_saving_edit', None)
                                     st.error(msg)
                     
                     with col_cancel:
@@ -1273,12 +1278,17 @@ with tab2:
         
         new_notes = st.text_area("Notes", key="new_notes", height=80)
         
-        if st.button("✅ Créer le client", type="primary", key="btn_create"):
+        # ⭐ V8: Protection double-clic
+        is_creating = st.session_state.get('is_creating_client', False)
+        
+        if st.button("✅ Créer le client", type="primary", key="btn_create", disabled=is_creating):
             if not new_nom_client:
                 st.error("❌ Le nom client est obligatoire")
             elif not adresse_data['ville']:
                 st.error("❌ La ville est obligatoire")
             else:
+                # Activer la protection
+                st.session_state['is_creating_client'] = True
                 data = {
                     'nom_client': new_nom_client,
                     'ville': adresse_data['ville'],
@@ -1312,7 +1322,10 @@ with tab2:
                     for k in list(st.session_state.keys()):
                         if k.startswith('new_'):
                             st.session_state.pop(k, None)
+                    st.session_state.pop('is_creating_client', None)
+                    st.rerun()
                 else:
+                    st.session_state.pop('is_creating_client', None)
                     st.error(f"❌ Erreur : {result}")
     else:
         st.warning("⚠️ Vous n'avez pas les droits pour créer des clients")
