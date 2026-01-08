@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 from database import get_connection
 from components import show_footer
@@ -27,15 +28,37 @@ st.title("📅 CRM - Gestion des Visites")
 st.markdown("---")
 
 # ==========================================
+# FONCTIONS HELPER - Conversion types
+# ==========================================
+
+def safe_int(value, default=0):
+    """⭐ V7: Convertit une valeur en int, gère None et NaN"""
+    if value is None:
+        return default
+    if isinstance(value, float) and (pd.isna(value) or np.isnan(value)):
+        return default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+def safe_str(value, default=''):
+    """Convertit une valeur en str, gère None et NaN"""
+    if value is None:
+        return default
+    if isinstance(value, float) and pd.isna(value):
+        return default
+    return str(value)
+
+# ==========================================
 # FONCTIONS
 # ==========================================
 
 def get_magasins_dropdown():
-    """⭐ V6: Récupère TOUS les clients - Affiche nom_client - ville (enseigne si existante)"""
+    """Récupère TOUS les clients - Affiche nom_client - ville (enseigne si existante)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        # ⭐ V6: Utilise nom_client comme base, ajoute enseigne si existante
         cursor.execute("""
             SELECT m.id, m.nom_client || ' - ' || m.ville || COALESCE(' (' || e.libelle || ')', '') as nom 
             FROM crm_magasins m
@@ -52,15 +75,15 @@ def get_magasins_dropdown():
         return []
 
 def get_commerciaux():
+    """⭐ V7: Récupère TOUS les users actifs (comme affectation clients)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        # ⭐ V7: Plus de filtre sur les rôles - tous les users actifs
         cursor.execute("""
             SELECT u.id, u.prenom || ' ' || u.nom as nom 
             FROM users_app u
-            JOIN roles r ON u.role_id = r.id
             WHERE u.is_active = TRUE 
-            AND r.code IN ('SUPER_ADMIN', 'ADMIN_GENERAL', 'ADMIN_COMMERCIAL', 'USER_COMMERCIAL')
             ORDER BY u.nom, u.prenom
         """)
         rows = cursor.fetchall()
@@ -109,13 +132,32 @@ def get_kpis_visites():
     except:
         return None
 
+def get_mois_disponibles():
+    """⭐ V7: Récupère la liste des mois avec des visites"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT 
+                DATE_TRUNC('month', date_visite) as mois,
+                TO_CHAR(date_visite, 'YYYY-MM') as mois_code,
+                TO_CHAR(date_visite, 'Month YYYY') as mois_libelle
+            FROM crm_visites
+            ORDER BY mois DESC
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [(r['mois_code'], r['mois_libelle'].strip()) for r in rows]
+    except:
+        return []
+
 def get_visites(filtres=None):
-    """⭐ V6: Récupère les visites avec nom_client comme base"""
+    """Récupère les visites avec filtres"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ⭐ V6: Utilise nom_client comme base pour l'affichage
         query = """
             SELECT 
                 v.id, v.date_visite, v.statut,
@@ -142,6 +184,10 @@ def get_visites(filtres=None):
             if filtres.get('statut') and filtres['statut'] != 'Tous':
                 query += " AND v.statut = %s"
                 params.append(filtres['statut'])
+            # ⭐ V7: Filtre par mois
+            if filtres.get('mois') and filtres['mois'] != 'Tous':
+                query += " AND TO_CHAR(v.date_visite, 'YYYY-MM') = %s"
+                params.append(filtres['mois'])
             if filtres.get('date_debut'):
                 query += " AND v.date_visite >= %s"
                 params.append(filtres['date_debut'])
@@ -164,7 +210,7 @@ def get_visites(filtres=None):
         return pd.DataFrame()
 
 def get_planning_semaine():
-    """⭐ V6: Planning avec nom_client"""
+    """Planning avec nom_client"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -187,8 +233,9 @@ def get_planning_semaine():
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        return rows
-    except:
+        return rows if rows else []
+    except Exception as e:
+        st.error(f"❌ Erreur : {str(e)}")
         return []
 
 def create_visite(data):
@@ -197,24 +244,28 @@ def create_visite(data):
         cursor = conn.cursor()
         
         cursor.execute("""
-            INSERT INTO crm_visites (magasin_id, commercial_id, type_visite_id, date_visite, statut, 
-                                     compte_rendu, note_satisfaction, prochaine_visite_date, actions_suivre, created_by)
+            INSERT INTO crm_visites 
+            (magasin_id, commercial_id, type_visite_id, date_visite, statut, 
+             compte_rendu, note_satisfaction, prochaine_visite_date, actions_suivre, created_by)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """, (
             data['magasin_id'], data.get('commercial_id'), data.get('type_visite_id'),
-            data['date_visite'], data['statut'], data.get('compte_rendu'),
-            data.get('note_satisfaction'), data.get('prochaine_visite_date'),
-            data.get('actions_suivre'), data.get('created_by')
+            data['date_visite'], data['statut'],
+            data.get('compte_rendu'), data.get('note_satisfaction'),
+            data.get('prochaine_visite_date'), data.get('actions_suivre'),
+            data.get('created_by', 'system')
         ))
         
-        visite_id = cursor.fetchone()['id']
+        new_id = cursor.fetchone()[0]
         conn.commit()
         cursor.close()
         conn.close()
         
-        return True, f"✅ Visite #{visite_id} créée"
+        return True, f"✅ Visite #{new_id} créée"
     except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
 def update_visite(visite_id, data):
@@ -225,15 +276,17 @@ def update_visite(visite_id, data):
         cursor.execute("""
             UPDATE crm_visites SET
                 magasin_id = %s, commercial_id = %s, type_visite_id = %s,
-                date_visite = %s, statut = %s, compte_rendu = %s,
-                note_satisfaction = %s, prochaine_visite_date = %s, actions_suivre = %s,
+                date_visite = %s, statut = %s,
+                compte_rendu = %s, note_satisfaction = %s,
+                prochaine_visite_date = %s, actions_suivre = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
         """, (
             data['magasin_id'], data.get('commercial_id'), data.get('type_visite_id'),
-            data['date_visite'], data['statut'], data.get('compte_rendu'),
-            data.get('note_satisfaction'), data.get('prochaine_visite_date'),
-            data.get('actions_suivre'), visite_id
+            data['date_visite'], data['statut'],
+            data.get('compte_rendu'), data.get('note_satisfaction'),
+            data.get('prochaine_visite_date'), data.get('actions_suivre'),
+            visite_id
         ))
         
         conn.commit()
@@ -242,6 +295,8 @@ def update_visite(visite_id, data):
         
         return True, "✅ Visite mise à jour"
     except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
 def delete_visite(visite_id):
@@ -254,6 +309,8 @@ def delete_visite(visite_id):
         conn.close()
         return True, "✅ Visite supprimée"
     except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
 # ==========================================
@@ -272,13 +329,16 @@ if kpis:
     with col3:
         st.metric("📅 Cette semaine", kpis['semaine'])
     with col4:
-        delta_color = "inverse" if kpis['retard'] > 0 else "off"
-        st.metric("⚠️ En retard", kpis['retard'], delta_color=delta_color)
+        # ⭐ V7: KPI en retard avec alerte visuelle
+        if kpis['retard'] > 0:
+            st.metric("⚠️ En retard", kpis['retard'], delta=f"-{kpis['retard']}", delta_color="inverse")
+        else:
+            st.metric("✅ En retard", 0)
 
 st.markdown("---")
 
 # ==========================================
-# INTERFACE
+# ONGLETS
 # ==========================================
 
 tab1, tab2, tab3 = st.tabs(["📋 Liste", "📅 Planning", "➕ Nouvelle"])
@@ -288,52 +348,138 @@ with tab1:
     
     magasins = get_magasins_dropdown()
     commerciaux = get_commerciaux()
+    mois_disponibles = get_mois_disponibles()
     
+    # ⭐ V7: FORMULAIRE MODIFICATION AU-DESSUS
+    if 'edit_visite_id' in st.session_state and can_edit("CRM"):
+        st.markdown("### ✏️ Modifier la visite")
+        
+        data = st.session_state['edit_visite_data']
+        types_visite = get_types_visite()
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            current_mag = next((i for i, m in enumerate(magasins) if m[0] == data.get('magasin_id')), 0)
+            edit_magasin = st.selectbox("Client *", magasins, index=current_mag, format_func=lambda x: x[1], key="edit_mag_v")
+            
+            comm_list = [(None, 'Non assigné')] + commerciaux
+            current_comm = next((i for i, c in enumerate(comm_list) if c[0] == data.get('commercial_id')), 0)
+            edit_commercial = st.selectbox("Responsable", comm_list, index=current_comm, format_func=lambda x: x[1], key="edit_comm_v")
+            
+            type_list = [(None, 'Non défini')] + types_visite
+            current_type = next((i for i, t in enumerate(type_list) if t[0] == data.get('type_visite_id')), 0)
+            edit_type = st.selectbox("Type visite", type_list, index=current_type, format_func=lambda x: x[1], key="edit_type_v")
+        
+        with col2:
+            edit_date = st.date_input("Date visite *", value=data.get('date_visite') or datetime.now().date(), key="edit_date_v")
+            edit_statut = st.selectbox("Statut", ['PLANIFIEE', 'EFFECTUEE', 'ANNULEE'], 
+                                      index=['PLANIFIEE', 'EFFECTUEE', 'ANNULEE'].index(data.get('statut', 'PLANIFIEE')), key="edit_stat_v")
+            # ⭐ V7: Fix NaN avec safe_int
+            edit_note = st.slider("Note", 0, 10, safe_int(data.get('note_satisfaction'), 0), key="edit_note_v")
+            edit_prochaine = st.date_input("Prochaine visite", value=data.get('prochaine_visite_date'), key="edit_proch_v")
+        
+        edit_cr = st.text_area("Compte-rendu", value=safe_str(data.get('compte_rendu'), ''), key="edit_cr_v")
+        edit_actions = st.text_area("Actions à suivre", value=safe_str(data.get('actions_suivre'), ''), key="edit_act_v")
+        
+        col_save, col_cancel = st.columns(2)
+        
+        with col_save:
+            is_saving = st.session_state.get('is_saving_visite', False)
+            if st.button("💾 Enregistrer", type="primary", key="btn_save_v", disabled=is_saving):
+                st.session_state['is_saving_visite'] = True
+                update_data = {
+                    'magasin_id': edit_magasin[0],
+                    'commercial_id': edit_commercial[0] if edit_commercial else None,
+                    'type_visite_id': edit_type[0] if edit_type else None,
+                    'date_visite': edit_date, 'statut': edit_statut,
+                    'compte_rendu': edit_cr or None, 'note_satisfaction': edit_note if edit_note > 0 else None,
+                    'prochaine_visite_date': edit_prochaine if edit_prochaine else None,
+                    'actions_suivre': edit_actions or None
+                }
+                success, msg = update_visite(st.session_state['edit_visite_id'], update_data)
+                if success:
+                    st.success(msg)
+                    st.session_state.pop('edit_visite_id', None)
+                    st.session_state.pop('edit_visite_data', None)
+                    st.session_state.pop('is_saving_visite', None)
+                    st.rerun()
+                else:
+                    st.session_state.pop('is_saving_visite', None)
+                    st.error(msg)
+        
+        with col_cancel:
+            if st.button("❌ Annuler", key="btn_cancel_v"):
+                st.session_state.pop('edit_visite_id', None)
+                st.session_state.pop('edit_visite_data', None)
+                st.session_state.pop('is_saving_visite', None)
+                st.rerun()
+        
+        st.markdown("---")
+    
+    # ⭐ V7: FILTRES avec pagination par mois
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        mag_options = [(0, 'Tous les clients')] + magasins
-        filtre_magasin = st.selectbox("Client", mag_options, format_func=lambda x: x[1], key="f_mag_v")
+        mag_list = [(0, 'Tous les clients')] + magasins
+        filtre_magasin = st.selectbox("Client", mag_list, format_func=lambda x: x[1], key="filtre_mag_v")
+    
     with col2:
-        comm_options = [(0, 'Tous')] + commerciaux
-        filtre_commercial = st.selectbox("Commercial", comm_options, format_func=lambda x: x[1], key="f_comm_v")
+        comm_list = [(0, 'Tous')] + commerciaux
+        filtre_commercial = st.selectbox("Responsable", comm_list, format_func=lambda x: x[1], key="filtre_comm_v")
+    
     with col3:
-        filtre_statut = st.selectbox("Statut", ['Tous', 'PLANIFIEE', 'EFFECTUEE', 'ANNULEE'], key="f_stat_v")
+        filtre_statut = st.selectbox("Statut", ['Tous', 'PLANIFIEE', 'EFFECTUEE', 'ANNULEE'], key="filtre_stat_v")
+    
     with col4:
-        filtre_date = st.date_input("À partir du", value=None, key="f_date_v")
+        # ⭐ V7: Filtre par mois
+        mois_list = [('Tous', 'Tous les mois')] + mois_disponibles
+        filtre_mois = st.selectbox("Mois", mois_list, format_func=lambda x: x[1], key="filtre_mois_v")
     
     filtres = {
         'magasin_id': filtre_magasin[0],
         'commercial_id': filtre_commercial[0],
         'statut': filtre_statut,
-        'date_debut': filtre_date
+        'mois': filtre_mois[0]
     }
     
-    st.markdown("---")
+    visites = get_visites(filtres)
     
-    df = get_visites(filtres)
-    
-    if not df.empty:
-        st.markdown(f"**{len(df)} visite(s) trouvée(s)**")
+    if not visites.empty:
+        st.markdown(f"**{len(visites)} visite(s) trouvée(s)**")
         
-        for idx, visite in df.iterrows():
-            statut_class = f"visite-{visite['statut'].lower()}"
-            statut_icon = "✅" if visite['statut'] == 'EFFECTUEE' else ("❌" if visite['statut'] == 'ANNULEE' else "📋")
+        for _, visite in visites.iterrows():
+            # Formatage affichage
             date_str = visite['date_visite'].strftime('%d/%m/%Y') if visite['date_visite'] else ''
+            statut_icon = "✅" if visite['statut'] == 'EFFECTUEE' else ("❌" if visite['statut'] == 'ANNULEE' else "📋")
             
-            # ⭐ V6: Affiche nom_client et enseigne séparément
+            # Affichage client
             client_display = visite['nom_client']
             if visite['enseigne']:
                 client_display += f" ({visite['enseigne']})"
             
             with st.expander(f"{statut_icon} {date_str} | {client_display} - {visite['ville']} | {visite['commercial']}"):
-                st.markdown(f"**Type :** {visite['type_visite'] or 'N/A'}")
-                st.markdown(f"**Statut :** {visite['statut']}")
+                col1, col2, col3 = st.columns([2, 2, 1])
+                
+                with col1:
+                    st.markdown(f"**📅 Date :** {date_str}")
+                    st.markdown(f"**🏪 Client :** {client_display}")
+                    st.markdown(f"**📍 Ville :** {visite['ville']}")
+                
+                with col2:
+                    st.markdown(f"**👤 Responsable :** {visite['commercial']}")
+                    st.markdown(f"**📌 Type :** {visite['type_visite'] or 'Non défini'}")
+                    st.markdown(f"**🏷️ Statut :** {visite['statut']}")
+                
+                with col3:
+                    if visite['note_satisfaction']:
+                        note = safe_int(visite['note_satisfaction'], 0)
+                        stars = "⭐" * min(note, 10)
+                        st.markdown(f"**Note :** {note}/10")
+                        st.caption(stars)
                 
                 if visite['compte_rendu']:
                     st.markdown(f"**📝 Compte-rendu :** {visite['compte_rendu']}")
-                if visite['note_satisfaction']:
-                    st.markdown(f"**⭐ Note :** {visite['note_satisfaction']}/10")
                 if visite['actions_suivre']:
                     st.warning(f"🎯 Actions à suivre : {visite['actions_suivre']}")
                 if visite['prochaine_visite_date']:
@@ -371,72 +517,6 @@ with tab1:
                         if st.button("❌ Annuler", key=f"confirm_no_v_{visite['id']}"):
                             st.session_state.pop('confirm_delete_visite', None)
                             st.rerun()
-        
-        # Formulaire modification
-        if 'edit_visite_id' in st.session_state and can_edit("CRM"):
-            st.markdown("---")
-            st.subheader("✏️ Modifier la visite")
-            
-            data = st.session_state['edit_visite_data']
-            types_visite = get_types_visite()
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                current_mag = next((i for i, m in enumerate(magasins) if m[0] == data.get('magasin_id')), 0)
-                edit_magasin = st.selectbox("Client *", magasins, index=current_mag, format_func=lambda x: x[1], key="edit_mag_v")
-                
-                comm_list = [(None, 'Non assigné')] + commerciaux
-                current_comm = next((i for i, c in enumerate(comm_list) if c[0] == data.get('commercial_id')), 0)
-                edit_commercial = st.selectbox("Commercial", comm_list, index=current_comm, format_func=lambda x: x[1], key="edit_comm_v")
-                
-                type_list = [(None, 'Non défini')] + types_visite
-                current_type = next((i for i, t in enumerate(type_list) if t[0] == data.get('type_visite_id')), 0)
-                edit_type = st.selectbox("Type visite", type_list, index=current_type, format_func=lambda x: x[1], key="edit_type_v")
-            
-            with col2:
-                edit_date = st.date_input("Date visite *", value=data.get('date_visite') or datetime.now().date(), key="edit_date_v")
-                edit_statut = st.selectbox("Statut", ['PLANIFIEE', 'EFFECTUEE', 'ANNULEE'], 
-                                          index=['PLANIFIEE', 'EFFECTUEE', 'ANNULEE'].index(data.get('statut', 'PLANIFIEE')), key="edit_stat_v")
-                edit_note = st.slider("Note", 0, 10, int(data.get('note_satisfaction') or 0), key="edit_note_v")
-                edit_prochaine = st.date_input("Prochaine visite", value=data.get('prochaine_visite_date'), key="edit_proch_v")
-            
-            edit_cr = st.text_area("Compte-rendu", value=data.get('compte_rendu', '') or '', key="edit_cr_v")
-            edit_actions = st.text_area("Actions à suivre", value=data.get('actions_suivre', '') or '', key="edit_act_v")
-            
-            col_save, col_cancel = st.columns(2)
-            
-            with col_save:
-                # ⭐ V6: Protection double-clic
-                is_saving = st.session_state.get('is_saving_visite', False)
-                if st.button("💾 Enregistrer", type="primary", key="btn_save_v", disabled=is_saving):
-                    st.session_state['is_saving_visite'] = True
-                    update_data = {
-                        'magasin_id': edit_magasin[0],
-                        'commercial_id': edit_commercial[0] if edit_commercial else None,
-                        'type_visite_id': edit_type[0] if edit_type else None,
-                        'date_visite': edit_date, 'statut': edit_statut,
-                        'compte_rendu': edit_cr or None, 'note_satisfaction': edit_note if edit_note > 0 else None,
-                        'prochaine_visite_date': edit_prochaine if edit_prochaine else None,
-                        'actions_suivre': edit_actions or None
-                    }
-                    success, msg = update_visite(st.session_state['edit_visite_id'], update_data)
-                    if success:
-                        st.success(msg)
-                        st.session_state.pop('edit_visite_id', None)
-                        st.session_state.pop('edit_visite_data', None)
-                        st.session_state.pop('is_saving_visite', None)
-                        st.rerun()
-                    else:
-                        st.session_state.pop('is_saving_visite', None)
-                        st.error(msg)
-            
-            with col_cancel:
-                if st.button("❌ Annuler", key="btn_cancel_v"):
-                    st.session_state.pop('edit_visite_id', None)
-                    st.session_state.pop('edit_visite_data', None)
-                    st.session_state.pop('is_saving_visite', None)
-                    st.rerun()
     else:
         st.info("Aucune visite trouvée")
 
@@ -458,7 +538,6 @@ with tab2:
             with st.expander(f"📅 {jour} ({len(visites)} visite(s))", expanded=True):
                 for v in visites:
                     statut_icon = "✅" if v['statut'] == 'EFFECTUEE' else ("❌" if v['statut'] == 'ANNULEE' else "📋")
-                    # ⭐ V6: Affiche nom_client et enseigne
                     client_display = v['nom_client']
                     if v['enseigne']:
                         client_display += f" ({v['enseigne']})"
@@ -485,8 +564,9 @@ with tab3:
             
             with col1:
                 new_magasin = st.selectbox("Client *", magasins, format_func=lambda x: x[1], key="new_mag_v")
+                # ⭐ V7: Label "Responsable" au lieu de "Commercial"
                 comm_list = [(None, 'Non assigné')] + commerciaux
-                new_commercial = st.selectbox("Commercial", comm_list, format_func=lambda x: x[1], key="new_comm_v")
+                new_commercial = st.selectbox("Responsable", comm_list, format_func=lambda x: x[1], key="new_comm_v")
                 type_list = [(None, 'Non défini')] + types_visite
                 new_type = st.selectbox("Type visite", type_list, format_func=lambda x: x[1], key="new_type_v")
             
@@ -499,7 +579,6 @@ with tab3:
             new_cr = st.text_area("Compte-rendu", key="new_cr_v")
             new_actions = st.text_area("Actions à suivre", key="new_act_v")
             
-            # ⭐ V6: Protection double-clic
             is_creating = st.session_state.get('is_creating_visite', False)
             
             if st.button("✅ Créer la visite", type="primary", key="btn_create_v", disabled=is_creating):
