@@ -92,17 +92,23 @@ def get_commerciaux():
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        # ⭐ V7: Plus de filtre sur les rôles - tous les users actifs
+        # ⭐ V7.1: COALESCE pour gérer prenom/nom NULL
         cursor.execute("""
-            SELECT u.id, u.prenom || ' ' || u.nom as nom 
+            SELECT u.id, 
+                   COALESCE(NULLIF(TRIM(COALESCE(u.prenom, '') || ' ' || COALESCE(u.nom, '')), ''), 
+                            u.username, 
+                            'User #' || u.id::text) as nom 
             FROM users_app u
             WHERE u.is_active = TRUE 
-            ORDER BY u.nom, u.prenom
+            ORDER BY COALESCE(u.nom, ''), COALESCE(u.prenom, '')
         """)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        return [(r['id'], r['nom']) for r in rows]
+        if rows:
+            # ⭐ V7.1: Filtrer les None et s'assurer que nom est une string
+            return [(r['id'], str(r['nom']) if r['nom'] else f"User #{r['id']}") for r in rows]
+        return []
     except Exception as e:
         st.error(f"❌ Erreur get_commerciaux: {str(e)}")
         return []
