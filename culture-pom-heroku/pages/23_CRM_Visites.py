@@ -119,17 +119,18 @@ def get_kpis_visites():
         
         kpis = {}
         
-        cursor.execute("SELECT COUNT(*) FROM crm_visites WHERE statut = 'PLANIFIEE'")
-        kpis['planifiees'] = cursor.fetchone()[0]
+        # ⭐ V7.1: RealDictCursor - utiliser alias et accès par clé
+        cursor.execute("SELECT COUNT(*) as nb FROM crm_visites WHERE statut = 'PLANIFIEE'")
+        kpis['planifiees'] = cursor.fetchone()['nb']
         
-        cursor.execute("SELECT COUNT(*) FROM crm_visites WHERE statut = 'EFFECTUEE' AND date_visite >= DATE_TRUNC('month', CURRENT_DATE)")
-        kpis['effectuees_mois'] = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) as nb FROM crm_visites WHERE statut = 'EFFECTUEE' AND date_visite >= DATE_TRUNC('month', CURRENT_DATE)")
+        kpis['effectuees_mois'] = cursor.fetchone()['nb']
         
-        cursor.execute("SELECT COUNT(*) FROM crm_visites WHERE statut = 'PLANIFIEE' AND date_visite BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'")
-        kpis['semaine'] = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) as nb FROM crm_visites WHERE statut = 'PLANIFIEE' AND date_visite BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'")
+        kpis['semaine'] = cursor.fetchone()['nb']
         
-        cursor.execute("SELECT COUNT(*) FROM crm_visites WHERE statut = 'PLANIFIEE' AND date_visite < CURRENT_DATE")
-        kpis['retard'] = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) as nb FROM crm_visites WHERE statut = 'PLANIFIEE' AND date_visite < CURRENT_DATE")
+        kpis['retard'] = cursor.fetchone()['nb']
         
         cursor.close()
         conn.close()
@@ -263,7 +264,9 @@ def create_visite(data):
             data.get('created_by', 'system')
         ))
         
-        new_id = cursor.fetchone()[0]
+        # ⭐ V7.1: RealDictCursor retourne un dict, pas un tuple
+        result = cursor.fetchone()
+        new_id = result['id'] if result else 0
         conn.commit()
         cursor.close()
         conn.close()
