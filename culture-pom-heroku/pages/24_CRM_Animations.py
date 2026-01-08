@@ -26,6 +26,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🎉 CRM - Gestion des Animations")
+
+# ⭐ V7.2: Message de succès persistant après création
+if 'success_message' in st.session_state:
+    st.success(st.session_state['success_message'])
+    st.balloons()
+    del st.session_state['success_message']
+
 st.markdown("---")
 
 # ==========================================
@@ -390,7 +397,8 @@ with tab1:
                 }
                 success, msg = update_animation(st.session_state['edit_animation_id'], update_data)
                 if success:
-                    st.success(msg)
+                    # ⭐ V7.2: Stocker message pour affichage après rerun
+                    st.session_state['success_message'] = msg
                     st.session_state.pop('edit_animation_id', None)
                     st.session_state.pop('edit_animation_data', None)
                     st.session_state.pop('is_saving_animation', None)
@@ -434,11 +442,11 @@ with tab1:
                         update_data['prochaine_animation_date'] = finish_prochaine
                     success, msg = update_animation(st.session_state['finish_animation_id'], update_data)
                     if success:
-                        st.success("✅ Animation terminée")
+                        # ⭐ V7.2: Stocker message pour affichage après rerun
+                        st.session_state['success_message'] = "✅ Animation terminée"
                         st.session_state.pop('finish_animation_id', None)
                         st.session_state.pop('finish_animation_data', None)
                         st.session_state.pop('is_finishing_animation', None)
-                        st.balloons()
                         st.rerun()
                     else:
                         st.session_state.pop('is_finishing_animation', None)
@@ -543,7 +551,8 @@ with tab1:
                             update_data['statut'] = 'EN_COURS'
                             success, msg = update_animation(anim['id'], update_data)
                             if success:
-                                st.success("✅ Animation démarrée")
+                                # ⭐ V7.2: Stocker message pour affichage après rerun
+                                st.session_state['success_message'] = "✅ Animation démarrée"
                                 st.rerun()
                             else:
                                 st.error(msg)
@@ -561,7 +570,8 @@ with tab1:
                         if st.button("✅ Confirmer", key=f"confirm_yes_a_{anim['id']}"):
                             success, msg = delete_animation(anim['id'])
                             if success:
-                                st.success(msg)
+                                # ⭐ V7.2: Stocker message pour affichage après rerun
+                                st.session_state['success_message'] = msg
                                 st.session_state.pop('confirm_delete_anim', None)
                                 st.rerun()
                             else:
@@ -621,8 +631,8 @@ with tab2:
                 }
                 success, msg = create_animation(data)
                 if success:
-                    st.success(msg)
-                    st.balloons()
+                    # ⭐ V7.2: Stocker message pour affichage après rerun
+                    st.session_state['success_message'] = msg
                     for k in list(st.session_state.keys()):
                         if k.startswith('new_'):
                             st.session_state.pop(k, None)
