@@ -25,6 +25,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("📅 CRM - Gestion des Visites")
+
+# ⭐ V7.2: Message de succès persistant après création
+if 'success_message' in st.session_state:
+    st.success(st.session_state['success_message'])
+    st.balloons()
+    del st.session_state['success_message']
+
 st.markdown("---")
 
 # ==========================================
@@ -408,7 +415,8 @@ with tab1:
                 }
                 success, msg = update_visite(st.session_state['edit_visite_id'], update_data)
                 if success:
-                    st.success(msg)
+                    # ⭐ V7.2: Stocker message pour affichage après rerun
+                    st.session_state['success_message'] = msg
                     st.session_state.pop('edit_visite_id', None)
                     st.session_state.pop('edit_visite_data', None)
                     st.session_state.pop('is_saving_visite', None)
@@ -517,7 +525,8 @@ with tab1:
                         if st.button("✅ Confirmer", key=f"confirm_yes_v_{visite['id']}"):
                             success, msg = delete_visite(visite['id'])
                             if success:
-                                st.success(msg)
+                                # ⭐ V7.2: Stocker message pour affichage après rerun
+                                st.session_state['success_message'] = msg
                                 st.session_state.pop('confirm_delete_visite', None)
                                 st.rerun()
                             else:
@@ -604,8 +613,8 @@ with tab3:
                 }
                 success, msg = create_visite(data)
                 if success:
-                    st.success(msg)
-                    st.balloons()
+                    # ⭐ V7.2: Stocker message pour affichage après rerun
+                    st.session_state['success_message'] = msg
                     for k in list(st.session_state.keys()):
                         if k.startswith('new_'):
                             st.session_state.pop(k, None)
