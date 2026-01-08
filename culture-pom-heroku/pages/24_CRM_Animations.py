@@ -246,7 +246,9 @@ def create_animation(data):
             data.get('created_by', 'system')
         ))
         
-        new_id = cursor.fetchone()[0]
+        # ⭐ V7.1: RealDictCursor retourne un dict, pas un tuple
+        result = cursor.fetchone()
+        new_id = result['id'] if result else 0
         conn.commit()
         cursor.close()
         conn.close()
