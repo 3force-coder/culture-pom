@@ -492,6 +492,138 @@ def delete_affectation(affectation_id):
         return False, f"❌ Erreur : {str(e)}"
 
 
+def get_recap_besoins_par_lot():
+    """
+    Récapitulatif des besoins par LOT (tous produits confondus)
+    Retourne le total affecté par lot avec le détail BRUT/LAVÉ
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        query = """
+        SELECT 
+            l.id as lot_id,
+            l.code_lot_interne,
+            l.nom_usage,
+            l.code_producteur,
+            COALESCE(p.nom, l.code_producteur) as producteur_nom,
+            COALESCE(v.nom_variete, l.code_variete) as variete,
+            
+            -- Total affecté BRUT (brut)
+            COALESCE(SUM(CASE WHEN pa.statut_stock = 'BRUT' THEN pa.quantite_affectee_tonnes ELSE 0 END), 0) as total_brut_tonnes,
+            
+            -- Total affecté BRUT (net estimé)
+            COALESCE(SUM(CASE WHEN pa.statut_stock = 'BRUT' THEN pa.poids_net_estime_tonnes ELSE 0 END), 0) as total_brut_net_tonnes,
+            
+            -- Total affecté LAVÉ
+            COALESCE(SUM(CASE WHEN pa.statut_stock = 'LAVÉ' THEN pa.poids_net_estime_tonnes ELSE 0 END), 0) as total_lave_tonnes,
+            
+            -- Nombre de produits différents
+            COUNT(DISTINCT pa.code_produit_commercial) as nb_produits,
+            
+            -- Liste des produits (agrégée)
+            STRING_AGG(DISTINCT pc.marque || ' ' || pc.libelle, ', ') as produits_liste
+            
+        FROM previsions_affectations pa
+        JOIN lots_bruts l ON pa.lot_id = l.id
+        LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+        LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
+        LEFT JOIN ref_produits_commerciaux pc ON pa.code_produit_commercial = pc.code_produit
+        WHERE pa.is_active = TRUE
+        GROUP BY l.id, l.code_lot_interne, l.nom_usage, l.code_producteur, p.nom, v.nom_variete, l.code_variete
+        ORDER BY total_brut_tonnes DESC, l.code_lot_interne
+        """
+        
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if rows:
+            df = pd.DataFrame(rows)
+            
+            # Conversions numériques
+            for col in ['total_brut_tonnes', 'total_brut_net_tonnes', 'total_lave_tonnes', 'nb_produits']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            
+            # Total net = LAVÉ + BRUT net
+            df['total_net_tonnes'] = df['total_lave_tonnes'] + df['total_brut_net_tonnes']
+            
+            # Besoin lavage = BRUT brut
+            df['besoin_lavage_tonnes'] = df['total_brut_tonnes']
+            
+            return df
+        return pd.DataFrame()
+        
+    except Exception as e:
+        st.error(f"❌ Erreur get_recap_besoins_par_lot : {str(e)}")
+        return pd.DataFrame()
+
+
+def get_recap_besoins_par_lot_semaine():
+    """
+    Récapitulatif des besoins par LOT avec DÉTAIL PAR SEMAINE
+    Pour les 3 prochaines semaines (S+1, S+2, S+3)
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Calculer les 3 prochaines semaines
+        semaines = get_semaines_previsions()[:3]  # Seulement 3 semaines
+        
+        query = """
+        SELECT 
+            l.id as lot_id,
+            l.code_lot_interne,
+            l.nom_usage,
+            l.code_producteur,
+            COALESCE(p.nom, l.code_producteur) as producteur_nom,
+            COALESCE(v.nom_variete, l.code_variete) as variete,
+            pa.annee,
+            pa.semaine,
+            
+            -- Total affecté NET (LAVÉ + BRUT net) par semaine
+            SUM(pa.poids_net_estime_tonnes) as total_net_semaine,
+            
+            -- Détail BRUT brut
+            SUM(CASE WHEN pa.statut_stock = 'BRUT' THEN pa.quantite_affectee_tonnes ELSE 0 END) as brut_semaine,
+            
+            -- Détail LAVÉ
+            SUM(CASE WHEN pa.statut_stock = 'LAVÉ' THEN pa.poids_net_estime_tonnes ELSE 0 END) as lave_semaine
+            
+        FROM previsions_affectations pa
+        JOIN lots_bruts l ON pa.lot_id = l.id
+        LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+        LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
+        WHERE pa.is_active = TRUE
+        GROUP BY l.id, l.code_lot_interne, l.nom_usage, l.code_producteur, p.nom, v.nom_variete, l.code_variete, pa.annee, pa.semaine
+        ORDER BY l.code_lot_interne, pa.annee, pa.semaine
+        """
+        
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if rows:
+            df = pd.DataFrame(rows)
+            
+            # Conversions numériques
+            for col in ['total_net_semaine', 'brut_semaine', 'lave_semaine']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            
+            return df, semaines
+        return pd.DataFrame(), semaines
+        
+    except Exception as e:
+        st.error(f"❌ Erreur get_recap_besoins_par_lot_semaine : {str(e)}")
+        return pd.DataFrame(), []
+
+
 def get_produits_commerciaux():
     """Récupère les produits commerciaux"""
     try:
@@ -596,7 +728,7 @@ st.markdown("---")
 # ONGLETS
 # ==========================================
 
-tab1, tab2, tab3 = st.tabs(["📊 Vue Consolidée", "➕ Affecter un Lot", "📋 Affectations"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Vue Consolidée", "➕ Affecter un Lot", "📋 Affectations", "📦 Récap par Lot"])
 
 # ==========================================
 # ONGLET 1 : VUE CONSOLIDÉE PAR PRODUIT
@@ -1125,6 +1257,197 @@ with tab3:
                         st.rerun()
                     else:
                         st.error(msg)
+
+# ==========================================
+# ONGLET 4 : RÉCAP PAR LOT
+# ==========================================
+
+with tab4:
+    st.subheader("📦 Récapitulatif Besoins par Lot")
+    st.markdown("*Vue consolidée des affectations par lot avec détail par semaine (S+1 à S+3)*")
+    
+    recap_lots = get_recap_besoins_par_lot()
+    recap_semaines, semaines_list = get_recap_besoins_par_lot_semaine()
+    
+    if recap_lots.empty:
+        st.info("📭 Aucune affectation de lot")
+    else:
+        # KPIs
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            nb_lots = len(recap_lots)
+            st.metric("📦 Lots affectés", nb_lots)
+        
+        with col2:
+            total_net = recap_lots['total_net_tonnes'].sum()
+            st.metric("⚖️ Total NET affecté", f"{total_net:.1f} T")
+        
+        with col3:
+            total_lave = recap_lots['total_lave_tonnes'].sum()
+            st.metric("🧼 Dont LAVÉ", f"{total_lave:.1f} T")
+        
+        with col4:
+            total_besoin_lavage = recap_lots['besoin_lavage_tonnes'].sum()
+            st.metric("📦 BRUT à laver", f"{total_besoin_lavage:.1f} T", 
+                     delta=f"{total_besoin_lavage:.0f} T" if total_besoin_lavage > 0 else None,
+                     delta_color="inverse" if total_besoin_lavage > 0 else "off")
+        
+        st.markdown("---")
+        
+        # Filtres
+        col_f1, col_f2 = st.columns(2)
+        
+        with col_f1:
+            varietes_lots = sorted(recap_lots['variete'].dropna().unique().tolist())
+            filtre_variete_lot = st.selectbox("Filtrer par variété", ["Toutes"] + varietes_lots, key="filtre_var_recap")
+        
+        with col_f2:
+            filtre_besoin = st.selectbox("Filtrer par besoin lavage", 
+                                         ["Tous", "Avec BRUT à laver", "100% LAVÉ"],
+                                         key="filtre_besoin_recap")
+        
+        # Appliquer filtres
+        df_lots = recap_lots.copy()
+        if filtre_variete_lot != "Toutes":
+            df_lots = df_lots[df_lots['variete'] == filtre_variete_lot]
+        if filtre_besoin == "Avec BRUT à laver":
+            df_lots = df_lots[df_lots['besoin_lavage_tonnes'] > 0]
+        elif filtre_besoin == "100% LAVÉ":
+            df_lots = df_lots[df_lots['besoin_lavage_tonnes'] == 0]
+        
+        st.caption(f"💡 {len(df_lots)} lot(s)")
+        
+        # ==========================================
+        # TABLEAU RÉCAP AVEC COLONNES PAR SEMAINE
+        # ==========================================
+        
+        if not df_lots.empty and not recap_semaines.empty:
+            st.markdown("### 📊 Besoins par Lot et par Semaine (NET)")
+            
+            # Préparer le tableau pivot avec semaines en colonnes
+            # Créer colonne semaine formatée
+            recap_semaines['sem_label'] = recap_semaines.apply(
+                lambda r: f"S{int(r['semaine']):02d}", axis=1
+            )
+            
+            # Pivot : lot en lignes, semaines en colonnes
+            pivot_data = []
+            
+            for _, lot in df_lots.iterrows():
+                lot_id = lot['lot_id']
+                row_data = {
+                    'Code Lot': lot['code_lot_interne'],
+                    'Nom': lot['nom_usage'][:20] + '...' if len(str(lot['nom_usage'])) > 20 else lot['nom_usage'],
+                    'Variété': lot['variete'],
+                    'Total NET': lot['total_net_tonnes'],
+                    'BRUT à laver': lot['besoin_lavage_tonnes']
+                }
+                
+                # Ajouter colonnes par semaine
+                lot_semaines = recap_semaines[recap_semaines['lot_id'] == lot_id]
+                
+                for annee, sem in semaines_list:
+                    sem_label = f"S{sem:02d}"
+                    sem_data = lot_semaines[(lot_semaines['annee'] == annee) & (lot_semaines['semaine'] == sem)]
+                    if not sem_data.empty:
+                        row_data[sem_label] = float(sem_data['total_net_semaine'].iloc[0])
+                    else:
+                        row_data[sem_label] = 0.0
+                
+                pivot_data.append(row_data)
+            
+            df_pivot = pd.DataFrame(pivot_data)
+            
+            # Formater nombres
+            for col in df_pivot.columns:
+                if col not in ['Code Lot', 'Nom', 'Variété']:
+                    df_pivot[col] = df_pivot[col].apply(lambda x: f"{x:.1f}" if x > 0 else "-")
+            
+            # Configuration colonnes
+            col_config = {
+                'Code Lot': st.column_config.TextColumn('Code Lot', width='medium'),
+                'Nom': st.column_config.TextColumn('Nom', width='medium'),
+                'Variété': st.column_config.TextColumn('Variété', width='small'),
+                'Total NET': st.column_config.TextColumn('Total (T)', width='small'),
+                'BRUT à laver': st.column_config.TextColumn('À laver (T)', width='small'),
+            }
+            
+            # Ajouter config pour chaque semaine
+            for annee, sem in semaines_list:
+                sem_label = f"S{sem:02d}"
+                col_config[sem_label] = st.column_config.TextColumn(sem_label, width='small')
+            
+            st.dataframe(
+                df_pivot,
+                use_container_width=True,
+                hide_index=True,
+                column_config=col_config
+            )
+        
+        # ==========================================
+        # DÉTAIL PAR LOT (expandable)
+        # ==========================================
+        
+        st.markdown("---")
+        st.markdown("### 📋 Détail par lot")
+        
+        for _, lot in df_lots.iterrows():
+            statut_emoji = "🧼" if lot['besoin_lavage_tonnes'] > 0 else "✅"
+            with st.expander(f"{statut_emoji} {lot['code_lot_interne']} - {lot['variete']} - **{lot['total_net_tonnes']:.1f} T NET**"):
+                
+                # Info générales
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write(f"**Lot** : {lot['code_lot_interne']}")
+                    st.write(f"**Nom** : {lot['nom_usage']}")
+                    st.write(f"**Producteur** : {lot['producteur_nom']}")
+                    st.write(f"**Variété** : {lot['variete']}")
+                
+                with col2:
+                    st.write(f"**Total NET affecté** : {lot['total_net_tonnes']:.2f} T")
+                    st.write(f"**Dont LAVÉ** : {lot['total_lave_tonnes']:.2f} T")
+                    if lot['besoin_lavage_tonnes'] > 0:
+                        st.warning(f"**BRUT à laver** : {lot['besoin_lavage_tonnes']:.2f} T")
+                    else:
+                        st.success("**BRUT à laver** : 0 T")
+                    st.write(f"**Nb produits** : {int(lot['nb_produits'])}")
+                
+                # Détail par semaine
+                if not recap_semaines.empty:
+                    lot_semaines = recap_semaines[recap_semaines['lot_id'] == lot['lot_id']]
+                    
+                    if not lot_semaines.empty:
+                        st.markdown("---")
+                        st.markdown("**📅 Répartition par semaine :**")
+                        
+                        cols_sem = st.columns(min(3, len(semaines_list)))
+                        
+                        for i, (annee, sem) in enumerate(semaines_list):
+                            sem_data = lot_semaines[(lot_semaines['annee'] == annee) & (lot_semaines['semaine'] == sem)]
+                            
+                            with cols_sem[i % 3]:
+                                if not sem_data.empty:
+                                    net = float(sem_data['total_net_semaine'].iloc[0])
+                                    brut = float(sem_data['brut_semaine'].iloc[0])
+                                    lave = float(sem_data['lave_semaine'].iloc[0])
+                                    
+                                    st.metric(
+                                        f"S{sem:02d}/{annee}",
+                                        f"{net:.1f} T",
+                                        delta=f"🧼 {brut:.1f}T" if brut > 0 else None,
+                                        delta_color="inverse" if brut > 0 else "off"
+                                    )
+                                    if lave > 0:
+                                        st.caption(f"✅ {lave:.1f}T LAVÉ")
+                                else:
+                                    st.metric(f"S{sem:02d}/{annee}", "-")
+                
+                # Détail des produits affectés
+                if lot['produits_liste']:
+                    st.markdown("---")
+                    st.caption(f"📦 **Produits** : {lot['produits_liste']}")
 
 # ==========================================
 # FOOTER
