@@ -1038,12 +1038,14 @@ if len(lots_to_display) > 0:
                         statut_lavage = st.selectbox("Statut lavage *", options=STATUTS, index=0, key=f"add_statut_{lot_id}")
                     
                     with col_cal_min:
-                        # Pré-remplir avec calibre du lot si disponible
-                        cal_min_defaut = int(lot_info.get('calibre_min') or 0)
+                        # Pré-remplir avec calibre du lot si disponible (gérer NaN)
+                        cal_min_raw = lot_info.get('calibre_min')
+                        cal_min_defaut = int(cal_min_raw) if pd.notna(cal_min_raw) else 0
                         calibre_min = st.number_input("Calibre min *", min_value=0, max_value=100, value=cal_min_defaut, key=f"add_cal_min_{lot_id}")
                     
                     with col_cal_max:
-                        cal_max_defaut = int(lot_info.get('calibre_max') or 75)
+                        cal_max_raw = lot_info.get('calibre_max')
+                        cal_max_defaut = int(cal_max_raw) if pd.notna(cal_max_raw) else 75
                         calibre_max = st.number_input("Calibre max *", min_value=0, max_value=100, value=cal_max_defaut, key=f"add_cal_max_{lot_id}")
                     
                     # Validation calibre
@@ -1177,9 +1179,18 @@ if len(lots_to_display) > 0:
                     st.markdown("---")
                     st.markdown(f"##### ✏️ Modifier Emplacement - Lot {lot_info['code_lot_interne']}")
                     
+                    # Fonction helper pour convertir calibre (gère NaN)
+                    def safe_int(val, default=0):
+                        if pd.isna(val) or val is None:
+                            return default
+                        try:
+                            return int(val)
+                        except:
+                            return default
+                    
                     # Sélection emplacement avec plus d'infos
                     empl_options = {
-                        f"{row['id']} - {row['site_stockage']}/{row['emplacement_stockage']} | {row['statut_lavage']} | {format_number_fr(row['nombre_unites'])} {row['type_conditionnement']} | {int(row['calibre_min'] or 0)}-{int(row['calibre_max'] or 0)}": row['id'] 
+                        f"{row['id']} - {row['site_stockage']}/{row['emplacement_stockage']} | {row['statut_lavage']} | {format_number_fr(row['nombre_unites'])} {row['type_conditionnement']} | {safe_int(row['calibre_min'])}-{safe_int(row['calibre_max'])}": row['id'] 
                         for _, row in df_empl.iterrows()
                     }
                     
@@ -1191,7 +1202,7 @@ if len(lots_to_display) > 0:
                         # Récupérer données actuelles
                         empl_data = df_empl[df_empl['id'] == empl_id].iloc[0]
                         
-                        st.info(f"📍 Valeurs actuelles : **{int(empl_data['nombre_unites'])} {empl_data['type_conditionnement']}** | **{empl_data['statut_lavage']}** | Calibre **{int(empl_data['calibre_min'] or 0)}-{int(empl_data['calibre_max'] or 0)}** | **{format_number_fr(empl_data['poids_total_kg'])} kg**")
+                        st.info(f"📍 Valeurs actuelles : **{int(empl_data['nombre_unites'])} {empl_data['type_conditionnement']}** | **{empl_data['statut_lavage']}** | Calibre **{safe_int(empl_data['calibre_min'])}-{safe_int(empl_data['calibre_max'])}** | **{format_number_fr(empl_data['poids_total_kg'])} kg**")
                         
                         st.markdown("---")
                         
@@ -1230,18 +1241,22 @@ if len(lots_to_display) > 0:
                         col_cal_min, col_cal_max = st.columns(2)
                         
                         with col_cal_min:
+                            cal_min_val = empl_data['calibre_min']
+                            cal_min_default = int(cal_min_val) if pd.notna(cal_min_val) else 0
                             nouveau_calibre_min = st.number_input(
                                 "Calibre min",
                                 min_value=0, max_value=100,
-                                value=int(empl_data['calibre_min'] or 0),
+                                value=cal_min_default,
                                 key=f"modify_cal_min_{lot_id}"
                             )
                         
                         with col_cal_max:
+                            cal_max_val = empl_data['calibre_max']
+                            cal_max_default = int(cal_max_val) if pd.notna(cal_max_val) else 75
                             nouveau_calibre_max = st.number_input(
                                 "Calibre max",
                                 min_value=0, max_value=100,
-                                value=int(empl_data['calibre_max'] or 75),
+                                value=cal_max_default,
                                 key=f"modify_cal_max_{lot_id}"
                             )
                         
