@@ -723,6 +723,153 @@ def get_lots_bruts_disponibles():
     except:
         return pd.DataFrame()
 
+
+def get_besoins_lavage_affectations():
+    """
+    Récupère les besoins de lavage basés sur les affectations
+    
+    Pour chaque lot avec affectations BRUT :
+    - Affecté BRUT = somme des affectations BRUT (tonnes brut)
+    - Stock LAVÉ = stock déjà lavé disponible (tonnes)
+    - Besoin lavage = Affecté BRUT - Stock LAVÉ (si > 0)
+    - Stock BRUT dispo = stock BRUT disponible pour jobs
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        query = """
+        WITH affectations_brut AS (
+            -- Affectations BRUT par lot
+            SELECT 
+                pa.lot_id,
+                SUM(pa.quantite_affectee_tonnes) as affecte_brut_tonnes,
+                SUM(pa.poids_net_estime_tonnes) as affecte_net_tonnes,
+                STRING_AGG(DISTINCT pc.marque || ' ' || pc.libelle, ', ') as produits_liste,
+                COUNT(DISTINCT pa.code_produit_commercial) as nb_produits
+            FROM previsions_affectations pa
+            LEFT JOIN ref_produits_commerciaux pc ON pa.code_produit_commercial = pc.code_produit
+            WHERE pa.is_active = TRUE 
+              AND pa.statut_stock = 'BRUT'
+            GROUP BY pa.lot_id
+        ),
+        stock_lave AS (
+            -- Stock LAVÉ disponible par lot
+            SELECT 
+                se.lot_id,
+                SUM(se.poids_total_kg) / 1000 as stock_lave_tonnes,
+                SUM(se.nombre_unites) as pallox_laves
+            FROM stock_emplacements se
+            WHERE se.is_active = TRUE
+              AND se.statut_lavage = 'LAVÉ'
+              AND se.nombre_unites > 0
+            GROUP BY se.lot_id
+        ),
+        stock_brut AS (
+            -- Stock BRUT disponible par lot (moins jobs réservés)
+            SELECT 
+                se.lot_id,
+                SUM(se.nombre_unites - COALESCE(jobs.pallox_reserves, 0)) as pallox_brut_dispo,
+                SUM(se.poids_total_kg - COALESCE(jobs.poids_reserve, 0)) / 1000 as brut_dispo_tonnes
+            FROM stock_emplacements se
+            LEFT JOIN (
+                SELECT emplacement_id,
+                       SUM(quantite_pallox) as pallox_reserves,
+                       SUM(poids_brut_kg) as poids_reserve
+                FROM lavages_jobs
+                WHERE statut IN ('PRÉVU', 'EN_COURS')
+                  AND emplacement_id IS NOT NULL
+                GROUP BY emplacement_id
+            ) jobs ON se.id = jobs.emplacement_id
+            WHERE se.is_active = TRUE
+              AND se.statut_lavage IN ('BRUT', 'GRENAILLES_BRUTES')
+              AND (se.nombre_unites - COALESCE(jobs.pallox_reserves, 0)) > 0
+            GROUP BY se.lot_id
+        ),
+        jobs_deja_crees AS (
+            -- Jobs déjà créés par lot (PRÉVU ou EN_COURS)
+            SELECT 
+                lot_id,
+                SUM(poids_brut_kg) / 1000 as jobs_prevus_tonnes,
+                SUM(quantite_pallox) as jobs_prevus_pallox
+            FROM lavages_jobs
+            WHERE statut IN ('PRÉVU', 'EN_COURS')
+            GROUP BY lot_id
+        )
+        SELECT 
+            l.id as lot_id,
+            l.code_lot_interne,
+            l.nom_usage,
+            l.code_producteur,
+            COALESCE(p.nom, l.code_producteur) as producteur,
+            COALESCE(v.nom_variete, l.code_variete) as variete,
+            
+            -- Affectations
+            COALESCE(ab.affecte_brut_tonnes, 0) as affecte_brut_tonnes,
+            COALESCE(ab.affecte_net_tonnes, 0) as affecte_net_tonnes,
+            ab.produits_liste,
+            COALESCE(ab.nb_produits, 0) as nb_produits,
+            
+            -- Stock LAVÉ existant
+            COALESCE(sl.stock_lave_tonnes, 0) as stock_lave_tonnes,
+            
+            -- Stock BRUT disponible
+            COALESCE(sb.pallox_brut_dispo, 0) as pallox_brut_dispo,
+            COALESCE(sb.brut_dispo_tonnes, 0) as brut_dispo_tonnes,
+            
+            -- Jobs déjà créés
+            COALESCE(jc.jobs_prevus_tonnes, 0) as jobs_prevus_tonnes,
+            COALESCE(jc.jobs_prevus_pallox, 0) as jobs_prevus_pallox,
+            
+            -- Calcul besoin net de lavage
+            -- Besoin = (Affecté NET - Stock LAVÉ - Jobs déjà prévus en équivalent net)
+            -- Si < 0, pas de besoin
+            GREATEST(
+                COALESCE(ab.affecte_net_tonnes, 0) 
+                - COALESCE(sl.stock_lave_tonnes, 0)
+                - COALESCE(jc.jobs_prevus_tonnes, 0) * 0.78,  -- 78% rendement moyen
+                0
+            ) as besoin_lavage_net_tonnes
+            
+        FROM affectations_brut ab
+        JOIN lots_bruts l ON ab.lot_id = l.id
+        LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+        LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
+        LEFT JOIN stock_lave sl ON l.id = sl.lot_id
+        LEFT JOIN stock_brut sb ON l.id = sb.lot_id
+        LEFT JOIN jobs_deja_crees jc ON l.id = jc.lot_id
+        WHERE l.is_active = TRUE
+        ORDER BY 
+            GREATEST(COALESCE(ab.affecte_net_tonnes, 0) - COALESCE(sl.stock_lave_tonnes, 0), 0) DESC,
+            l.code_lot_interne
+        """
+        
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if rows:
+            df = pd.DataFrame(rows)
+            
+            # Conversions numériques
+            numeric_cols = ['affecte_brut_tonnes', 'affecte_net_tonnes', 'stock_lave_tonnes', 
+                           'pallox_brut_dispo', 'brut_dispo_tonnes', 'jobs_prevus_tonnes', 
+                           'jobs_prevus_pallox', 'besoin_lavage_net_tonnes', 'nb_produits']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            
+            # Filtrer lots avec un besoin > 0
+            df = df[df['besoin_lavage_net_tonnes'] > 0.1]  # Seuil minimal 100 kg
+            
+            return df
+        return pd.DataFrame()
+        
+    except Exception as e:
+        st.error(f"❌ Erreur get_besoins_lavage_affectations : {str(e)}")
+        return pd.DataFrame()
+
 def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg, 
                      date_prevue, ligne_lavage, capacite_th, notes=""):
     """Crée un nouveau job de lavage
@@ -1537,140 +1684,364 @@ with tab2:
 with tab3:
     st.subheader("➕ Créer un Job de Lavage")
     
-    lots_dispo = get_lots_bruts_disponibles()
+    # Deux sous-onglets : Besoins basés sur affectations VS Tous les lots BRUT
+    create_tab1, create_tab2 = st.tabs(["📊 Besoins Affectations", "📋 Tous les lots BRUT"])
     
-    if not lots_dispo.empty:
-        # ⭐ FILTRES AMÉLIORÉS
-        st.markdown("#### 🔍 Filtres")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            varietes = ["Toutes"] + sorted(lots_dispo['variete'].dropna().unique().tolist())
-            f_var = st.selectbox("Variété", varietes, key="f_var_create")
-        with col2:
-            producteurs = ["Tous"] + sorted(lots_dispo['producteur'].dropna().unique().tolist())
-            f_prod = st.selectbox("Producteur", producteurs, key="f_prod_create")
-        with col3:
-            sites = ["Tous"] + sorted(lots_dispo['site_stockage'].dropna().unique().tolist())
-            f_site = st.selectbox("Site", sites, key="f_site_create")
+    # ============================================================
+    # SOUS-ONGLET 1 : BESOINS BASÉS SUR AFFECTATIONS
+    # ============================================================
+    with create_tab1:
+        st.markdown("*Lots avec affectations BRUT nécessitant du lavage*")
         
-        lots_f = lots_dispo.copy()
-        if f_var != "Toutes":
-            lots_f = lots_f[lots_f['variete'] == f_var]
-        if f_prod != "Tous":
-            lots_f = lots_f[lots_f['producteur'] == f_prod]
-        if f_site != "Tous":
-            lots_f = lots_f[lots_f['site_stockage'] == f_site]
+        besoins_df = get_besoins_lavage_affectations()
+        lots_dispo = get_lots_bruts_disponibles()
         
-        st.markdown("---")
-        
-        if not lots_f.empty:
-            st.markdown(f"**{len(lots_f)} emplacement(s) disponible(s)** - ⚠️ *Pallox Dispo = Stock - Jobs réservés (PRÉVU/EN_COURS)*")
-            st.caption("🔵 BRUT = Stock initial | 🟠 GRENAILLES_BRUTES = Grenailles à re-laver")
+        if besoins_df.empty:
+            st.info("📭 Aucun besoin de lavage basé sur les affectations")
+        else:
+            # KPIs
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("📦 Lots avec besoin", len(besoins_df))
+            with col2:
+                total_besoin = besoins_df['besoin_lavage_net_tonnes'].sum()
+                st.metric("🧼 Besoin total NET", f"{total_besoin:.1f} T")
+            with col3:
+                total_jobs = besoins_df['jobs_prevus_tonnes'].sum()
+                st.metric("📋 Jobs déjà prévus", f"{total_jobs:.1f} T")
+            with col4:
+                total_lave = besoins_df['stock_lave_tonnes'].sum()
+                st.metric("✅ Stock LAVÉ existant", f"{total_lave:.1f} T")
             
-            # ⭐ TABLEAU AMÉLIORÉ avec nom lot et producteur
-            df_display = lots_f[['lot_id', 'emplacement_id', 'code_lot_interne', 'nom_usage', 'producteur', 'variete', 'statut_lavage', 'site_stockage', 'emplacement_stockage', 'stock_total', 'pallox_reserves', 'nombre_unites', 'poids_total_kg']].copy()
+            st.markdown("---")
             
-            # Formater statut_lavage pour affichage
-            df_display['statut_lavage'] = df_display['statut_lavage'].apply(
-                lambda x: '🔵 BRUT' if x == 'BRUT' else ('🟠 GREN' if x == 'GRENAILLES_BRUTES' else x)
+            # Filtre variété
+            varietes_besoins = ["Toutes"] + sorted(besoins_df['variete'].dropna().unique().tolist())
+            f_var_besoins = st.selectbox("Filtrer par variété", varietes_besoins, key="f_var_besoins")
+            
+            df_besoins = besoins_df.copy()
+            if f_var_besoins != "Toutes":
+                df_besoins = df_besoins[df_besoins['variete'] == f_var_besoins]
+            
+            st.markdown(f"**{len(df_besoins)} lot(s) avec besoin de lavage**")
+            st.caption("💡 Besoin NET = Affecté NET - Stock LAVÉ - Jobs prévus × 78%")
+            
+            # Préparer tableau
+            df_display_besoins = df_besoins[[
+                'lot_id', 'code_lot_interne', 'nom_usage', 'producteur', 'variete',
+                'affecte_net_tonnes', 'stock_lave_tonnes', 'jobs_prevus_tonnes',
+                'besoin_lavage_net_tonnes', 'pallox_brut_dispo', 'brut_dispo_tonnes', 'produits_liste'
+            ]].copy()
+            
+            # Tronquer
+            df_display_besoins['nom_usage'] = df_display_besoins['nom_usage'].apply(
+                lambda x: (str(x)[:18] + '..') if pd.notna(x) and len(str(x)) > 20 else x
+            )
+            df_display_besoins['producteur'] = df_display_besoins['producteur'].apply(
+                lambda x: (str(x)[:15] + '..') if pd.notna(x) and len(str(x)) > 17 else x
             )
             
-            # Tronquer producteur si trop long
-            df_display['producteur'] = df_display['producteur'].apply(
-                lambda x: (x[:15] + '..') if pd.notna(x) and len(str(x)) > 17 else x
-            )
+            # Formater nombres
+            for col in ['affecte_net_tonnes', 'stock_lave_tonnes', 'jobs_prevus_tonnes', 'besoin_lavage_net_tonnes', 'brut_dispo_tonnes']:
+                df_display_besoins[col] = df_display_besoins[col].apply(lambda x: f"{x:.1f}")
             
-            df_display = df_display.rename(columns={
+            df_display_besoins = df_display_besoins.rename(columns={
                 'code_lot_interne': 'Code Lot',
-                'nom_usage': 'Nom Lot',
+                'nom_usage': 'Nom',
                 'producteur': 'Producteur',
                 'variete': 'Variété',
-                'statut_lavage': 'Type',
-                'site_stockage': 'Site',
-                'emplacement_stockage': 'Empl.',
-                'stock_total': 'Stock',
-                'pallox_reserves': 'Réservés',
-                'nombre_unites': 'Dispo',
-                'poids_total_kg': 'Poids (kg)'
+                'affecte_net_tonnes': 'Affecté NET',
+                'stock_lave_tonnes': 'Stock LAVÉ',
+                'jobs_prevus_tonnes': 'Jobs prévus',
+                'besoin_lavage_net_tonnes': '🎯 Besoin NET',
+                'pallox_brut_dispo': 'BRUT dispo',
+                'brut_dispo_tonnes': 'BRUT (T)'
             })
-            df_display = df_display.reset_index(drop=True)
+            df_display_besoins = df_display_besoins.reset_index(drop=True)
             
-            # Config colonnes pour masquer IDs et formater nombres
-            column_config = {
+            column_config_besoins = {
                 "lot_id": None,
-                "emplacement_id": None,
+                "produits_liste": None,
                 "Code Lot": st.column_config.TextColumn("Code Lot", width="small"),
-                "Nom Lot": st.column_config.TextColumn("Nom Lot", width="medium"),
+                "Nom": st.column_config.TextColumn("Nom", width="medium"),
                 "Producteur": st.column_config.TextColumn("Producteur", width="medium"),
                 "Variété": st.column_config.TextColumn("Variété", width="small"),
-                "Type": st.column_config.TextColumn("Type", width="small", help="BRUT ou GRENAILLES à re-laver"),
-                "Site": st.column_config.TextColumn("Site", width="small"),
-                "Empl.": st.column_config.TextColumn("Empl.", width="small"),
-                "Stock": st.column_config.NumberColumn("Stock", format="%d", help="Pallox en stock physique"),
-                "Réservés": st.column_config.NumberColumn("Rés.", format="%d", help="Pallox réservés par jobs PRÉVU/EN_COURS"),
-                "Dispo": st.column_config.NumberColumn("Dispo", format="%d", help="Pallox disponibles pour nouveau job"),
-                "Poids (kg)": st.column_config.NumberColumn("Poids", format="%.0f")
+                "Affecté NET": st.column_config.TextColumn("Affecté (T)", width="small", help="Tonnes NET affectées"),
+                "Stock LAVÉ": st.column_config.TextColumn("LAVÉ (T)", width="small", help="Stock déjà lavé"),
+                "Jobs prévus": st.column_config.TextColumn("Jobs (T)", width="small", help="Jobs PRÉVU/EN_COURS"),
+                "🎯 Besoin NET": st.column_config.TextColumn("🎯 Besoin", width="small", help="Besoin de lavage NET"),
+                "BRUT dispo": st.column_config.NumberColumn("Pallox", format="%d", width="small", help="Pallox BRUT disponibles"),
+                "BRUT (T)": st.column_config.TextColumn("BRUT (T)", width="small", help="Tonnes BRUT disponibles")
             }
             
-            event = st.dataframe(df_display, column_config=column_config, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="lots_create")
+            event_besoins = st.dataframe(
+                df_display_besoins, 
+                column_config=column_config_besoins, 
+                use_container_width=True, 
+                hide_index=True, 
+                on_select="rerun", 
+                selection_mode="single-row", 
+                key="besoins_create"
+            )
             
-            selected_rows = event.selection.rows if hasattr(event, 'selection') else []
+            selected_besoins = event_besoins.selection.rows if hasattr(event_besoins, 'selection') else []
             
-            if len(selected_rows) > 0:
-                row = df_display.iloc[selected_rows[0]]
-                lot_data = lots_dispo[(lots_dispo['lot_id'] == row['lot_id']) & (lots_dispo['emplacement_id'] == row['emplacement_id'])].iloc[0]
-                
-                # Afficher info stock avec réservés + type
-                reserves = int(lot_data['pallox_reserves']) if pd.notna(lot_data['pallox_reserves']) else 0
-                dispo = int(lot_data['nombre_unites'])
-                total = int(lot_data['stock_total']) if pd.notna(lot_data['stock_total']) else dispo
-                type_source = lot_data['statut_lavage'] if pd.notna(lot_data['statut_lavage']) else 'BRUT'
-                type_emoji = '🔵' if type_source == 'BRUT' else '🟠'
-                
-                # ⭐ INFO COMPLÈTE avec nom lot et producteur
-                nom_lot = lot_data['nom_usage'] if pd.notna(lot_data['nom_usage']) else ''
-                producteur = lot_data['producteur'] if pd.notna(lot_data['producteur']) else ''
+            if len(selected_besoins) > 0:
+                row_besoin = df_besoins.iloc[selected_besoins[0]]
+                lot_id_besoin = int(row_besoin['lot_id'])
                 
                 st.markdown("---")
-                if reserves > 0:
-                    st.warning(f"⚠️ {type_emoji} **{lot_data['code_lot_interne']}** - {nom_lot} | Producteur: {producteur} | {type_source} | Stock: {total}, Réservés: {reserves}, **Disponible: {dispo}**")
+                st.success(f"✅ **{row_besoin['code_lot_interne']}** - {row_besoin['variete']} | Besoin NET: **{row_besoin['besoin_lavage_net_tonnes']:.1f} T**")
+                
+                # Afficher les produits concernés
+                if row_besoin['produits_liste']:
+                    st.caption(f"📦 Produits : {row_besoin['produits_liste']}")
+                
+                # Récupérer les emplacements BRUT disponibles pour ce lot
+                emplacements_lot = lots_dispo[lots_dispo['lot_id'] == lot_id_besoin]
+                
+                if emplacements_lot.empty:
+                    st.warning("⚠️ Aucun emplacement BRUT disponible pour ce lot")
                 else:
-                    st.success(f"✅ {type_emoji} **{lot_data['code_lot_interne']}** - {nom_lot} | {lot_data['variete']} | Producteur: {producteur} | **{dispo} pallox disponibles**")
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    # Le slider utilise le stock disponible (déjà calculé)
-                    quantite = st.slider("Pallox à laver", 1, dispo, min(5, dispo), key="qty_create")
-                    date_prevue = st.date_input("Date prévue", datetime.now().date(), key="date_create")
-                with col2:
-                    lignes = get_lignes_lavage()
-                    ligne_opts = [f"{l['code']} ({l['capacite_th']} T/h)" for l in lignes]
-                    ligne_sel = st.selectbox("Ligne de lavage", ligne_opts, key="ligne_create")
+                    st.markdown("##### 📍 Emplacements BRUT disponibles")
                     
-                    # ⭐ POIDS UNITAIRES CORRECTS
-                    poids_unit = {'Pallox': 1900, 'Petit Pallox': 800, 'Big Bag': 1600}.get(lot_data['type_conditionnement'], 1900)
-                    poids_brut = quantite * poids_unit
-                    ligne_idx = ligne_opts.index(ligne_sel)
-                    capacite = float(lignes[ligne_idx]['capacite_th'])
-                    temps_est = (poids_brut / 1000) / capacite
+                    # Tableau emplacements
+                    df_empl = emplacements_lot[['emplacement_id', 'site_stockage', 'emplacement_stockage', 'stock_total', 'pallox_reserves', 'nombre_unites', 'poids_total_kg', 'type_conditionnement']].copy()
+                    df_empl = df_empl.rename(columns={
+                        'site_stockage': 'Site',
+                        'emplacement_stockage': 'Emplacement',
+                        'stock_total': 'Stock',
+                        'pallox_reserves': 'Réservés',
+                        'nombre_unites': 'Dispo',
+                        'poids_total_kg': 'Poids (kg)',
+                        'type_conditionnement': 'Type'
+                    })
+                    df_empl = df_empl.reset_index(drop=True)
                     
-                    st.metric("Poids total", f"{poids_brut:,} kg")
-                    st.metric("Temps estimé", f"{temps_est:.1f}h")
-                
-                if st.button("✅ Créer Job", type="primary", use_container_width=True, key="btn_create_job"):
-                    success, msg = create_job_lavage(lot_data['lot_id'], lot_data['emplacement_id'], quantite, poids_brut, date_prevue, lignes[ligne_idx]['code'], capacite)
-                    if success:
-                        st.success(msg)
-                        st.balloons()
-                        st.rerun()
+                    event_empl = st.dataframe(
+                        df_empl,
+                        column_config={
+                            "emplacement_id": None,
+                            "Site": st.column_config.TextColumn("Site", width="small"),
+                            "Emplacement": st.column_config.TextColumn("Empl.", width="small"),
+                            "Stock": st.column_config.NumberColumn("Stock", format="%d"),
+                            "Réservés": st.column_config.NumberColumn("Rés.", format="%d"),
+                            "Dispo": st.column_config.NumberColumn("Dispo", format="%d"),
+                            "Poids (kg)": st.column_config.NumberColumn("Poids", format="%.0f"),
+                            "Type": st.column_config.TextColumn("Type", width="small")
+                        },
+                        use_container_width=True,
+                        hide_index=True,
+                        on_select="rerun",
+                        selection_mode="single-row",
+                        key="empl_besoins_create"
+                    )
+                    
+                    selected_empl = event_empl.selection.rows if hasattr(event_empl, 'selection') else []
+                    
+                    if len(selected_empl) > 0:
+                        empl_data = emplacements_lot.iloc[selected_empl[0]]
+                        empl_id = int(empl_data['emplacement_id'])
+                        dispo = int(empl_data['nombre_unites'])
+                        
+                        st.markdown("---")
+                        st.info(f"📍 Emplacement sélectionné : **{empl_data['site_stockage']} / {empl_data['emplacement_stockage']}** - {dispo} pallox disponibles")
+                        
+                        # Calculer quantité suggérée basée sur le besoin
+                        besoin_tonnes = float(row_besoin['besoin_lavage_net_tonnes'])
+                        poids_unit = {'Pallox': 1900, 'Petit Pallox': 800, 'Big Bag': 1600}.get(empl_data['type_conditionnement'], 1900)
+                        rendement = 0.78  # Rendement moyen
+                        
+                        # Pallox suggérés pour couvrir le besoin NET
+                        pallox_suggeres = math.ceil(besoin_tonnes * 1000 / (poids_unit * rendement))
+                        pallox_suggeres = min(pallox_suggeres, dispo)  # Limiter au dispo
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            quantite = st.slider(
+                                f"Pallox à laver (suggéré: {pallox_suggeres} pour couvrir {besoin_tonnes:.1f}T NET)", 
+                                1, dispo, 
+                                min(pallox_suggeres, dispo), 
+                                key="qty_besoins_create"
+                            )
+                            date_prevue = st.date_input("Date prévue", datetime.now().date(), key="date_besoins_create")
+                        
+                        with col2:
+                            lignes = get_lignes_lavage()
+                            ligne_opts = [f"{l['code']} ({l['capacite_th']} T/h)" for l in lignes]
+                            ligne_sel = st.selectbox("Ligne de lavage", ligne_opts, key="ligne_besoins_create")
+                            
+                            poids_brut = quantite * poids_unit
+                            poids_net_estime = poids_brut * rendement
+                            ligne_idx = ligne_opts.index(ligne_sel)
+                            capacite = float(lignes[ligne_idx]['capacite_th'])
+                            temps_estime = (poids_brut / 1000) / capacite
+                            
+                            st.metric("Poids BRUT", f"{poids_brut:,.0f} kg ({poids_brut/1000:.1f} T)")
+                            st.metric("NET estimé (~78%)", f"{poids_net_estime:,.0f} kg ({poids_net_estime/1000:.1f} T)")
+                            st.metric("Temps estimé", f"{temps_estime:.1f} h")
+                        
+                        notes = st.text_input("Notes (optionnel)", key="notes_besoins_create")
+                        
+                        if st.button("✅ Créer Job de Lavage", type="primary", use_container_width=True, key="btn_create_besoins"):
+                            ligne_code = lignes[ligne_idx]['code']
+                            success, message = create_job_lavage(
+                                lot_id_besoin, empl_id, quantite, poids_brut,
+                                date_prevue, ligne_code, capacite, notes
+                            )
+                            if success:
+                                st.success(message)
+                                st.balloons()
+                                st.rerun()
+                            else:
+                                st.error(message)
                     else:
-                        st.error(msg)
+                        st.info("👆 Sélectionnez un emplacement ci-dessus pour créer le job")
             else:
-                st.info("👆 Sélectionnez un lot dans le tableau ci-dessus")
+                st.info("👆 Sélectionnez un lot dans le tableau ci-dessus pour voir les détails et créer un job")
+    
+    # ============================================================
+    # SOUS-ONGLET 2 : TOUS LES LOTS BRUT (original)
+    # ============================================================
+    with create_tab2:
+        st.markdown("*Tous les emplacements BRUT disponibles (avec ou sans affectation)*")
+        
+        lots_dispo = get_lots_bruts_disponibles()
+        
+        if not lots_dispo.empty:
+            # ⭐ FILTRES AMÉLIORÉS
+            st.markdown("#### 🔍 Filtres")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                varietes = ["Toutes"] + sorted(lots_dispo['variete'].dropna().unique().tolist())
+                f_var = st.selectbox("Variété", varietes, key="f_var_create")
+            with col2:
+                producteurs = ["Tous"] + sorted(lots_dispo['producteur'].dropna().unique().tolist())
+                f_prod = st.selectbox("Producteur", producteurs, key="f_prod_create")
+            with col3:
+                sites = ["Tous"] + sorted(lots_dispo['site_stockage'].dropna().unique().tolist())
+                f_site = st.selectbox("Site", sites, key="f_site_create")
+            
+            lots_f = lots_dispo.copy()
+            if f_var != "Toutes":
+                lots_f = lots_f[lots_f['variete'] == f_var]
+            if f_prod != "Tous":
+                lots_f = lots_f[lots_f['producteur'] == f_prod]
+            if f_site != "Tous":
+                lots_f = lots_f[lots_f['site_stockage'] == f_site]
+            
+            st.markdown("---")
+            
+            if not lots_f.empty:
+                st.markdown(f"**{len(lots_f)} emplacement(s) disponible(s)** - ⚠️ *Pallox Dispo = Stock - Jobs réservés (PRÉVU/EN_COURS)*")
+                st.caption("🔵 BRUT = Stock initial | 🟠 GRENAILLES_BRUTES = Grenailles à re-laver")
+                
+                # ⭐ TABLEAU AMÉLIORÉ avec nom lot et producteur
+                df_display = lots_f[['lot_id', 'emplacement_id', 'code_lot_interne', 'nom_usage', 'producteur', 'variete', 'statut_lavage', 'site_stockage', 'emplacement_stockage', 'stock_total', 'pallox_reserves', 'nombre_unites', 'poids_total_kg']].copy()
+                
+                # Formater statut_lavage pour affichage
+                df_display['statut_lavage'] = df_display['statut_lavage'].apply(
+                    lambda x: '🔵 BRUT' if x == 'BRUT' else ('🟠 GREN' if x == 'GRENAILLES_BRUTES' else x)
+                )
+                
+                # Tronquer producteur si trop long
+                df_display['producteur'] = df_display['producteur'].apply(
+                    lambda x: (x[:15] + '..') if pd.notna(x) and len(str(x)) > 17 else x
+                )
+                
+                df_display = df_display.rename(columns={
+                    'code_lot_interne': 'Code Lot',
+                    'nom_usage': 'Nom Lot',
+                    'producteur': 'Producteur',
+                    'variete': 'Variété',
+                    'statut_lavage': 'Type',
+                    'site_stockage': 'Site',
+                    'emplacement_stockage': 'Empl.',
+                    'stock_total': 'Stock',
+                    'pallox_reserves': 'Réservés',
+                    'nombre_unites': 'Dispo',
+                    'poids_total_kg': 'Poids (kg)'
+                })
+                df_display = df_display.reset_index(drop=True)
+                
+                # Config colonnes pour masquer IDs et formater nombres
+                column_config = {
+                    "lot_id": None,
+                    "emplacement_id": None,
+                    "Code Lot": st.column_config.TextColumn("Code Lot", width="small"),
+                    "Nom Lot": st.column_config.TextColumn("Nom Lot", width="medium"),
+                    "Producteur": st.column_config.TextColumn("Producteur", width="medium"),
+                    "Variété": st.column_config.TextColumn("Variété", width="small"),
+                    "Type": st.column_config.TextColumn("Type", width="small", help="BRUT ou GRENAILLES à re-laver"),
+                    "Site": st.column_config.TextColumn("Site", width="small"),
+                    "Empl.": st.column_config.TextColumn("Empl.", width="small"),
+                    "Stock": st.column_config.NumberColumn("Stock", format="%d", help="Pallox en stock physique"),
+                    "Réservés": st.column_config.NumberColumn("Rés.", format="%d", help="Pallox réservés par jobs PRÉVU/EN_COURS"),
+                    "Dispo": st.column_config.NumberColumn("Dispo", format="%d", help="Pallox disponibles pour nouveau job"),
+                    "Poids (kg)": st.column_config.NumberColumn("Poids", format="%.0f")
+                }
+                
+                event = st.dataframe(df_display, column_config=column_config, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="lots_create")
+                
+                selected_rows = event.selection.rows if hasattr(event, 'selection') else []
+                
+                if len(selected_rows) > 0:
+                    row = df_display.iloc[selected_rows[0]]
+                    lot_data = lots_dispo[(lots_dispo['lot_id'] == row['lot_id']) & (lots_dispo['emplacement_id'] == row['emplacement_id'])].iloc[0]
+                    
+                    # Afficher info stock avec réservés + type
+                    reserves = int(lot_data['pallox_reserves']) if pd.notna(lot_data['pallox_reserves']) else 0
+                    dispo = int(lot_data['nombre_unites'])
+                    total = int(lot_data['stock_total']) if pd.notna(lot_data['stock_total']) else dispo
+                    type_source = lot_data['statut_lavage'] if pd.notna(lot_data['statut_lavage']) else 'BRUT'
+                    type_emoji = '🔵' if type_source == 'BRUT' else '🟠'
+                    
+                    # ⭐ INFO COMPLÈTE avec nom lot et producteur
+                    nom_lot = lot_data['nom_usage'] if pd.notna(lot_data['nom_usage']) else ''
+                    producteur = lot_data['producteur'] if pd.notna(lot_data['producteur']) else ''
+                    
+                    st.markdown("---")
+                    if reserves > 0:
+                        st.warning(f"⚠️ {type_emoji} **{lot_data['code_lot_interne']}** - {nom_lot} | Producteur: {producteur} | {type_source} | Stock: {total}, Réservés: {reserves}, **Disponible: {dispo}**")
+                    else:
+                        st.success(f"✅ {type_emoji} **{lot_data['code_lot_interne']}** - {nom_lot} | {lot_data['variete']} | Producteur: {producteur} | **{dispo} pallox disponibles**")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        # Le slider utilise le stock disponible (déjà calculé)
+                        quantite = st.slider("Pallox à laver", 1, dispo, min(5, dispo), key="qty_create")
+                        date_prevue = st.date_input("Date prévue", datetime.now().date(), key="date_create")
+                    with col2:
+                        lignes = get_lignes_lavage()
+                        ligne_opts = [f"{l['code']} ({l['capacite_th']} T/h)" for l in lignes]
+                        ligne_sel = st.selectbox("Ligne de lavage", ligne_opts, key="ligne_create")
+                        
+                        # ⭐ POIDS UNITAIRES CORRECTS
+                        poids_unit = {'Pallox': 1900, 'Petit Pallox': 800, 'Big Bag': 1600}.get(lot_data['type_conditionnement'], 1900)
+                        poids_brut = quantite * poids_unit
+                        ligne_idx = ligne_opts.index(ligne_sel)
+                        capacite = float(lignes[ligne_idx]['capacite_th'])
+                        temps_est = (poids_brut / 1000) / capacite
+                        
+                        st.metric("Poids total", f"{poids_brut:,} kg")
+                        st.metric("Temps estimé", f"{temps_est:.1f}h")
+                    
+                    notes = st.text_input("Notes (optionnel)", key="notes_create_all")
+                    
+                    if st.button("✅ Créer Job", type="primary", use_container_width=True, key="btn_create_job_all"):
+                        success, msg = create_job_lavage(lot_data['lot_id'], lot_data['emplacement_id'], quantite, poids_brut, date_prevue, lignes[ligne_idx]['code'], capacite, notes)
+                        if success:
+                            st.success(msg)
+                            st.balloons()
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                else:
+                    st.info("👆 Sélectionnez un lot dans le tableau ci-dessus")
+            else:
+                st.warning("Aucun lot avec ces filtres")
         else:
-            st.warning("Aucun lot avec ces filtres")
-    else:
-        st.warning("Aucun lot BRUT disponible")
+            st.warning("Aucun lot BRUT disponible")
 
 # ============================================================
 # ONGLET 4 : STATS & RECAP
