@@ -677,6 +677,8 @@ def get_lots_bruts_disponibles():
                 l.id as lot_id, 
                 l.code_lot_interne, 
                 l.nom_usage,
+                l.code_producteur,
+                COALESCE(p.nom, l.code_producteur) as producteur,
                 l.calibre_min, 
                 l.calibre_max,
                 COALESCE(v.nom_variete, l.code_variete) as variete,
@@ -692,6 +694,7 @@ def get_lots_bruts_disponibles():
             FROM lots_bruts l
             JOIN stock_emplacements se ON l.id = se.lot_id
             LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+            LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
             LEFT JOIN (
                 SELECT emplacement_id,
                        SUM(quantite_pallox) as pallox_reserves,
@@ -1053,7 +1056,7 @@ st.markdown("---")
 # ONGLETS PRINCIPAUX
 # ============================================================
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📅 Planning Semaine", "📋 Liste Jobs", "➕ Créer Job", "🖨️ Imprimer", "⚙️ Admin"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📅 Planning Semaine", "📋 Liste Jobs", "➕ Créer Job", "📊 Stats & Recap", "🖨️ Imprimer", "⚙️ Admin"])
 
 # ============================================================
 # ONGLET 1 : PLANNING SEMAINE (fusionné de page 06)
@@ -1269,63 +1272,92 @@ with tab1:
                                     if st.session_state.get(f'show_finish_{elem["job_id"]}', False):
                                         with st.expander("📝 Saisie résultats lavage", expanded=True):
                                             poids_brut = float(elem['poids_brut_kg']) if pd.notna(elem['poids_brut_kg']) else 0
+                                            
+                                            # ⭐ POIDS UNITAIRES CORRECTS
                                             TYPES_COND = ["Pallox", "Petit Pallox", "Big Bag"]
-                                            POIDS_UNIT = {"Pallox": 1900, "Petit Pallox": 1200, "Big Bag": 1600}
+                                            POIDS_UNIT = {"Pallox": 1900, "Petit Pallox": 800, "Big Bag": 1600}
                                             
-                                            st.markdown(f"**⚖️ Poids brut en entrée : {poids_brut:,.0f} kg**")
+                                            st.markdown(f"### ⚖️ Poids brut en entrée : {poids_brut:,.0f} kg")
                                             st.markdown("---")
                                             
-                                            # ============ SECTION LAVÉ ============
+                                            # ============ SECTION LAVÉ - Layout amélioré ============
                                             st.markdown("### 🧼 Sortie LAVÉ")
-                                            col_l1, col_l2, col_l3 = st.columns([1, 1, 1])
                                             
-                                            with col_l1:
-                                                nb_pallox_lave = st.number_input("Nb Pallox", min_value=0, value=int(poids_brut * 0.75 / 1900) or 1, key=f"nb_lave_{elem['id']}")
-                                                type_lave = st.selectbox("Type", TYPES_COND, key=f"type_lave_{elem['id']}")
+                                            # Ligne 1 : Nb Pallox + Type (large)
+                                            col_nb, col_type = st.columns([1, 2])
+                                            with col_nb:
+                                                nb_pallox_lave = st.number_input("Nb Pallox", min_value=0, value=max(1, int(poids_brut * 0.75 / 1900)), key=f"nb_lave_{elem['id']}")
+                                            with col_type:
+                                                type_lave = st.selectbox("Type de conditionnement", TYPES_COND, key=f"type_lave_{elem['id']}")
                                             
-                                            with col_l2:
-                                                # Poids auto calculé, modifiable
-                                                poids_lave_auto = nb_pallox_lave * POIDS_UNIT[type_lave]
-                                                p_lave = st.number_input("Poids (kg)", 0.0, poids_brut, float(poids_lave_auto), step=100.0, key=f"p_lave_{elem['id']}")
+                                            # Calcul poids auto
+                                            poids_lave_auto = nb_pallox_lave * POIDS_UNIT[type_lave]
                                             
-                                            with col_l3:
-                                                cal_min_lave = st.number_input("Calibre min", 0, 100, 35, key=f"cal_min_lave_{elem['id']}")
-                                                cal_max_lave = st.number_input("Calibre max", 0, 100, 75, key=f"cal_max_lave_{elem['id']}")
+                                            # Ligne 2 : Poids calculé + Poids modifiable
+                                            col_calc, col_poids = st.columns([1, 1])
+                                            with col_calc:
+                                                st.metric("Poids calculé", f"{poids_lave_auto:,.0f} kg", help=f"{nb_pallox_lave} × {POIDS_UNIT[type_lave]} kg")
+                                            with col_poids:
+                                                p_lave = st.number_input("Poids réel (kg)", 0.0, poids_brut, float(poids_lave_auto), step=100.0, key=f"p_lave_{elem['id']}", help="Modifiez si différent du calcul")
+                                            
+                                            # Ligne 3 : Calibres
+                                            col_cal_min, col_cal_max = st.columns(2)
+                                            with col_cal_min:
+                                                cal_min_lave = st.number_input("Calibre min (mm)", 0, 100, 35, key=f"cal_min_lave_{elem['id']}")
+                                            with col_cal_max:
+                                                cal_max_lave = st.number_input("Calibre max (mm)", 0, 100, 75, key=f"cal_max_lave_{elem['id']}")
                                             
                                             st.markdown("---")
                                             
-                                            # ============ SECTION GRENAILLES ============
+                                            # ============ SECTION GRENAILLES - Layout amélioré ============
                                             st.markdown("### 🌾 Sortie GRENAILLES")
-                                            col_g1, col_g2, col_g3 = st.columns([1, 1, 1])
                                             
-                                            with col_g1:
+                                            # Ligne 1 : Nb Pallox + Type
+                                            col_nb_g, col_type_g = st.columns([1, 2])
+                                            with col_nb_g:
                                                 nb_pallox_gren = st.number_input("Nb Pallox", min_value=0, value=0, key=f"nb_gren_{elem['id']}")
-                                                type_gren = st.selectbox("Type", TYPES_COND, key=f"type_gren_{elem['id']}")
+                                            with col_type_g:
+                                                type_gren = st.selectbox("Type de conditionnement", TYPES_COND, key=f"type_gren_{elem['id']}")
                                             
-                                            with col_g2:
-                                                poids_gren_auto = nb_pallox_gren * POIDS_UNIT[type_gren]
-                                                p_gren = st.number_input("Poids (kg)", 0.0, poids_brut, float(poids_gren_auto), step=100.0, key=f"p_gren_{elem['id']}")
+                                            # Calcul poids auto grenailles
+                                            poids_gren_auto = nb_pallox_gren * POIDS_UNIT[type_gren]
                                             
-                                            with col_g3:
-                                                cal_min_gren = st.number_input("Calibre min", 0, 100, 20, key=f"cal_min_gren_{elem['id']}")
-                                                cal_max_gren = st.number_input("Calibre max", 0, 100, 35, key=f"cal_max_gren_{elem['id']}")
+                                            # Ligne 2 : Poids calculé + Poids modifiable (si grenailles > 0)
+                                            if nb_pallox_gren > 0:
+                                                col_calc_g, col_poids_g = st.columns([1, 1])
+                                                with col_calc_g:
+                                                    st.metric("Poids calculé", f"{poids_gren_auto:,.0f} kg", help=f"{nb_pallox_gren} × {POIDS_UNIT[type_gren]} kg")
+                                                with col_poids_g:
+                                                    p_gren = st.number_input("Poids réel (kg)", 0.0, poids_brut, float(poids_gren_auto), step=100.0, key=f"p_gren_{elem['id']}")
+                                                
+                                                # Ligne 3 : Calibres grenailles
+                                                col_cal_min_g, col_cal_max_g = st.columns(2)
+                                                with col_cal_min_g:
+                                                    cal_min_gren = st.number_input("Calibre min (mm)", 0, 100, 20, key=f"cal_min_gren_{elem['id']}")
+                                                with col_cal_max_g:
+                                                    cal_max_gren = st.number_input("Calibre max (mm)", 0, 100, 35, key=f"cal_max_gren_{elem['id']}")
+                                            else:
+                                                p_gren = 0.0
+                                                cal_min_gren = 20
+                                                cal_max_gren = 35
+                                                st.caption("ℹ️ Pas de grenailles - mettez Nb Pallox > 0 si besoin")
                                             
                                             st.markdown("---")
                                             
-                                            # ============ SECTION DÉCHETS (reste en kg) ============
+                                            # ============ SECTION DÉCHETS ============
                                             st.markdown("### 🗑️ Déchets")
-                                            p_dech = st.number_input("Déchets (kg)", 0.0, poids_brut, poids_brut*0.05, step=50.0, key=f"p_dech_{elem['id']}")
+                                            p_dech = st.number_input("Poids déchets (kg)", 0.0, poids_brut, poids_brut*0.05, step=50.0, key=f"p_dech_{elem['id']}")
                                             
                                             # Terre calculée
                                             p_terre = poids_brut - p_lave - p_gren - p_dech
                                             
                                             # Affichage terre avec couleur selon cohérence
                                             if p_terre < 0:
-                                                st.error(f"❌ Terre : {p_terre:.0f} kg (NÉGATIF !)")
-                                                st.warning("⚠️ Données incohérentes ! Réduisez Lavé, Grenailles ou Déchets.")
+                                                st.error(f"❌ Terre calculée : {p_terre:,.0f} kg (NÉGATIF !)")
+                                                st.warning("⚠️ Réduisez Lavé, Grenailles ou Déchets.")
                                                 terre_ok = False
                                             else:
-                                                st.metric("Terre calculée", f"{p_terre:.0f} kg")
+                                                st.success(f"✅ Terre calculée : **{p_terre:,.0f} kg**")
                                                 terre_ok = True
                                             
                                             # Validation calibres
@@ -1335,42 +1367,63 @@ with tab1:
                                             
                                             st.markdown("---")
                                             
+                                            # ============ RÉCAP VISUEL ============
+                                            st.markdown("### 📊 Récapitulatif")
+                                            col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+                                            with col_r1:
+                                                st.metric("Brut entrée", f"{poids_brut:,.0f} kg")
+                                            with col_r2:
+                                                st.metric("Lavé sortie", f"{p_lave:,.0f} kg")
+                                            with col_r3:
+                                                st.metric("Grenailles", f"{p_gren:,.0f} kg")
+                                            with col_r4:
+                                                st.metric("Déch. + Terre", f"{p_dech + max(0, p_terre):,.0f} kg")
+                                            
+                                            # Rendement
+                                            if poids_brut > 0:
+                                                rendement = ((p_lave + p_gren) / poids_brut) * 100
+                                                st.info(f"📈 **Rendement : {rendement:.1f}%** (Lavé + Grenailles)")
+                                            
+                                            st.markdown("---")
+                                            
                                             # ============ DESTINATION ============
                                             st.markdown("### 📍 Destination")
                                             empls = get_emplacements_saint_flavy()
-                                            empl = st.selectbox("Emplacement", [""] + [e[0] for e in empls], key=f"empl_{elem['id']}")
+                                            empl = st.selectbox("Emplacement stockage", [""] + [e[0] for e in empls], key=f"empl_{elem['id']}")
                                             
                                             can_validate = terre_ok and calibres_ok and empl != ""
                                             
-                                            if st.button("✅ Valider", key=f"val_finish_{elem['id']}", type="primary", disabled=not can_validate):
-                                                if not empl:
-                                                    st.warning("⚠️ Emplacement requis")
-                                                elif not terre_ok:
-                                                    st.error("❌ Corrigez les poids avant validation")
-                                                elif not calibres_ok:
-                                                    st.error("❌ Corrigez les calibres avant validation")
-                                                else:
-                                                    success, msg = terminer_job(
-                                                        int(elem['job_id']),
-                                                        # Sortie LAVÉ
-                                                        nb_pallox_lave, type_lave, p_lave, cal_min_lave, cal_max_lave,
-                                                        # Sortie GRENAILLES
-                                                        nb_pallox_gren, type_gren, p_gren, cal_min_gren, cal_max_gren,
-                                                        # Déchets
-                                                        p_dech,
-                                                        # Destination
-                                                        "SAINT_FLAVY", empl
-                                                    )
-                                                    if success:
-                                                        st.success(msg)
-                                                        st.session_state.pop(f'show_finish_{elem["job_id"]}', None)
-                                                        st.rerun()
+                                            col_val, col_ann = st.columns(2)
+                                            with col_val:
+                                                if st.button("✅ Valider terminaison", key=f"val_finish_{elem['id']}", type="primary", disabled=not can_validate, use_container_width=True):
+                                                    if not empl:
+                                                        st.warning("⚠️ Emplacement requis")
+                                                    elif not terre_ok:
+                                                        st.error("❌ Corrigez les poids avant validation")
+                                                    elif not calibres_ok:
+                                                        st.error("❌ Corrigez les calibres avant validation")
                                                     else:
-                                                        st.error(msg)
-                                            
-                                            if st.button("Annuler", key=f"cancel_{elem['id']}"):
-                                                st.session_state.pop(f'show_finish_{elem["job_id"]}', None)
-                                                st.rerun()
+                                                        success, msg = terminer_job(
+                                                            int(elem['job_id']),
+                                                            # Sortie LAVÉ
+                                                            nb_pallox_lave, type_lave, p_lave, cal_min_lave, cal_max_lave,
+                                                            # Sortie GRENAILLES
+                                                            nb_pallox_gren, type_gren, p_gren, cal_min_gren, cal_max_gren,
+                                                            # Déchets
+                                                            p_dech,
+                                                            # Destination
+                                                            "SAINT_FLAVY", empl
+                                                        )
+                                                        if success:
+                                                            st.success(msg)
+                                                            st.session_state.pop(f'show_finish_{elem["job_id"]}', None)
+                                                            st.rerun()
+                                                        else:
+                                                            st.error(msg)
+                                            with col_ann:
+                                                if st.button("❌ Annuler", key=f"cancel_{elem['id']}", use_container_width=True):
+                                                    st.session_state.pop(f'show_finish_{elem["job_id"]}', None)
+                                                    st.rerun()
                                 
                                 elif job_statut == 'TERMINÉ':
                                     # Afficher stats temps
@@ -1474,41 +1527,58 @@ with tab3:
     lots_dispo = get_lots_bruts_disponibles()
     
     if not lots_dispo.empty:
-        # Filtres
-        col1, col2 = st.columns(2)
+        # ⭐ FILTRES AMÉLIORÉS
+        st.markdown("#### 🔍 Filtres")
+        col1, col2, col3 = st.columns(3)
         with col1:
             varietes = ["Toutes"] + sorted(lots_dispo['variete'].dropna().unique().tolist())
             f_var = st.selectbox("Variété", varietes, key="f_var_create")
         with col2:
+            producteurs = ["Tous"] + sorted(lots_dispo['producteur'].dropna().unique().tolist())
+            f_prod = st.selectbox("Producteur", producteurs, key="f_prod_create")
+        with col3:
             sites = ["Tous"] + sorted(lots_dispo['site_stockage'].dropna().unique().tolist())
             f_site = st.selectbox("Site", sites, key="f_site_create")
         
         lots_f = lots_dispo.copy()
         if f_var != "Toutes":
             lots_f = lots_f[lots_f['variete'] == f_var]
+        if f_prod != "Tous":
+            lots_f = lots_f[lots_f['producteur'] == f_prod]
         if f_site != "Tous":
             lots_f = lots_f[lots_f['site_stockage'] == f_site]
+        
+        st.markdown("---")
         
         if not lots_f.empty:
             st.markdown(f"**{len(lots_f)} emplacement(s) disponible(s)** - ⚠️ *Pallox Dispo = Stock - Jobs réservés (PRÉVU/EN_COURS)*")
             st.caption("🔵 BRUT = Stock initial | 🟠 GRENAILLES_BRUTES = Grenailles à re-laver")
             
-            # Afficher Stock Total, Réservés et Disponible avec Type et Emplacement
-            df_display = lots_f[['lot_id', 'emplacement_id', 'code_lot_interne', 'variete', 'statut_lavage', 'site_stockage', 'emplacement_stockage', 'stock_total', 'pallox_reserves', 'nombre_unites', 'poids_total_kg']].copy()
+            # ⭐ TABLEAU AMÉLIORÉ avec nom lot et producteur
+            df_display = lots_f[['lot_id', 'emplacement_id', 'code_lot_interne', 'nom_usage', 'producteur', 'variete', 'statut_lavage', 'site_stockage', 'emplacement_stockage', 'stock_total', 'pallox_reserves', 'nombre_unites', 'poids_total_kg']].copy()
+            
             # Formater statut_lavage pour affichage
             df_display['statut_lavage'] = df_display['statut_lavage'].apply(
-                lambda x: '🔵 BRUT' if x == 'BRUT' else ('🟠 GRENAILLES' if x == 'GRENAILLES_BRUTES' else x)
+                lambda x: '🔵 BRUT' if x == 'BRUT' else ('🟠 GREN' if x == 'GRENAILLES_BRUTES' else x)
             )
+            
+            # Tronquer producteur si trop long
+            df_display['producteur'] = df_display['producteur'].apply(
+                lambda x: (x[:15] + '..') if pd.notna(x) and len(str(x)) > 17 else x
+            )
+            
             df_display = df_display.rename(columns={
                 'code_lot_interne': 'Code Lot',
+                'nom_usage': 'Nom Lot',
+                'producteur': 'Producteur',
                 'variete': 'Variété',
                 'statut_lavage': 'Type',
                 'site_stockage': 'Site',
-                'emplacement_stockage': 'Emplacement',
+                'emplacement_stockage': 'Empl.',
                 'stock_total': 'Stock',
                 'pallox_reserves': 'Réservés',
                 'nombre_unites': 'Dispo',
-                'poids_total_kg': 'Poids Dispo (kg)'
+                'poids_total_kg': 'Poids (kg)'
             })
             df_display = df_display.reset_index(drop=True)
             
@@ -1516,11 +1586,17 @@ with tab3:
             column_config = {
                 "lot_id": None,
                 "emplacement_id": None,
-                "Type": st.column_config.TextColumn("Type", help="BRUT ou GRENAILLES à re-laver"),
+                "Code Lot": st.column_config.TextColumn("Code Lot", width="small"),
+                "Nom Lot": st.column_config.TextColumn("Nom Lot", width="medium"),
+                "Producteur": st.column_config.TextColumn("Producteur", width="medium"),
+                "Variété": st.column_config.TextColumn("Variété", width="small"),
+                "Type": st.column_config.TextColumn("Type", width="small", help="BRUT ou GRENAILLES à re-laver"),
+                "Site": st.column_config.TextColumn("Site", width="small"),
+                "Empl.": st.column_config.TextColumn("Empl.", width="small"),
                 "Stock": st.column_config.NumberColumn("Stock", format="%d", help="Pallox en stock physique"),
-                "Réservés": st.column_config.NumberColumn("Réservés", format="%d", help="Pallox réservés par jobs PRÉVU/EN_COURS"),
+                "Réservés": st.column_config.NumberColumn("Rés.", format="%d", help="Pallox réservés par jobs PRÉVU/EN_COURS"),
                 "Dispo": st.column_config.NumberColumn("Dispo", format="%d", help="Pallox disponibles pour nouveau job"),
-                "Poids Dispo (kg)": st.column_config.NumberColumn("Poids (kg)", format="%.0f")
+                "Poids (kg)": st.column_config.NumberColumn("Poids", format="%.0f")
             }
             
             event = st.dataframe(df_display, column_config=column_config, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="lots_create")
@@ -1538,28 +1614,34 @@ with tab3:
                 type_source = lot_data['statut_lavage'] if pd.notna(lot_data['statut_lavage']) else 'BRUT'
                 type_emoji = '🔵' if type_source == 'BRUT' else '🟠'
                 
+                # ⭐ INFO COMPLÈTE avec nom lot et producteur
+                nom_lot = lot_data['nom_usage'] if pd.notna(lot_data['nom_usage']) else ''
+                producteur = lot_data['producteur'] if pd.notna(lot_data['producteur']) else ''
+                
+                st.markdown("---")
                 if reserves > 0:
-                    st.warning(f"⚠️ {type_emoji} **{lot_data['code_lot_interne']}** ({type_source}) - {lot_data['emplacement_stockage']} - Stock: {total}, Réservés: {reserves}, **Disponible: {dispo}**")
+                    st.warning(f"⚠️ {type_emoji} **{lot_data['code_lot_interne']}** - {nom_lot} | Producteur: {producteur} | {type_source} | Stock: {total}, Réservés: {reserves}, **Disponible: {dispo}**")
                 else:
-                    st.success(f"✅ {type_emoji} **{lot_data['code_lot_interne']}** ({type_source}) - {lot_data['variete']} - {lot_data['emplacement_stockage']} - **{dispo} pallox**")
+                    st.success(f"✅ {type_emoji} **{lot_data['code_lot_interne']}** - {nom_lot} | {lot_data['variete']} | Producteur: {producteur} | **{dispo} pallox disponibles**")
                 
                 col1, col2 = st.columns(2)
                 with col1:
                     # Le slider utilise le stock disponible (déjà calculé)
-                    quantite = st.slider("Pallox", 1, dispo, min(5, dispo), key="qty_create")
-                    date_prevue = st.date_input("Date", datetime.now().date(), key="date_create")
+                    quantite = st.slider("Pallox à laver", 1, dispo, min(5, dispo), key="qty_create")
+                    date_prevue = st.date_input("Date prévue", datetime.now().date(), key="date_create")
                 with col2:
                     lignes = get_lignes_lavage()
                     ligne_opts = [f"{l['code']} ({l['capacite_th']} T/h)" for l in lignes]
-                    ligne_sel = st.selectbox("Ligne", ligne_opts, key="ligne_create")
+                    ligne_sel = st.selectbox("Ligne de lavage", ligne_opts, key="ligne_create")
                     
-                    poids_unit = {'Pallox': 1900, 'Petit Pallox': 1200, 'Big Bag': 1600}.get(lot_data['type_conditionnement'], 1900)
+                    # ⭐ POIDS UNITAIRES CORRECTS
+                    poids_unit = {'Pallox': 1900, 'Petit Pallox': 800, 'Big Bag': 1600}.get(lot_data['type_conditionnement'], 1900)
                     poids_brut = quantite * poids_unit
                     ligne_idx = ligne_opts.index(ligne_sel)
                     capacite = float(lignes[ligne_idx]['capacite_th'])
                     temps_est = (poids_brut / 1000) / capacite
                     
-                    st.metric("Poids", f"{poids_brut:,} kg")
+                    st.metric("Poids total", f"{poids_brut:,} kg")
                     st.metric("Temps estimé", f"{temps_est:.1f}h")
                 
                 if st.button("✅ Créer Job", type="primary", use_container_width=True, key="btn_create_job"):
@@ -1571,17 +1653,223 @@ with tab3:
                     else:
                         st.error(msg)
             else:
-                st.info("👆 Sélectionnez un lot")
+                st.info("👆 Sélectionnez un lot dans le tableau ci-dessus")
         else:
             st.warning("Aucun lot avec ces filtres")
     else:
         st.warning("Aucun lot BRUT disponible")
 
 # ============================================================
-# ONGLET 4 : IMPRIMER
+# ONGLET 4 : STATS & RECAP
 # ============================================================
 
 with tab4:
+    st.subheader("📊 Statistiques & Récapitulatif")
+    st.caption("*Vue d'ensemble des affectations et tonnages*")
+    
+    # ============ KPIs DÉTAILLÉS ============
+    st.markdown("### 📈 Statistiques détaillées")
+    
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Stats jobs par statut
+        cursor.execute("""
+            SELECT 
+                statut,
+                COUNT(*) as nb_jobs,
+                COALESCE(SUM(quantite_pallox), 0) as total_pallox,
+                COALESCE(SUM(poids_brut_kg), 0) as total_poids,
+                COALESCE(SUM(temps_estime_heures), 0) as total_temps
+            FROM lavages_jobs
+            GROUP BY statut
+            ORDER BY 
+                CASE statut 
+                    WHEN 'PRÉVU' THEN 1 
+                    WHEN 'EN_COURS' THEN 2 
+                    WHEN 'TERMINÉ' THEN 3 
+                    ELSE 4 
+                END
+        """)
+        stats_statut = cursor.fetchall()
+        
+        if stats_statut:
+            col1, col2, col3 = st.columns(3)
+            for stat in stats_statut:
+                if stat['statut'] == 'PRÉVU':
+                    with col1:
+                        st.markdown("#### 🎯 PRÉVU")
+                        st.metric("Jobs", stat['nb_jobs'])
+                        st.metric("Pallox", f"{int(stat['total_pallox']):,}")
+                        st.metric("Tonnage", f"{stat['total_poids']/1000:.1f} T")
+                        st.metric("Temps prévu", f"{float(stat['total_temps']):.1f}h")
+                elif stat['statut'] == 'EN_COURS':
+                    with col2:
+                        st.markdown("#### ⚙️ EN COURS")
+                        st.metric("Jobs", stat['nb_jobs'])
+                        st.metric("Pallox", f"{int(stat['total_pallox']):,}")
+                        st.metric("Tonnage", f"{stat['total_poids']/1000:.1f} T")
+                        st.metric("Temps prévu", f"{float(stat['total_temps']):.1f}h")
+                elif stat['statut'] == 'TERMINÉ':
+                    with col3:
+                        st.markdown("#### ✅ TERMINÉ")
+                        st.metric("Jobs", stat['nb_jobs'])
+                        st.metric("Pallox", f"{int(stat['total_pallox']):,}")
+                        st.metric("Tonnage", f"{stat['total_poids']/1000:.1f} T")
+                        
+        st.markdown("---")
+        
+        # ============ RECAP AFFECTATION PAR LOT ============
+        st.markdown("### 📦 Récapitulatif affectation des lots")
+        st.caption("*Jobs PRÉVU et EN_COURS par lot*")
+        
+        cursor.execute("""
+            SELECT 
+                lj.code_lot_interne,
+                l.nom_usage,
+                COALESCE(p.nom, l.code_producteur) as producteur,
+                lj.variete,
+                COUNT(*) as nb_jobs,
+                SUM(lj.quantite_pallox) as pallox_reserves,
+                SUM(lj.poids_brut_kg) as poids_reserve,
+                SUM(lj.temps_estime_heures) as temps_total,
+                STRING_AGG(DISTINCT lj.statut, ', ') as statuts
+            FROM lavages_jobs lj
+            JOIN lots_bruts l ON lj.lot_id = l.id
+            LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
+            WHERE lj.statut IN ('PRÉVU', 'EN_COURS')
+            GROUP BY lj.code_lot_interne, l.nom_usage, p.nom, l.code_producteur, lj.variete
+            ORDER BY poids_reserve DESC
+        """)
+        recap_lots = cursor.fetchall()
+        
+        if recap_lots:
+            df_recap = pd.DataFrame(recap_lots)
+            df_recap = df_recap.rename(columns={
+                'code_lot_interne': 'Code Lot',
+                'nom_usage': 'Nom Lot',
+                'producteur': 'Producteur',
+                'variete': 'Variété',
+                'nb_jobs': 'Jobs',
+                'pallox_reserves': 'Pallox',
+                'poids_reserve': 'Poids (kg)',
+                'temps_total': 'Temps (h)',
+                'statuts': 'Statuts'
+            })
+            
+            # Formater
+            df_recap['Poids (kg)'] = pd.to_numeric(df_recap['Poids (kg)'], errors='coerce').fillna(0).astype(int)
+            df_recap['Pallox'] = pd.to_numeric(df_recap['Pallox'], errors='coerce').fillna(0).astype(int)
+            df_recap['Temps (h)'] = pd.to_numeric(df_recap['Temps (h)'], errors='coerce').fillna(0).round(1)
+            
+            # Afficher
+            st.dataframe(df_recap, use_container_width=True, hide_index=True)
+            
+            # Totaux
+            total_pallox = df_recap['Pallox'].sum()
+            total_poids = df_recap['Poids (kg)'].sum()
+            total_temps = df_recap['Temps (h)'].sum()
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("📦 Total Pallox réservés", f"{total_pallox:,}")
+            col2.metric("⚖️ Tonnage attendu", f"{total_poids/1000:.1f} T")
+            col3.metric("⏱️ Temps de travail", f"{total_temps:.1f}h")
+        else:
+            st.info("Aucun job PRÉVU ou EN_COURS actuellement")
+        
+        st.markdown("---")
+        
+        # ============ TONNAGE PAR SEMAINE ============
+        st.markdown("### 📅 Tonnage prévu par semaine")
+        
+        cursor.execute("""
+            SELECT 
+                DATE_TRUNC('week', date_prevue) as semaine,
+                COUNT(*) as nb_jobs,
+                SUM(quantite_pallox) as pallox,
+                SUM(poids_brut_kg) as poids,
+                SUM(temps_estime_heures) as temps
+            FROM lavages_jobs
+            WHERE statut IN ('PRÉVU', 'EN_COURS')
+              AND date_prevue >= CURRENT_DATE - INTERVAL '7 days'
+              AND date_prevue <= CURRENT_DATE + INTERVAL '28 days'
+            GROUP BY DATE_TRUNC('week', date_prevue)
+            ORDER BY semaine
+        """)
+        stats_semaine = cursor.fetchall()
+        
+        if stats_semaine:
+            df_sem = pd.DataFrame(stats_semaine)
+            df_sem['semaine'] = pd.to_datetime(df_sem['semaine']).dt.strftime('S%W - %d/%m')
+            df_sem = df_sem.rename(columns={
+                'semaine': 'Semaine',
+                'nb_jobs': 'Jobs',
+                'pallox': 'Pallox',
+                'poids': 'Poids (kg)',
+                'temps': 'Temps (h)'
+            })
+            df_sem['Poids (kg)'] = pd.to_numeric(df_sem['Poids (kg)'], errors='coerce').fillna(0).astype(int)
+            df_sem['Pallox'] = pd.to_numeric(df_sem['Pallox'], errors='coerce').fillna(0).astype(int)
+            df_sem['Temps (h)'] = pd.to_numeric(df_sem['Temps (h)'], errors='coerce').fillna(0).round(1)
+            df_sem['Tonnage'] = (df_sem['Poids (kg)'] / 1000).round(1)
+            
+            st.dataframe(df_sem[['Semaine', 'Jobs', 'Pallox', 'Tonnage', 'Temps (h)']], use_container_width=True, hide_index=True)
+        else:
+            st.info("Aucun job prévu dans les 4 prochaines semaines")
+        
+        st.markdown("---")
+        
+        # ============ STATS PAR VARIÉTÉ ============
+        st.markdown("### 🌱 Statistiques par variété (jobs terminés)")
+        
+        cursor.execute("""
+            SELECT 
+                variete,
+                COUNT(*) as nb_jobs,
+                SUM(poids_brut_kg) as poids_brut_total,
+                SUM(poids_lave_net_kg) as poids_lave_total,
+                AVG(rendement_pct) as rendement_moyen,
+                AVG(tare_reelle_pct) as tare_moyenne
+            FROM lavages_jobs
+            WHERE statut = 'TERMINÉ'
+              AND poids_lave_net_kg IS NOT NULL
+            GROUP BY variete
+            ORDER BY poids_brut_total DESC
+            LIMIT 10
+        """)
+        stats_variete = cursor.fetchall()
+        
+        if stats_variete:
+            df_var = pd.DataFrame(stats_variete)
+            df_var = df_var.rename(columns={
+                'variete': 'Variété',
+                'nb_jobs': 'Jobs',
+                'poids_brut_total': 'Brut (kg)',
+                'poids_lave_total': 'Lavé (kg)',
+                'rendement_moyen': 'Rendement %',
+                'tare_moyenne': 'Tare %'
+            })
+            df_var['Brut (kg)'] = pd.to_numeric(df_var['Brut (kg)'], errors='coerce').fillna(0).astype(int)
+            df_var['Lavé (kg)'] = pd.to_numeric(df_var['Lavé (kg)'], errors='coerce').fillna(0).astype(int)
+            df_var['Rendement %'] = pd.to_numeric(df_var['Rendement %'], errors='coerce').fillna(0).round(1)
+            df_var['Tare %'] = pd.to_numeric(df_var['Tare %'], errors='coerce').fillna(0).round(1)
+            
+            st.dataframe(df_var, use_container_width=True, hide_index=True)
+        else:
+            st.info("Aucun job terminé avec données de rendement")
+        
+        cursor.close()
+        conn.close()
+        
+    except Exception as e:
+        st.error(f"Erreur chargement stats : {str(e)}")
+
+# ============================================================
+# ONGLET 5 : IMPRIMER
+# ============================================================
+
+with tab5:
     st.subheader("🖨️ Imprimer Planning Journée")
     st.caption("*Générer une fiche imprimable pour une équipe de lavage*")
     
@@ -1844,10 +2132,10 @@ with tab4:
             st.error(f"❌ Erreur : {str(e)}")
 
 # ============================================================
-# ONGLET 5 : ADMIN
+# ONGLET 6 : ADMIN
 # ============================================================
 
-with tab5:
+with tab6:
     if not is_admin():
         st.warning("⚠️ Accès réservé aux administrateurs")
     else:
