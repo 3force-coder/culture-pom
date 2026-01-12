@@ -165,7 +165,7 @@ def get_lot_info(lot_id):
         return None
 
 def get_lot_emplacements(lot_id):
-    """Récupère les emplacements d'un lot avec statut lavage emoji"""
+    """Récupère les emplacements d'un lot avec statut lavage emoji et calibres"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -179,6 +179,8 @@ def get_lot_emplacements(lot_id):
                 se.type_conditionnement,
                 se.poids_total_kg,
                 se.statut_lavage,
+                se.calibre_min,
+                se.calibre_max,
                 se.is_active
             FROM stock_emplacements se
             WHERE se.lot_id = %s AND se.is_active = TRUE
@@ -193,7 +195,7 @@ def get_lot_emplacements(lot_id):
         if rows:
             df = pd.DataFrame(rows)
             # Convertir colonnes numériques
-            numeric_cols = ['nombre_unites', 'poids_total_kg']
+            numeric_cols = ['nombre_unites', 'poids_total_kg', 'calibre_min', 'calibre_max']
             for col in numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -264,11 +266,16 @@ def get_lot_mouvements(lot_id, limit=10):
         st.error(f"❌ Erreur : {str(e)}")
         return pd.DataFrame()
 
-def add_emplacement(lot_id, site, emplacement, nombre_unites, type_cond, statut_lavage='BRUT', poids_total_saisi=None):
-    """Ajoute un emplacement avec poids personnalisable"""
+def add_emplacement(lot_id, site, emplacement, nombre_unites, type_cond, statut_lavage='BRUT', poids_total_saisi=None, calibre_min=None, calibre_max=None):
+    """Ajoute un emplacement avec poids personnalisable et calibre"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        
+        # Validation calibre
+        if calibre_min is not None and calibre_max is not None:
+            if calibre_min >= calibre_max:
+                return False, "❌ Calibre min doit être inférieur à calibre max"
         
         # Calcul poids théorique selon type conditionnement
         if type_cond == 'Pallox':
@@ -289,34 +296,38 @@ def add_emplacement(lot_id, site, emplacement, nombre_unites, type_cond, statut_
         # Calculer poids unitaire réel
         poids_unitaire_reel = poids_total / nombre_unites
         
-        # Insérer emplacement
+        # Insérer emplacement avec calibre
         query = """
             INSERT INTO stock_emplacements (
                 lot_id, site_stockage, emplacement_stockage, 
                 nombre_unites, type_conditionnement, poids_total_kg, 
-                poids_unitaire_reel, statut_lavage, is_active
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+                poids_unitaire_reel, statut_lavage, calibre_min, calibre_max, is_active
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
         """
         
         cursor.execute(query, (
             int(lot_id), site, emplacement, 
             int(nombre_unites), type_cond, float(poids_total),
-            float(poids_unitaire_reel), statut_lavage
+            float(poids_unitaire_reel), statut_lavage,
+            int(calibre_min) if calibre_min is not None else None,
+            int(calibre_max) if calibre_max is not None else None
         ))
         
-        # Enregistrer mouvement
+        # Enregistrer mouvement avec notes calibre
         user = st.session_state.get('username', 'system')
+        notes_calibre = f"Calibre: {calibre_min}-{calibre_max}" if calibre_min and calibre_max else ""
         
         query_mvt = """
             INSERT INTO stock_mouvements (
                 lot_id, type_mouvement, site_destination, emplacement_destination,
-                quantite, type_conditionnement, poids_kg, user_action, created_by
-            ) VALUES (%s, 'AJOUT', %s, %s, %s, %s, %s, %s, %s)
+                quantite, type_conditionnement, poids_kg, user_action, created_by, notes
+            ) VALUES (%s, 'AJOUT', %s, %s, %s, %s, %s, %s, %s, %s)
         """
         
         cursor.execute(query_mvt, (
             int(lot_id), site, emplacement,
-            int(nombre_unites), type_cond, float(poids_total), user, user
+            int(nombre_unites), type_cond, float(poids_total), user, user, 
+            f"{statut_lavage} {notes_calibre}".strip()
         ))
         
         conn.commit()
@@ -444,15 +455,27 @@ def transfer_emplacement(lot_id, empl_source_id, quantite_transfert, site_dest, 
         return False, f"❌ Erreur : {str(e)}"
 
 def modify_emplacement(empl_id, nouvelle_quantite):
-    """Modifie la quantité d'un emplacement"""
+    """Modifie la quantité d'un emplacement (OBSOLÈTE - utiliser modify_emplacement_complet)"""
+    # Rediriger vers la nouvelle fonction avec valeurs par défaut
+    return modify_emplacement_complet(empl_id, nouvelle_quantite=nouvelle_quantite)
+
+def modify_emplacement_complet(empl_id, nouvelle_quantite=None, nouveau_type=None, nouveau_statut=None, 
+                               nouveau_poids=None, nouveau_calibre_min=None, nouveau_calibre_max=None):
+    """Modifie complètement un emplacement avec traçabilité"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Récupérer infos
+        # Validation calibre
+        if nouveau_calibre_min is not None and nouveau_calibre_max is not None:
+            if nouveau_calibre_min >= nouveau_calibre_max:
+                return False, "❌ Calibre min doit être inférieur à calibre max"
+        
+        # Récupérer infos actuelles
         cursor.execute("""
             SELECT lot_id, site_stockage, emplacement_stockage, 
-                   nombre_unites, type_conditionnement
+                   nombre_unites, type_conditionnement, poids_total_kg,
+                   statut_lavage, calibre_min, calibre_max
             FROM stock_emplacements
             WHERE id = %s AND is_active = TRUE
         """, (empl_id,))
@@ -462,27 +485,66 @@ def modify_emplacement(empl_id, nouvelle_quantite):
         if not empl:
             return False, "❌ Emplacement introuvable"
         
-        # Calcul poids
-        if empl['type_conditionnement'] == 'Pallox':
-            poids_unitaire = 1900.0
-        elif empl['type_conditionnement'] == 'Petit Pallox':
-            poids_unitaire = 1200.0
-        elif empl['type_conditionnement'] == 'Big Bag':
-            poids_unitaire = 1600.0
-        else:
-            poids_unitaire = 1900.0
+        # Préparer les nouvelles valeurs (garder anciennes si non spécifiées)
+        final_quantite = int(nouvelle_quantite) if nouvelle_quantite is not None else int(empl['nombre_unites'])
+        final_type = nouveau_type if nouveau_type is not None else empl['type_conditionnement']
+        final_statut = nouveau_statut if nouveau_statut is not None else empl['statut_lavage']
         
-        nouveau_poids = nouvelle_quantite * poids_unitaire
+        # Calcul poids
+        if nouveau_poids is not None:
+            final_poids = float(nouveau_poids)
+        else:
+            # Recalculer selon type
+            if final_type == 'Pallox':
+                poids_unitaire = 1900.0
+            elif final_type == 'Petit Pallox':
+                poids_unitaire = 1200.0
+            elif final_type == 'Big Bag':
+                poids_unitaire = 1600.0
+            else:
+                poids_unitaire = 1900.0
+            final_poids = final_quantite * poids_unitaire
+        
+        # Calibre - garder ancien si non spécifié
+        final_calibre_min = int(nouveau_calibre_min) if nouveau_calibre_min is not None else empl['calibre_min']
+        final_calibre_max = int(nouveau_calibre_max) if nouveau_calibre_max is not None else empl['calibre_max']
+        
+        # Construire notes de modification pour traçabilité
+        modifications = []
+        if nouvelle_quantite is not None and int(nouvelle_quantite) != int(empl['nombre_unites']):
+            modifications.append(f"Quantité: {empl['nombre_unites']}→{final_quantite}")
+        if nouveau_type is not None and nouveau_type != empl['type_conditionnement']:
+            modifications.append(f"Type: {empl['type_conditionnement']}→{final_type}")
+        if nouveau_statut is not None and nouveau_statut != empl['statut_lavage']:
+            modifications.append(f"Statut: {empl['statut_lavage']}→{final_statut}")
+        if nouveau_poids is not None and abs(float(nouveau_poids) - float(empl['poids_total_kg'])) > 1:
+            modifications.append(f"Poids: {empl['poids_total_kg']:.0f}→{final_poids:.0f}kg")
+        if nouveau_calibre_min is not None or nouveau_calibre_max is not None:
+            old_cal = f"{empl['calibre_min'] or '?'}-{empl['calibre_max'] or '?'}"
+            new_cal = f"{final_calibre_min or '?'}-{final_calibre_max or '?'}"
+            if old_cal != new_cal:
+                modifications.append(f"Calibre: {old_cal}→{new_cal}")
+        
+        if not modifications:
+            return True, "ℹ️ Aucune modification détectée"
         
         # Mettre à jour
         cursor.execute("""
             UPDATE stock_emplacements 
-            SET nombre_unites = %s, poids_total_kg = %s 
+            SET nombre_unites = %s, 
+                type_conditionnement = %s,
+                poids_total_kg = %s,
+                statut_lavage = %s,
+                calibre_min = %s,
+                calibre_max = %s,
+                updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
-        """, (int(nouvelle_quantite), float(nouveau_poids), empl_id))
+        """, (final_quantite, final_type, final_poids, final_statut, 
+              final_calibre_min, final_calibre_max, empl_id))
         
-        # Enregistrer mouvement
+        # Enregistrer mouvement de traçabilité
         user = st.session_state.get('username', 'system')
+        notes_modif = " | ".join(modifications)
         
         cursor.execute("""
             INSERT INTO stock_mouvements (
@@ -492,14 +554,13 @@ def modify_emplacement(empl_id, nouvelle_quantite):
                 notes
             ) VALUES (%s, 'MODIFICATION', %s, %s, %s, %s, %s, %s, %s, %s)
         """, (int(empl['lot_id']), empl['site_stockage'], empl['emplacement_stockage'],
-              int(nouvelle_quantite), empl['type_conditionnement'], float(nouveau_poids), user, user,
-              f"Ancienne quantité: {empl['nombre_unites']}"))
+              final_quantite, final_type, final_poids, user, user, notes_modif))
         
         conn.commit()
         cursor.close()
         conn.close()
         
-        return True, "✅ Emplacement modifié"
+        return True, f"✅ Emplacement modifié ({len(modifications)} changement(s))"
         
     except Exception as e:
         if 'conn' in locals():
@@ -813,13 +874,64 @@ if len(lots_to_display) > 0:
                 
                 st.markdown("---")
                 
-                # Tableau emplacements
+                # Tableau emplacements avec calibres
                 st.subheader(f"📋 Emplacements - Lot {lot_info['code_lot_interne']}")
                 
-                display_cols = ['id', 'site_stockage', 'emplacement_stockage', 'nombre_unites', 
-                               'type_conditionnement', 'poids_total_kg', 'statut_lavage_display']
+                # ⭐ FILTRES CALIBRE (par seuil)
+                with st.expander("🔍 Filtres calibre", expanded=False):
+                    col_f1, col_f2, col_f3 = st.columns(3)
+                    
+                    with col_f1:
+                        filtre_cal_min = st.number_input(
+                            "Calibre min ≥", min_value=0, max_value=100, value=0,
+                            key=f"filtre_cal_min_{lot_id}",
+                            help="Afficher uniquement les emplacements avec calibre min ≥ cette valeur"
+                        )
+                    
+                    with col_f2:
+                        filtre_cal_max = st.number_input(
+                            "Calibre max ≤", min_value=0, max_value=100, value=100,
+                            key=f"filtre_cal_max_{lot_id}",
+                            help="Afficher uniquement les emplacements avec calibre max ≤ cette valeur"
+                        )
+                    
+                    with col_f3:
+                        STATUTS_FILTRE = ["Tous", "BRUT", "LAVÉ", "GRENAILLES_BRUTES", "GRENAILLES_LAVÉES"]
+                        filtre_statut = st.selectbox("Statut", STATUTS_FILTRE, key=f"filtre_statut_{lot_id}")
                 
-                df_display = df_empl[display_cols].copy()
+                # Appliquer filtres
+                df_empl_filtre = df_empl.copy()
+                
+                if filtre_cal_min > 0:
+                    df_empl_filtre = df_empl_filtre[
+                        (df_empl_filtre['calibre_min'].fillna(0) >= filtre_cal_min)
+                    ]
+                
+                if filtre_cal_max < 100:
+                    df_empl_filtre = df_empl_filtre[
+                        (df_empl_filtre['calibre_max'].fillna(100) <= filtre_cal_max)
+                    ]
+                
+                if filtre_statut != "Tous":
+                    df_empl_filtre = df_empl_filtre[
+                        df_empl_filtre['statut_lavage'] == filtre_statut
+                    ]
+                
+                # Message si filtrage actif
+                if len(df_empl_filtre) != len(df_empl):
+                    st.info(f"🔍 **{len(df_empl_filtre)}** emplacements affichés (sur {len(df_empl)} total)")
+                
+                # Créer colonne calibre formatée
+                df_empl_filtre['calibre_display'] = df_empl_filtre.apply(
+                    lambda row: f"{int(row['calibre_min'])}-{int(row['calibre_max'])}" 
+                    if pd.notna(row['calibre_min']) and pd.notna(row['calibre_max']) 
+                    else "-", axis=1
+                )
+                
+                display_cols = ['id', 'site_stockage', 'emplacement_stockage', 'nombre_unites', 
+                               'type_conditionnement', 'poids_total_kg', 'statut_lavage_display', 'calibre_display']
+                
+                df_display = df_empl_filtre[display_cols].copy()
                 
                 # Formatter les colonnes numériques
                 df_display['nombre_unites_fmt'] = df_display['nombre_unites'].apply(format_number_fr)
@@ -832,7 +944,8 @@ if len(lots_to_display) > 0:
                     'nombre_unites_fmt': 'Pallox',
                     'type_conditionnement': 'Type',
                     'poids_total_kg_fmt': 'Poids (kg)',
-                    'statut_lavage_display': 'Statut'
+                    'statut_lavage_display': 'Statut',
+                    'calibre_display': 'Calibre'
                 })
                 
                 # Supprimer colonnes non formatées
@@ -870,7 +983,7 @@ if len(lots_to_display) > 0:
                         st.session_state[f'show_delete_form_{lot_id}'] = True
                         st.rerun()
                 
-                # ⭐ FORMULAIRE AJOUTER - AVEC DONNÉES DU LOT PRÉ-REMPLIES
+                # ⭐ FORMULAIRE AJOUTER - AVEC CALIBRE ET STATUT
                 if st.session_state.get(f'show_add_form_{lot_id}', False):
                     st.markdown("---")
                     st.markdown(f"##### ➕ Ajouter Emplacement - Lot {lot_info['code_lot_interne']}")
@@ -914,6 +1027,29 @@ if len(lots_to_display) > 0:
                         
                         poids_theorique = nombre * poids_unit_theorique
                     
+                    # ⭐ STATUT LAVAGE ET CALIBRE
+                    st.markdown("---")
+                    st.markdown("**🏷️ Statut et Calibre**")
+                    
+                    col_statut, col_cal_min, col_cal_max = st.columns([2, 1, 1])
+                    
+                    with col_statut:
+                        STATUTS = ["BRUT", "LAVÉ", "GRENAILLES_BRUTES", "GRENAILLES_LAVÉES"]
+                        statut_lavage = st.selectbox("Statut lavage *", options=STATUTS, index=0, key=f"add_statut_{lot_id}")
+                    
+                    with col_cal_min:
+                        # Pré-remplir avec calibre du lot si disponible
+                        cal_min_defaut = int(lot_info.get('calibre_min') or 0)
+                        calibre_min = st.number_input("Calibre min *", min_value=0, max_value=100, value=cal_min_defaut, key=f"add_cal_min_{lot_id}")
+                    
+                    with col_cal_max:
+                        cal_max_defaut = int(lot_info.get('calibre_max') or 75)
+                        calibre_max = st.number_input("Calibre max *", min_value=0, max_value=100, value=cal_max_defaut, key=f"add_cal_max_{lot_id}")
+                    
+                    # Validation calibre
+                    if calibre_min >= calibre_max:
+                        st.error("❌ Calibre min doit être < calibre max")
+                    
                     # ⭐ POIDS MODIFIABLE (ligne complète)
                     st.markdown("---")
                     st.markdown("**⚖️ Poids Total**")
@@ -949,13 +1085,16 @@ if len(lots_to_display) > 0:
                     col_save, col_cancel = st.columns(2)
                     
                     with col_save:
-                        if st.button("💾 Enregistrer", key=f"save_add_{lot_id}", type="primary", use_container_width=True):
+                        can_save = calibre_min < calibre_max
+                        if st.button("💾 Enregistrer", key=f"save_add_{lot_id}", type="primary", use_container_width=True, disabled=not can_save):
                             if site and emplacement and nombre and type_cond:
-                                # ⭐ Passer le poids saisi à la fonction
+                                # ⭐ Passer le poids saisi, statut et calibre à la fonction
                                 success, message = add_emplacement(
                                     lot_id, site, emplacement, nombre, type_cond,
-                                    statut_lavage='BRUT',
-                                    poids_total_saisi=poids_total_saisi
+                                    statut_lavage=statut_lavage,
+                                    poids_total_saisi=poids_total_saisi,
+                                    calibre_min=calibre_min,
+                                    calibre_max=calibre_max
                                 )
                                 if success:
                                     st.success(message)
@@ -1033,45 +1172,134 @@ if len(lots_to_display) > 0:
                     else:
                         st.info("👆 Sélectionnez un emplacement source")
                 
-                # ⭐ FORMULAIRE MODIFIER
+                # ⭐ FORMULAIRE MODIFIER COMPLET (type, quantité, statut, calibre, poids)
                 if st.session_state.get(f'show_modify_form_{lot_id}', False):
                     st.markdown("---")
-                    st.markdown(f"##### ✏️ Modifier Quantité - Lot {lot_info['code_lot_interne']}")
+                    st.markdown(f"##### ✏️ Modifier Emplacement - Lot {lot_info['code_lot_interne']}")
                     
-                    # Sélection emplacement
-                    empl_options = {f"{row['id']} - {row['site_stockage']} / {row['emplacement_stockage']} ({format_number_fr(row['nombre_unites'])} pallox)": row['id'] 
-                                   for _, row in df_empl.iterrows()}
+                    # Sélection emplacement avec plus d'infos
+                    empl_options = {
+                        f"{row['id']} - {row['site_stockage']}/{row['emplacement_stockage']} | {row['statut_lavage']} | {format_number_fr(row['nombre_unites'])} {row['type_conditionnement']} | {int(row['calibre_min'] or 0)}-{int(row['calibre_max'] or 0)}": row['id'] 
+                        for _, row in df_empl.iterrows()
+                    }
                     
                     selected_empl = st.selectbox("Emplacement à modifier *", options=[""] + list(empl_options.keys()), key=f"modify_empl_{lot_id}")
                     
                     if selected_empl and selected_empl != "":
                         empl_id = empl_options[selected_empl]
                         
-                        # Récupérer quantité actuelle
+                        # Récupérer données actuelles
                         empl_data = df_empl[df_empl['id'] == empl_id].iloc[0]
-                        quantite_actuelle = int(empl_data['nombre_unites'])
                         
-                        nouvelle_quantite = st.number_input(
-                            "Nouvelle quantité *",
-                            min_value=1,
-                            value=quantite_actuelle,
-                            key=f"modify_qty_{lot_id}"
-                        )
+                        st.info(f"📍 Valeurs actuelles : **{int(empl_data['nombre_unites'])} {empl_data['type_conditionnement']}** | **{empl_data['statut_lavage']}** | Calibre **{int(empl_data['calibre_min'] or 0)}-{int(empl_data['calibre_max'] or 0)}** | **{format_number_fr(empl_data['poids_total_kg'])} kg**")
+                        
+                        st.markdown("---")
+                        
+                        # ⭐ SECTION 1 : Type et Quantité
+                        st.markdown("**📦 Type et Quantité**")
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            TYPES = ["Pallox", "Petit Pallox", "Big Bag"]
+                            type_actuel_idx = TYPES.index(empl_data['type_conditionnement']) if empl_data['type_conditionnement'] in TYPES else 0
+                            nouveau_type = st.selectbox("Type conditionnement", options=TYPES, index=type_actuel_idx, key=f"modify_type_{lot_id}")
+                        
+                        with col2:
+                            quantite_actuelle = int(empl_data['nombre_unites'])
+                            nouvelle_quantite = st.number_input(
+                                "Nombre unités",
+                                min_value=1,
+                                value=quantite_actuelle,
+                                key=f"modify_qty_{lot_id}"
+                            )
+                        
+                        # ⭐ SECTION 2 : Statut Lavage
+                        st.markdown("---")
+                        st.markdown("**🏷️ Statut Lavage**")
+                        
+                        STATUTS = ["BRUT", "LAVÉ", "GRENAILLES_BRUTES", "GRENAILLES_LAVÉES"]
+                        statut_actuel_idx = STATUTS.index(empl_data['statut_lavage']) if empl_data['statut_lavage'] in STATUTS else 0
+                        nouveau_statut = st.selectbox("Statut lavage", options=STATUTS, index=statut_actuel_idx, key=f"modify_statut_{lot_id}")
+                        
+                        if nouveau_statut != empl_data['statut_lavage']:
+                            st.warning(f"⚠️ Changement de statut : **{empl_data['statut_lavage']}** → **{nouveau_statut}** (sera tracé dans l'historique)")
+                        
+                        # ⭐ SECTION 3 : Calibre
+                        st.markdown("---")
+                        st.markdown("**📏 Calibre**")
+                        col_cal_min, col_cal_max = st.columns(2)
+                        
+                        with col_cal_min:
+                            nouveau_calibre_min = st.number_input(
+                                "Calibre min",
+                                min_value=0, max_value=100,
+                                value=int(empl_data['calibre_min'] or 0),
+                                key=f"modify_cal_min_{lot_id}"
+                            )
+                        
+                        with col_cal_max:
+                            nouveau_calibre_max = st.number_input(
+                                "Calibre max",
+                                min_value=0, max_value=100,
+                                value=int(empl_data['calibre_max'] or 75),
+                                key=f"modify_cal_max_{lot_id}"
+                            )
+                        
+                        # Validation calibre
+                        if nouveau_calibre_min >= nouveau_calibre_max:
+                            st.error("❌ Calibre min doit être < calibre max")
+                        
+                        # ⭐ SECTION 4 : Poids
+                        st.markdown("---")
+                        st.markdown("**⚖️ Poids**")
+                        
+                        # Calcul poids théorique selon nouveau type
+                        if nouveau_type == 'Pallox':
+                            poids_unit_theorique = 1900
+                        elif nouveau_type == 'Petit Pallox':
+                            poids_unit_theorique = 1200
+                        else:
+                            poids_unit_theorique = 1600
+                        
+                        poids_theorique = nouvelle_quantite * poids_unit_theorique
+                        
+                        col_info, col_poids = st.columns([1, 1])
+                        
+                        with col_info:
+                            st.info(f"💡 **Poids théorique** : {format_number_fr(poids_theorique)} kg\n\n({nouvelle_quantite} × {poids_unit_theorique} kg)")
+                        
+                        with col_poids:
+                            nouveau_poids = st.number_input(
+                                "Poids Total (kg)",
+                                min_value=0.0,
+                                value=float(poids_theorique),
+                                step=100.0,
+                                key=f"modify_poids_{lot_id}_{nouvelle_quantite}_{nouveau_type}"
+                            )
+                        
+                        st.markdown("---")
                         
                         col_save, col_cancel = st.columns(2)
                         
+                        can_save = nouveau_calibre_min < nouveau_calibre_max
+                        
                         with col_save:
-                            if st.button("💾 Modifier", key=f"save_modify_{lot_id}", type="primary", use_container_width=True):
-                                if nouvelle_quantite != quantite_actuelle:
-                                    success, message = modify_emplacement(empl_id, nouvelle_quantite)
-                                    if success:
-                                        st.success(message)
-                                        st.session_state.pop(f'show_modify_form_{lot_id}')
-                                        st.rerun()
-                                    else:
-                                        st.error(message)
+                            if st.button("💾 Enregistrer", key=f"save_modify_{lot_id}", type="primary", use_container_width=True, disabled=not can_save):
+                                success, message = modify_emplacement_complet(
+                                    empl_id,
+                                    nouvelle_quantite=nouvelle_quantite,
+                                    nouveau_type=nouveau_type,
+                                    nouveau_statut=nouveau_statut,
+                                    nouveau_poids=nouveau_poids,
+                                    nouveau_calibre_min=nouveau_calibre_min,
+                                    nouveau_calibre_max=nouveau_calibre_max
+                                )
+                                if success:
+                                    st.success(message)
+                                    st.session_state.pop(f'show_modify_form_{lot_id}')
+                                    st.rerun()
                                 else:
-                                    st.info("ℹ️ Quantité inchangée")
+                                    st.error(message)
                         
                         with col_cancel:
                             if st.button("❌ Annuler", key=f"cancel_modify_{lot_id}", use_container_width=True):
