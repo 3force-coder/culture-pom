@@ -413,9 +413,19 @@ def demarrer_job(job_id):
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
-def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
-                site_dest, emplacement_dest, notes=""):
+def terminer_job(job_id, 
+                 # Sorties LAVÉ
+                 nb_pallox_lave, type_cond_lave, poids_lave, calibre_min_lave, calibre_max_lave,
+                 # Sorties GRENAILLES
+                 nb_pallox_gren, type_cond_gren, poids_grenailles, calibre_min_gren, calibre_max_gren,
+                 # Déchets (reste en kg)
+                 poids_dechets,
+                 # Destination
+                 site_dest, emplacement_dest, notes=""):
     """Termine un job avec création stocks LAVÉ/GRENAILLES et déduction source
+    
+    Nouvelle version : prend en entrée les pallox + type + calibre pour chaque sortie.
+    Le poids peut être ajusté par l'utilisateur après calcul auto.
     
     Si source = BRUT → crée LAVÉ + GRENAILLES_BRUTES
     Si source = GRENAILLES_BRUTES → crée GRENAILLES_LAVÉES (pas de sous-grenailles)
@@ -535,34 +545,34 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
             statut_sortie = 'LAVÉ'
             type_stock_sortie = 'LAVÉ'
         
-        # Calculer le nombre de pallox LAVÉ basé sur le poids réel (poids/1900 arrondi sup, min 1)
-        nb_pallox_lave = max(1, math.ceil(poids_lave / 1900))
-        
+        # Utiliser les paramètres pallox et type fournis par l'utilisateur
         cursor.execute("""
             INSERT INTO stock_emplacements 
             (lot_id, site_stockage, emplacement_stockage, nombre_unites, 
-             type_conditionnement, poids_total_kg, type_stock, statut_lavage, lavage_job_id, is_active)
-            VALUES (%s, %s, %s, %s, 'Pallox', %s, %s, %s, %s, TRUE)
+             type_conditionnement, poids_total_kg, type_stock, statut_lavage, 
+             calibre_min, calibre_max, lavage_job_id, is_active)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
             RETURNING id
-        """, (job['lot_id'], site_dest, emplacement_dest, nb_pallox_lave, 
-              poids_lave, type_stock_sortie, statut_sortie, job_id))
+        """, (job['lot_id'], site_dest, emplacement_dest, int(nb_pallox_lave), 
+              type_cond_lave, float(poids_lave), type_stock_sortie, statut_sortie, 
+              int(calibre_min_lave), int(calibre_max_lave), job_id))
         stock_lave_id = cursor.fetchone()['id']
         
         # ============================================================
         # 3. CRÉER STOCK GRENAILLES_BRUTES (seulement si source = BRUT et grenailles > 0)
         # ============================================================
         stock_grenailles_id = None
-        if not is_grenailles_source and poids_grenailles > 0:
-            # Calculer nb pallox grenailles (poids/1900 arrondi sup, min 1)
-            nb_pallox_gren = max(1, math.ceil(poids_grenailles / 1900))
+        if not is_grenailles_source and poids_grenailles > 0 and nb_pallox_gren > 0:
             cursor.execute("""
                 INSERT INTO stock_emplacements 
                 (lot_id, site_stockage, emplacement_stockage, nombre_unites, 
-                 type_conditionnement, poids_total_kg, type_stock, statut_lavage, lavage_job_id, is_active)
-                VALUES (%s, %s, %s, %s, 'Pallox', %s, 'GRENAILLES', 'GRENAILLES_BRUTES', %s, TRUE)
+                 type_conditionnement, poids_total_kg, type_stock, statut_lavage, 
+                 calibre_min, calibre_max, lavage_job_id, is_active)
+                VALUES (%s, %s, %s, %s, %s, %s, 'GRENAILLES', 'GRENAILLES_BRUTES', %s, %s, %s, TRUE)
                 RETURNING id
-            """, (job['lot_id'], site_dest, emplacement_dest, nb_pallox_gren, 
-                  poids_grenailles, job_id))
+            """, (job['lot_id'], site_dest, emplacement_dest, int(nb_pallox_gren), 
+                  type_cond_gren, float(poids_grenailles), 
+                  int(calibre_min_gren), int(calibre_max_gren), job_id))
             stock_grenailles_id = cursor.fetchone()['id']
         
         # ============================================================
@@ -1255,15 +1265,58 @@ with tab1:
                                         st.session_state[f'show_finish_{elem["job_id"]}'] = True
                                         st.rerun()
                                     
-                                    # Popup tares
+                                    # Popup tares - NOUVELLE VERSION AVEC PALLOX ET CALIBRES
                                     if st.session_state.get(f'show_finish_{elem["job_id"]}', False):
-                                        with st.expander("📝 Saisie tares", expanded=True):
+                                        with st.expander("📝 Saisie résultats lavage", expanded=True):
                                             poids_brut = float(elem['poids_brut_kg']) if pd.notna(elem['poids_brut_kg']) else 0
+                                            TYPES_COND = ["Pallox", "Petit Pallox", "Big Bag"]
+                                            POIDS_UNIT = {"Pallox": 1900, "Petit Pallox": 1200, "Big Bag": 1600}
                                             
-                                            p_lave = st.number_input("Lavé (kg)", 0.0, poids_brut, poids_brut*0.75, step=100.0, key=f"p_lave_{elem['id']}")
-                                            p_gren = st.number_input("Grenailles (kg)", 0.0, poids_brut, poids_brut*0.05, step=50.0, key=f"p_gren_{elem['id']}")
+                                            st.markdown(f"**⚖️ Poids brut en entrée : {poids_brut:,.0f} kg**")
+                                            st.markdown("---")
+                                            
+                                            # ============ SECTION LAVÉ ============
+                                            st.markdown("### 🧼 Sortie LAVÉ")
+                                            col_l1, col_l2, col_l3 = st.columns([1, 1, 1])
+                                            
+                                            with col_l1:
+                                                nb_pallox_lave = st.number_input("Nb Pallox", min_value=0, value=int(poids_brut * 0.75 / 1900) or 1, key=f"nb_lave_{elem['id']}")
+                                                type_lave = st.selectbox("Type", TYPES_COND, key=f"type_lave_{elem['id']}")
+                                            
+                                            with col_l2:
+                                                # Poids auto calculé, modifiable
+                                                poids_lave_auto = nb_pallox_lave * POIDS_UNIT[type_lave]
+                                                p_lave = st.number_input("Poids (kg)", 0.0, poids_brut, float(poids_lave_auto), step=100.0, key=f"p_lave_{elem['id']}")
+                                            
+                                            with col_l3:
+                                                cal_min_lave = st.number_input("Calibre min", 0, 100, 35, key=f"cal_min_lave_{elem['id']}")
+                                                cal_max_lave = st.number_input("Calibre max", 0, 100, 75, key=f"cal_max_lave_{elem['id']}")
+                                            
+                                            st.markdown("---")
+                                            
+                                            # ============ SECTION GRENAILLES ============
+                                            st.markdown("### 🌾 Sortie GRENAILLES")
+                                            col_g1, col_g2, col_g3 = st.columns([1, 1, 1])
+                                            
+                                            with col_g1:
+                                                nb_pallox_gren = st.number_input("Nb Pallox", min_value=0, value=0, key=f"nb_gren_{elem['id']}")
+                                                type_gren = st.selectbox("Type", TYPES_COND, key=f"type_gren_{elem['id']}")
+                                            
+                                            with col_g2:
+                                                poids_gren_auto = nb_pallox_gren * POIDS_UNIT[type_gren]
+                                                p_gren = st.number_input("Poids (kg)", 0.0, poids_brut, float(poids_gren_auto), step=100.0, key=f"p_gren_{elem['id']}")
+                                            
+                                            with col_g3:
+                                                cal_min_gren = st.number_input("Calibre min", 0, 100, 20, key=f"cal_min_gren_{elem['id']}")
+                                                cal_max_gren = st.number_input("Calibre max", 0, 100, 35, key=f"cal_max_gren_{elem['id']}")
+                                            
+                                            st.markdown("---")
+                                            
+                                            # ============ SECTION DÉCHETS (reste en kg) ============
+                                            st.markdown("### 🗑️ Déchets")
                                             p_dech = st.number_input("Déchets (kg)", 0.0, poids_brut, poids_brut*0.05, step=50.0, key=f"p_dech_{elem['id']}")
                                             
+                                            # Terre calculée
                                             p_terre = poids_brut - p_lave - p_gren - p_dech
                                             
                                             # Affichage terre avec couleur selon cohérence
@@ -1272,19 +1325,42 @@ with tab1:
                                                 st.warning("⚠️ Données incohérentes ! Réduisez Lavé, Grenailles ou Déchets.")
                                                 terre_ok = False
                                             else:
-                                                st.metric("Terre", f"{p_terre:.0f} kg")
+                                                st.metric("Terre calculée", f"{p_terre:.0f} kg")
                                                 terre_ok = True
                                             
+                                            # Validation calibres
+                                            calibres_ok = (cal_min_lave < cal_max_lave) and (nb_pallox_gren == 0 or cal_min_gren < cal_max_gren)
+                                            if not calibres_ok:
+                                                st.error("❌ Calibre min doit être < calibre max")
+                                            
+                                            st.markdown("---")
+                                            
+                                            # ============ DESTINATION ============
+                                            st.markdown("### 📍 Destination")
                                             empls = get_emplacements_saint_flavy()
                                             empl = st.selectbox("Emplacement", [""] + [e[0] for e in empls], key=f"empl_{elem['id']}")
                                             
-                                            if st.button("✅ Valider", key=f"val_finish_{elem['id']}", type="primary", disabled=not terre_ok):
+                                            can_validate = terre_ok and calibres_ok and empl != ""
+                                            
+                                            if st.button("✅ Valider", key=f"val_finish_{elem['id']}", type="primary", disabled=not can_validate):
                                                 if not empl:
                                                     st.warning("⚠️ Emplacement requis")
                                                 elif not terre_ok:
                                                     st.error("❌ Corrigez les poids avant validation")
+                                                elif not calibres_ok:
+                                                    st.error("❌ Corrigez les calibres avant validation")
                                                 else:
-                                                    success, msg = terminer_job(int(elem['job_id']), p_lave, p_gren, p_dech, "SAINT_FLAVY", empl)
+                                                    success, msg = terminer_job(
+                                                        int(elem['job_id']),
+                                                        # Sortie LAVÉ
+                                                        nb_pallox_lave, type_lave, p_lave, cal_min_lave, cal_max_lave,
+                                                        # Sortie GRENAILLES
+                                                        nb_pallox_gren, type_gren, p_gren, cal_min_gren, cal_max_gren,
+                                                        # Déchets
+                                                        p_dech,
+                                                        # Destination
+                                                        "SAINT_FLAVY", empl
+                                                    )
                                                     if success:
                                                         st.success(msg)
                                                         st.session_state.pop(f'show_finish_{elem["job_id"]}', None)
