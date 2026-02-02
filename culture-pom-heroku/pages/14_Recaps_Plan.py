@@ -1,10 +1,22 @@
 """
-Page 14 - Récaps Plan Récolte
-KPIs globaux + 5 vues agrégées (Mois, Variété, Marque, Type, Croisé)
+Page 14 - Récaps Plan Récolte ENHANCED
+KPIs globaux + 5 vues agrégées + 2 nouveaux onglets d'ajustement
 VERSION DÉCIMAUX - Support hectares par pas de 0.5
+
+NOUVEAUTÉS :
+- ⭐ Récap Marque+Type : Ajustement volume total avec répartition proportionnelle
+- ⭐ Récap Variété : Modification masse taux déchets/rendement
+
+ATTENTION COLONNES GENERATED :
+- volume_brut_t = volume_net_t / (1 - dechets_pct/100)
+- hectares_necessaires = volume_brut_t / rendement_t_ha
+→ Ne JAMAIS les modifier dans les UPDATE, elles se recalculent auto
 """
 import streamlit as st
 import pandas as pd
+import numpy as np
+from datetime import datetime
+import time
 from database import get_connection
 from components import show_footer
 from auth import require_access, can_edit, can_delete, get_current_username
@@ -30,6 +42,20 @@ st.markdown("""
         color: white;
         text-align: center;
     }
+    .recap-card {
+        background: linear-gradient(135deg, #51cf66 0%, #40c057 100%);
+        padding: 1.5rem;
+        border-radius: 0.8rem;
+        color: white;
+        margin: 1rem 0;
+    }
+    .impact-card {
+        background: #fff3e0;
+        border-left: 4px solid #ff9800;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 1rem 0;
+    }
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
     }
@@ -51,7 +77,23 @@ st.markdown("*Synthèses et analyses du plan de récolte*")
 st.markdown("---")
 
 # ==========================================
-# FONCTIONS DE CHARGEMENT
+# FONCTIONS UTILITAIRES
+# ==========================================
+
+def convert_to_native(value):
+    """Convertit numpy/pandas types en types Python natifs"""
+    if pd.isna(value) or value is None:
+        return None
+    if isinstance(value, (np.int64, np.int32, np.int16, np.int8)):
+        return int(value)
+    if isinstance(value, (np.float64, np.float32)):
+        return float(value)
+    if isinstance(value, np.bool_):
+        return bool(value)
+    return value
+
+# ==========================================
+# FONCTIONS DE CHARGEMENT (EXISTANTES)
 # ==========================================
 
 @st.cache_data(ttl=60)
@@ -61,7 +103,6 @@ def get_kpis_globaux(campagne):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ✅ MODIFIÉ : ROUND au lieu de CEIL pour décimaux
         cursor.execute("""
             SELECT 
                 COUNT(*) as nb_lignes,
@@ -81,7 +122,6 @@ def get_kpis_globaux(campagne):
         conn.close()
         
         if row:
-            # ✅ MODIFIÉ : float au lieu de int pour décimaux
             return {
                 'nb_lignes': row['nb_lignes'],
                 'nb_varietes': row['nb_varietes'],
@@ -105,7 +145,6 @@ def get_recap_par_mois(campagne):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ✅ MODIFIÉ : ROUND au lieu de CEIL
         cursor.execute("""
             SELECT 
                 mois,
@@ -151,7 +190,6 @@ def get_recap_par_variete(campagne):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ✅ MODIFIÉ : ROUND au lieu de CEIL
         cursor.execute("""
             SELECT 
                 variete,
@@ -196,12 +234,11 @@ def get_recap_par_marque(campagne):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ✅ MODIFIÉ : ROUND au lieu de CEIL
         cursor.execute("""
             SELECT 
-                COALESCE(marque, '(Non défini)') as marque,
+                marque,
                 COUNT(*) as nb_lignes,
-                COUNT(DISTINCT variete) as nb_varietes,
+                COUNT(DISTINCT type_produit) as nb_types,
                 SUM(volume_net_t) as volume_net,
                 SUM(volume_brut_t) as volume_brut,
                 SUM(hectares_necessaires) as hectares,
@@ -221,7 +258,7 @@ def get_recap_par_marque(campagne):
             df = df.rename(columns={
                 'marque': 'Marque',
                 'nb_lignes': 'Lignes',
-                'nb_varietes': 'Variétés',
+                'nb_types': 'Types',
                 'volume_net': 'Volume Net (T)',
                 'volume_brut': 'Volume Brut (T)',
                 'hectares': 'Hectares',
@@ -241,12 +278,11 @@ def get_recap_par_type(campagne):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # ✅ MODIFIÉ : ROUND au lieu de CEIL
         cursor.execute("""
             SELECT 
-                COALESCE(type_produit, '(Non défini)') as type_produit,
+                type_produit,
                 COUNT(*) as nb_lignes,
-                COUNT(DISTINCT variete) as nb_varietes,
+                COUNT(DISTINCT marque) as nb_marques,
                 SUM(volume_net_t) as volume_net,
                 SUM(volume_brut_t) as volume_brut,
                 SUM(hectares_necessaires) as hectares,
@@ -266,7 +302,7 @@ def get_recap_par_type(campagne):
             df = df.rename(columns={
                 'type_produit': 'Type Produit',
                 'nb_lignes': 'Lignes',
-                'nb_varietes': 'Variétés',
+                'nb_marques': 'Marques',
                 'volume_net': 'Volume Net (T)',
                 'volume_brut': 'Volume Brut (T)',
                 'hectares': 'Hectares',
@@ -280,23 +316,26 @@ def get_recap_par_type(campagne):
 
 
 @st.cache_data(ttl=60)
-def get_recap_croise(campagne):
-    """Récap croisé variété × mois"""
+def get_besoins_avec_couverture(campagne):
+    """Besoins mensuels avec couverture"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
         cursor.execute("""
             SELECT 
-                variete,
                 mois,
-                mois_numero,
+                variete,
                 SUM(volume_net_t) as volume_net,
-                SUM(hectares_necessaires) as hectares
+                SUM(volume_brut_t) as volume_brut,
+                SUM(hectares_necessaires) as hectares_necessaires,
+                ROUND(SUM(hectares_necessaires)::NUMERIC, 1) as hectares_arrondi,
+                AVG(taux_couverture_cible) as taux_couverture_moyen,
+                SUM(COALESCE(hectares_ajustes, hectares_necessaires)) as hectares_avec_couverture
             FROM plans_recolte
             WHERE campagne = %s AND is_active = TRUE
-            GROUP BY variete, mois, mois_numero
-            ORDER BY variete, mois_numero
+            GROUP BY mois, variete
+            ORDER BY mois, variete
         """, (campagne,))
         
         rows = cursor.fetchall()
@@ -306,10 +345,14 @@ def get_recap_croise(campagne):
         if rows:
             df = pd.DataFrame(rows)
             df = df.rename(columns={
-                'variete': 'Variété',
                 'mois': 'Mois',
-                'volume_net': 'Volume Net',
-                'hectares': 'Hectares'
+                'variete': 'Variété',
+                'volume_net': 'Volume Net (T)',
+                'volume_brut': 'Volume Brut (T)',
+                'hectares_necessaires': 'Ha Nécessaires',
+                'hectares_arrondi': 'Ha Arrondi',
+                'taux_couverture_moyen': 'Taux Couverture (%)',
+                'hectares_avec_couverture': 'Ha Avec Couverture'
             })
             return df
         return pd.DataFrame()
@@ -318,434 +361,803 @@ def get_recap_croise(campagne):
         return pd.DataFrame()
 
 
+# ==========================================
+# 🆕 FONCTIONS NOUVEAUX ONGLETS
+# ==========================================
+
+# ========== MARQUE + TYPE ==========
+
 @st.cache_data(ttl=60)
-def get_besoins_avec_couverture(campagne):
-    """Récupère les besoins avec taux de couverture"""
+def get_marques_disponibles(campagne):
+    """Liste des marques disponibles"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT 
-                b.id,
-                b.variete,
-                b.mois,
-                b.mois_numero,
-                b.volume_net_t,
-                b.volume_brut_t,
-                b.total_hectares_arrondi as hectares_besoin,
-                COALESCE(b.total_hectares_affectes, 0) as hectares_affectes,
-                COALESCE(b.taux_couverture_pct, 0) as couverture_pct,
-                COALESCE(b.is_complet, FALSE) as complet
-            FROM plans_recolte_besoins b
-            WHERE b.campagne = %s AND b.is_active = TRUE
-            ORDER BY b.mois_numero, b.variete
+            SELECT DISTINCT marque
+            FROM plans_recolte
+            WHERE campagne = %s AND is_active = TRUE AND marque IS NOT NULL
+            ORDER BY marque
         """, (campagne,))
         
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
         
-        if rows:
-            df = pd.DataFrame(rows)
-            df = df.rename(columns={
-                'variete': 'Variété',
-                'mois': 'Mois',
-                'volume_net_t': 'Volume Net (T)',
-                'volume_brut_t': 'Volume Brut (T)',
-                'hectares_besoin': 'Ha Besoin',
-                'hectares_affectes': 'Ha Affectés',
-                'couverture_pct': 'Couverture %',
-                'complet': 'Complet'
-            })
-            return df
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Erreur besoins : {e}")
-        return pd.DataFrame()
-
-
-@st.cache_data(ttl=60)
-def get_campagnes_disponibles():
-    """Liste des campagnes avec données"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT DISTINCT campagne 
-            FROM plans_recolte 
-            WHERE is_active = TRUE
-            ORDER BY campagne DESC
-        """)
-        
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        
-        return [row['campagne'] for row in rows] if rows else []
+        return [row['marque'] for row in rows] if rows else []
     except Exception as e:
         st.error(f"Erreur : {e}")
         return []
 
 
+@st.cache_data(ttl=60)
+def get_types_pour_marque(campagne, marque):
+    """Types produits disponibles pour une marque"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT DISTINCT type_produit
+            FROM plans_recolte
+            WHERE campagne = %s AND marque = %s AND is_active = TRUE AND type_produit IS NOT NULL
+            ORDER BY type_produit
+        """, (campagne, marque))
+        
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        return [row['type_produit'] for row in rows] if rows else []
+    except Exception as e:
+        st.error(f"Erreur : {e}")
+        return []
+
+
+@st.cache_data(ttl=60)
+def get_recap_marque_type(campagne, marque, type_produit):
+    """Récap pour une combinaison Marque + Type"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Total annuel
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as nb_lignes,
+                COUNT(DISTINCT mois) as nb_mois,
+                SUM(volume_net_t) as total_volume_net,
+                SUM(volume_brut_t) as total_volume_brut
+            FROM plans_recolte
+            WHERE campagne = %s AND marque = %s AND type_produit = %s AND is_active = TRUE
+        """, (campagne, marque, type_produit))
+        
+        total = cursor.fetchone()
+        
+        # Détail par mois
+        cursor.execute("""
+            SELECT 
+                mois,
+                COUNT(*) as nb_lignes,
+                SUM(volume_net_t) as volume_net
+            FROM plans_recolte
+            WHERE campagne = %s AND marque = %s AND type_produit = %s AND is_active = TRUE
+            GROUP BY mois
+            ORDER BY mois
+        """, (campagne, marque, type_produit))
+        
+        detail = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        result = {
+            'total': {
+                'nb_lignes': total['nb_lignes'],
+                'nb_mois': total['nb_mois'],
+                'volume_net': float(total['total_volume_net'] or 0)
+            },
+            'detail': pd.DataFrame(detail) if detail else pd.DataFrame()
+        }
+        
+        return result
+    except Exception as e:
+        st.error(f"Erreur : {e}")
+        return None
+
+
+def ajuster_volume_proportionnel(marque, type_produit, nouveau_total, campagne):
+    """
+    Ajuste le volume total d'une combinaison Marque+Type
+    en répartissant proportionnellement sur tous les mois
+    
+    ⚠️ IMPORTANT : Ne modifie que volume_net_t
+    Les colonnes GENERATED (volume_brut_t, hectares_necessaires) se recalculent auto
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Récupérer total actuel
+        cursor.execute("""
+            SELECT SUM(volume_net_t) as total_actuel
+            FROM plans_recolte
+            WHERE campagne = %s AND marque = %s AND type_produit = %s AND is_active = TRUE
+        """, (campagne, marque, type_produit))
+        
+        total_actuel = float(cursor.fetchone()['total_actuel'] or 0)
+        
+        if total_actuel == 0:
+            cursor.close()
+            conn.close()
+            return False, "❌ Total actuel = 0, impossible d'ajuster"
+        
+        # Calculer ratio
+        nouveau_total_float = float(nouveau_total)
+        ratio = nouveau_total_float / total_actuel
+        
+        # Mettre à jour UNIQUEMENT volume_net_t (les colonnes GENERATED se recalculent auto)
+        updated_by = get_current_username()
+        
+        cursor.execute("""
+            UPDATE plans_recolte
+            SET volume_net_t = volume_net_t * %s,
+                updated_by = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE campagne = %s 
+              AND marque = %s 
+              AND type_produit = %s 
+              AND is_active = TRUE
+        """, (ratio, updated_by, campagne, marque, type_produit))
+        
+        nb_updated = cursor.rowcount
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, f"✅ {nb_updated} ligne(s) ajustée(s) - Ratio: {ratio:.3f}"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
+        return False, f"❌ Erreur : {str(e)}"
+
+
+# ========== VARIÉTÉ ==========
+
+@st.cache_data(ttl=60)
+def get_varietes_disponibles(campagne):
+    """Liste des variétés disponibles"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT DISTINCT variete
+            FROM plans_recolte
+            WHERE campagne = %s AND is_active = TRUE
+            ORDER BY variete
+        """, (campagne,))
+        
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        return [row['variete'] for row in rows] if rows else []
+    except Exception as e:
+        st.error(f"Erreur : {e}")
+        return []
+
+
+@st.cache_data(ttl=60)
+def get_recap_variete_detail(campagne, variete):
+    """Récap détaillé pour une variété"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Total
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as nb_lignes,
+                SUM(volume_net_t) as total_volume_net,
+                AVG(dechets_pct) as dechets_moyen,
+                AVG(rendement_t_ha) as rendement_moyen
+            FROM plans_recolte
+            WHERE campagne = %s AND variete = %s AND is_active = TRUE
+        """, (campagne, variete))
+        
+        total = cursor.fetchone()
+        
+        # Détail par mois
+        cursor.execute("""
+            SELECT 
+                mois,
+                COUNT(*) as nb_lignes,
+                SUM(volume_net_t) as volume_net,
+                AVG(dechets_pct) as dechets_pct,
+                AVG(rendement_t_ha) as rendement_t_ha
+            FROM plans_recolte
+            WHERE campagne = %s AND variete = %s AND is_active = TRUE
+            GROUP BY mois
+            ORDER BY mois
+        """, (campagne, variete))
+        
+        detail = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        result = {
+            'total': {
+                'nb_lignes': total['nb_lignes'],
+                'volume_net': float(total['total_volume_net'] or 0),
+                'dechets_moyen': float(total['dechets_moyen'] or 0),
+                'rendement_moyen': float(total['rendement_moyen'] or 0)
+            },
+            'detail': pd.DataFrame(detail) if detail else pd.DataFrame()
+        }
+        
+        return result
+    except Exception as e:
+        st.error(f"Erreur : {e}")
+        return None
+
+
+def ajuster_dechets_variete(variete, nouveau_dechets_pct, campagne, mois_list=None):
+    """
+    Ajuste le taux de déchets pour une variété
+    
+    Args:
+        variete: Nom de la variété
+        nouveau_dechets_pct: Nouveau taux de déchets (%)
+        campagne: Campagne
+        mois_list: Liste de mois optionnelle (si None, applique sur tous)
+    
+    ⚠️ IMPORTANT : Ne modifie que dechets_pct
+    La colonne GENERATED volume_brut_t se recalcule auto
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        updated_by = get_current_username()
+        nouveau_dechets_float = float(nouveau_dechets_pct)
+        
+        if mois_list:
+            # Appliquer sur certains mois uniquement
+            placeholders = ','.join(['%s'] * len(mois_list))
+            query = f"""
+                UPDATE plans_recolte
+                SET dechets_pct = %s,
+                    updated_by = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE campagne = %s 
+                  AND variete = %s 
+                  AND mois IN ({placeholders})
+                  AND is_active = TRUE
+            """
+            params = [nouveau_dechets_float, updated_by, campagne, variete] + mois_list
+        else:
+            # Appliquer sur tous les mois
+            query = """
+                UPDATE plans_recolte
+                SET dechets_pct = %s,
+                    updated_by = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE campagne = %s 
+                  AND variete = %s 
+                  AND is_active = TRUE
+            """
+            params = [nouveau_dechets_float, updated_by, campagne, variete]
+        
+        cursor.execute(query, params)
+        nb_updated = cursor.rowcount
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, f"✅ {nb_updated} ligne(s) mise(s) à jour"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
+        return False, f"❌ Erreur : {str(e)}"
+
+
+def ajuster_rendement_variete(variete, nouveau_rendement, campagne, mois_list=None):
+    """
+    Ajuste le rendement pour une variété
+    
+    Args:
+        variete: Nom de la variété
+        nouveau_rendement: Nouveau rendement (T/ha)
+        campagne: Campagne
+        mois_list: Liste de mois optionnelle (si None, applique sur tous)
+    
+    ⚠️ IMPORTANT : Ne modifie que rendement_t_ha
+    La colonne GENERATED hectares_necessaires se recalcule auto
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        updated_by = get_current_username()
+        nouveau_rendement_float = float(nouveau_rendement)
+        
+        if mois_list:
+            # Appliquer sur certains mois uniquement
+            placeholders = ','.join(['%s'] * len(mois_list))
+            query = f"""
+                UPDATE plans_recolte
+                SET rendement_t_ha = %s,
+                    updated_by = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE campagne = %s 
+                  AND variete = %s 
+                  AND mois IN ({placeholders})
+                  AND is_active = TRUE
+            """
+            params = [nouveau_rendement_float, updated_by, campagne, variete] + mois_list
+        else:
+            # Appliquer sur tous les mois
+            query = """
+                UPDATE plans_recolte
+                SET rendement_t_ha = %s,
+                    updated_by = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE campagne = %s 
+                  AND variete = %s 
+                  AND is_active = TRUE
+            """
+            params = [nouveau_rendement_float, updated_by, campagne, variete]
+        
+        cursor.execute(query, params)
+        nb_updated = cursor.rowcount
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, f"✅ {nb_updated} ligne(s) mise(s) à jour"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
+        return False, f"❌ Erreur : {str(e)}"
+
+
 # ==========================================
-# SÉLECTEUR CAMPAGNE
+# INTERFACE PRINCIPALE
 # ==========================================
 
-campagnes = get_campagnes_disponibles()
-
-if not campagnes:
-    st.warning("⚠️ Aucune campagne disponible. Créez d'abord un plan de récolte.")
-    show_footer()
-    st.stop()
-
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    campagne = st.selectbox("Campagne", campagnes, key="campagne_recap")
-
-with col2:
-    if st.button("🔄 Rafraîchir", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
+# Sélection campagne
+campagne = st.selectbox(
+    "📅 Campagne",
+    options=[2026, 2027, 2028],
+    index=0,
+    key="select_campagne"
+)
 
 st.markdown("---")
 
-# ==========================================
-# KPIs GLOBAUX
-# ==========================================
-
+# KPIs globaux
 kpis = get_kpis_globaux(campagne)
 
 if kpis:
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("📋 Lignes plan", kpis['nb_lignes'])
+        st.metric("📋 Lignes", f"{kpis['nb_lignes']:,}")
     
     with col2:
-        st.metric("🌾 Variétés", kpis['nb_varietes'])
+        st.metric("🌱 Variétés", kpis['nb_varietes'])
     
     with col3:
         st.metric("📦 Volume Net", f"{kpis['total_volume_net']:,.0f} T")
     
     with col4:
-        # ✅ MODIFIÉ : Affichage avec 1 décimale
-        st.metric("🚜 Hectares", f"{kpis['total_hectares_arrondi']:,.1f} ha")
+        st.metric("🌾 Hectares", f"{kpis['total_hectares_arrondi']:.1f} ha")
     
-    # Ligne 2
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("🏷️ Marques", kpis['nb_marques'])
-    
-    with col2:
-        st.metric("📂 Types", kpis['nb_types'])
-    
-    with col3:
-        st.metric("📦 Volume Brut", f"{kpis['total_volume_brut']:,.0f} T")
-    
-    with col4:
-        rendement_moyen = kpis['total_volume_net'] / kpis['total_hectares'] if kpis['total_hectares'] > 0 else 0
-        st.metric("📊 Rdt moyen", f"{rendement_moyen:.1f} T/ha")
-else:
-    st.warning("⚠️ Impossible de charger les KPIs")
-
-st.markdown("---")
+    st.markdown("---")
 
 # ==========================================
 # ONGLETS
 # ==========================================
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📅 Par Mois", 
-    "🌾 Par Variété", 
-    "🏷️ Par Marque",
-    "📂 Par Type",
-    "📊 Croisé (Variété×Mois)",
-    "🎯 Besoins & Couverture"
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    "📅 Par Mois",
+    "🌱 Par Variété",
+    "📦 Par Marque",
+    "🏷️ Par Type",
+    "🎯 Besoins",
+    "⭐ Récap Marque+Type",  # NOUVEAU
+    "⭐ Récap Variété"       # NOUVEAU
 ])
 
-# ==========================================
-# TAB 1 : PAR MOIS
-# ==========================================
-
+# ========== ONGLET 1 : PAR MOIS ==========
 with tab1:
     st.subheader("📅 Récap par Mois")
     
     df_mois = get_recap_par_mois(campagne)
     
     if not df_mois.empty:
-        # Masquer colonne technique
-        df_display = df_mois.drop(columns=['mois_numero'], errors='ignore')
-        
         st.dataframe(
-            df_display,
-            column_config={
-                "Mois": st.column_config.TextColumn("Mois", width="medium"),
-                "Lignes": st.column_config.NumberColumn("Lignes", format="%d"),
-                "Variétés": st.column_config.NumberColumn("Variétés", format="%d"),
-                "Volume Net (T)": st.column_config.NumberColumn("Volume Net (T)", format="%.1f"),
-                "Volume Brut (T)": st.column_config.NumberColumn("Volume Brut (T)", format="%.1f"),
-                "Hectares": st.column_config.NumberColumn("Hectares", format="%.1f"),
-                # ✅ MODIFIÉ : Format décimal au lieu d'entier
-                "Ha Arrondi": st.column_config.NumberColumn("Ha Arrondi", format="%.1f"),
-            },
+            df_mois.drop(columns=['mois_numero']),
             use_container_width=True,
             hide_index=True
         )
-        
-        # Graphique
-        st.markdown("#### 📊 Évolution mensuelle")
-        chart_data = df_display[['Mois', 'Volume Net (T)', 'Hectares']].set_index('Mois')
-        st.line_chart(chart_data)
     else:
-        st.info("Aucune donnée")
+        st.info("Aucune donnée pour cette campagne")
 
-# ==========================================
-# TAB 2 : PAR VARIÉTÉ
-# ==========================================
-
+# ========== ONGLET 2 : PAR VARIÉTÉ ==========
 with tab2:
-    st.subheader("🌾 Récap par Variété")
+    st.subheader("🌱 Récap par Variété")
     
     df_variete = get_recap_par_variete(campagne)
     
     if not df_variete.empty:
         st.dataframe(
             df_variete,
-            column_config={
-                "Variété": st.column_config.TextColumn("Variété", width="medium"),
-                "Lignes": st.column_config.NumberColumn("Lignes", format="%d"),
-                "Mois": st.column_config.NumberColumn("Mois", format="%d"),
-                "Volume Net (T)": st.column_config.NumberColumn("Volume Net (T)", format="%.1f"),
-                "Volume Brut (T)": st.column_config.NumberColumn("Volume Brut (T)", format="%.1f"),
-                "Hectares": st.column_config.NumberColumn("Hectares", format="%.1f"),
-                # ✅ MODIFIÉ : Format décimal
-                "Ha Arrondi": st.column_config.NumberColumn("Ha Arrondi", format="%.1f"),
-            },
             use_container_width=True,
             hide_index=True
         )
-        
-        # Graphique top 10
-        st.markdown("#### 📊 Top 10 Variétés (Volume Net)")
-        top10 = df_variete.head(10)[['Variété', 'Volume Net (T)']].set_index('Variété')
-        st.bar_chart(top10)
     else:
-        st.info("Aucune donnée")
+        st.info("Aucune donnée pour cette campagne")
 
-# ==========================================
-# TAB 3 : PAR MARQUE
-# ==========================================
-
+# ========== ONGLET 3 : PAR MARQUE ==========
 with tab3:
-    st.subheader("🏷️ Récap par Marque")
+    st.subheader("📦 Récap par Marque")
     
     df_marque = get_recap_par_marque(campagne)
     
     if not df_marque.empty:
         st.dataframe(
             df_marque,
-            column_config={
-                "Marque": st.column_config.TextColumn("Marque", width="medium"),
-                "Lignes": st.column_config.NumberColumn("Lignes", format="%d"),
-                "Variétés": st.column_config.NumberColumn("Variétés", format="%d"),
-                "Volume Net (T)": st.column_config.NumberColumn("Volume Net (T)", format="%.1f"),
-                "Volume Brut (T)": st.column_config.NumberColumn("Volume Brut (T)", format="%.1f"),
-                "Hectares": st.column_config.NumberColumn("Hectares", format="%.1f"),
-                # ✅ MODIFIÉ : Format décimal
-                "Ha Arrondi": st.column_config.NumberColumn("Ha Arrondi", format="%.1f"),
-            },
             use_container_width=True,
             hide_index=True
         )
-        
-        # Graphique
-        st.markdown("#### 📊 Répartition par Marque")
-        chart_marque = df_marque[['Marque', 'Volume Net (T)']].set_index('Marque')
-        st.bar_chart(chart_marque)
     else:
-        st.info("Aucune donnée")
+        st.info("Aucune donnée pour cette campagne")
 
-# ==========================================
-# TAB 4 : PAR TYPE
-# ==========================================
-
+# ========== ONGLET 4 : PAR TYPE ==========
 with tab4:
-    st.subheader("📂 Récap par Type Produit")
+    st.subheader("🏷️ Récap par Type Produit")
     
     df_type = get_recap_par_type(campagne)
     
     if not df_type.empty:
         st.dataframe(
             df_type,
-            column_config={
-                "Type Produit": st.column_config.TextColumn("Type Produit", width="medium"),
-                "Lignes": st.column_config.NumberColumn("Lignes", format="%d"),
-                "Variétés": st.column_config.NumberColumn("Variétés", format="%d"),
-                "Volume Net (T)": st.column_config.NumberColumn("Volume Net (T)", format="%.1f"),
-                "Volume Brut (T)": st.column_config.NumberColumn("Volume Brut (T)", format="%.1f"),
-                "Hectares": st.column_config.NumberColumn("Hectares", format="%.1f"),
-                # ✅ MODIFIÉ : Format décimal
-                "Ha Arrondi": st.column_config.NumberColumn("Ha Arrondi", format="%.1f"),
-            },
             use_container_width=True,
             hide_index=True
         )
-        
-        # Graphique
-        st.markdown("#### 📊 Répartition par Type")
-        chart_type = df_type[['Type Produit', 'Volume Net (T)']].set_index('Type Produit')
-        st.bar_chart(chart_type)
     else:
-        st.info("Aucune donnée")
+        st.info("Aucune donnée pour cette campagne")
 
-# ==========================================
-# TAB 5 : CROISÉ VARIÉTÉ × MOIS
-# ==========================================
-
+# ========== ONGLET 5 : BESOINS ==========
 with tab5:
-    st.subheader("📊 Vue Croisée Variété × Mois")
-    
-    df_croise = get_recap_croise(campagne)
-    
-    if not df_croise.empty:
-        # Choix affichage
-        metric_choice = st.radio(
-            "Afficher",
-            ["Hectares (arrondi)", "Volume Net (T)"],
-            horizontal=True
-        )
-        
-        value_col = 'Hectares' if metric_choice == "Hectares (arrondi)" else 'Volume Net'
-        
-        # Pivot table
-        pivot = df_croise.pivot_table(
-            index='Variété',
-            columns='Mois',
-            values=value_col,
-            aggfunc='sum',
-            fill_value=0
-        )
-        
-        # Réordonner les colonnes par mois_numero
-        mois_order = df_croise.drop_duplicates('Mois').sort_values('mois_numero')['Mois'].tolist()
-        pivot = pivot.reindex(columns=[m for m in mois_order if m in pivot.columns])
-        
-        # Ajouter total par variété
-        pivot['TOTAL'] = pivot.sum(axis=1)
-        
-        # Ajouter total par mois
-        pivot.loc['TOTAL'] = pivot.sum()
-        
-        # ✅ MODIFIÉ : Format décimal au lieu d'entier
-        st.dataframe(
-            pivot.style.format("{:.1f}").background_gradient(cmap='YlOrRd', subset=pivot.columns[:-1]),
-            use_container_width=True
-        )
-        
-        st.info(f"💡 {len(pivot)-1} variétés × {len(pivot.columns)-1} mois")
-    else:
-        st.info("Aucune donnée")
-
-# ==========================================
-# TAB 6 : BESOINS & COUVERTURE
-# ==========================================
-
-with tab6:
-    st.subheader("🎯 Besoins & Taux de Couverture")
-    st.markdown("*Suivi des affectations producteurs par besoin (Variété × Mois)*")
+    st.subheader("🎯 Besoins avec Couverture")
     
     df_besoins = get_besoins_avec_couverture(campagne)
     
     if not df_besoins.empty:
-        # KPIs couverture
-        total_besoin = df_besoins['Ha Besoin'].sum()
-        total_affecte = df_besoins['Ha Affectés'].sum()
-        nb_complets = df_besoins['Complet'].sum()
-        nb_total = len(df_besoins)
-        
-        # ✅ MODIFIÉ : Calcul reste
-        reste_total = total_besoin - total_affecte
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("🎯 Besoins", f"{nb_total}")
-        
-        with col2:
-            # ✅ MODIFIÉ : Format décimal
-            st.metric("🌾 Ha à affecter", f"{total_besoin:,.1f}")
-        
-        with col3:
-            # ✅ MODIFIÉ : Format décimal
-            st.metric("✅ Ha affectés", f"{total_affecte:,.1f}")
-        
-        with col4:
-            taux_global = (total_affecte / total_besoin * 100) if total_besoin > 0 else 0
-            st.metric("📊 Couverture globale", f"{taux_global:.1f} %")
-        
-        # ✅ AJOUT : Affichage reste à affecter
-        if reste_total > 0:
-            st.markdown(f"⏳ **Reste à affecter : {reste_total:,.1f} ha**")
-        
-        st.markdown("---")
-        
-        # Filtres
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            varietes_dispo = ["Toutes"] + sorted(df_besoins['Variété'].unique().tolist())
-            filtre_variete = st.selectbox("Filtrer variété", varietes_dispo, key="filtre_var_besoins")
-        
-        with col2:
-            filtre_statut = st.selectbox("Filtrer statut", ["Tous", "Complets", "Incomplets"], key="filtre_statut")
-        
-        # Appliquer filtres
-        df_filtered = df_besoins.copy()
-        if filtre_variete != "Toutes":
-            df_filtered = df_filtered[df_filtered['Variété'] == filtre_variete]
-        if filtre_statut == "Complets":
-            df_filtered = df_filtered[df_filtered['Complet'] == True]
-        elif filtre_statut == "Incomplets":
-            df_filtered = df_filtered[df_filtered['Complet'] == False]
-        
-        # Masquer colonnes techniques
-        df_display = df_filtered.drop(columns=['mois_numero', 'id'], errors='ignore')
-        
-        # Afficher avec couleurs conditionnelles
-        def highlight_couverture(val):
-            if isinstance(val, (int, float)):
-                if val >= 100:
-                    return 'background-color: #c8e6c9'  # Vert clair
-                elif val >= 50:
-                    return 'background-color: #fff9c4'  # Jaune clair
-                else:
-                    return 'background-color: #ffcdd2'  # Rouge clair
-            return ''
-        
         st.dataframe(
-            df_display.style.applymap(highlight_couverture, subset=['Couverture %']),
-            column_config={
-                "Variété": st.column_config.TextColumn("Variété", width="medium"),
-                "Mois": st.column_config.TextColumn("Mois", width="small"),
-                "Volume Net (T)": st.column_config.NumberColumn("Vol. Net (T)", format="%.1f"),
-                "Volume Brut (T)": st.column_config.NumberColumn("Vol. Brut (T)", format="%.1f"),
-                # ✅ MODIFIÉ : Format décimal
-                "Ha Besoin": st.column_config.NumberColumn("Ha Besoin", format="%.1f"),
-                "Ha Affectés": st.column_config.NumberColumn("Ha Affectés", format="%.1f"),
-                "Couverture %": st.column_config.NumberColumn("Couverture %", format="%.1f"),
-                "Complet": st.column_config.CheckboxColumn("Complet"),
-            },
+            df_besoins,
             use_container_width=True,
             hide_index=True
         )
-        
-        st.markdown(f"**{len(df_filtered)} besoin(s)** | ✅ {nb_complets} complets | ⏳ {nb_total - nb_complets} à affecter")
     else:
-        st.info("Aucun besoin calculé. Lancez 'Recalculer besoins' dans la page Plan Récolte.")
+        st.info("Aucune donnée pour cette campagne")
+
+# ========== ONGLET 6 : RÉCAP MARQUE+TYPE (NOUVEAU) ==========
+with tab6:
+    st.subheader("⭐ Récap Marque + Type")
+    st.markdown("*Ajustement volume total avec répartition proportionnelle automatique*")
+    
+    marques = get_marques_disponibles(campagne)
+    
+    if marques:
+        # Sélection Marque
+        marque_selected = st.selectbox(
+            "📦 Sélectionner Marque",
+            options=marques,
+            key="marque_recap"
+        )
+        
+        # Sélection Type pour cette marque
+        types = get_types_pour_marque(campagne, marque_selected)
+        
+        if types:
+            type_selected = st.selectbox(
+                "🏷️ Sélectionner Type Produit",
+                options=types,
+                key="type_recap"
+            )
+            
+            st.markdown("---")
+            
+            # Charger récap
+            recap = get_recap_marque_type(campagne, marque_selected, type_selected)
+            
+            if recap and recap['total']['nb_lignes'] > 0:
+                total = recap['total']
+                
+                # Carte récap
+                st.markdown(f"""
+                <div class="recap-card">
+                    <h3 style="margin:0; color:white;">{marque_selected} - {type_selected}</h3>
+                    <hr style="border-color: rgba(255,255,255,0.3); margin: 1rem 0;">
+                    <div style="display:flex; justify-content:space-around;">
+                        <div>
+                            <div style="font-size:2rem; font-weight:bold;">{total['volume_net']:.1f} T</div>
+                            <div style="opacity:0.9;">Volume Net Annuel</div>
+                        </div>
+                        <div>
+                            <div style="font-size:2rem; font-weight:bold;">{total['nb_mois']}</div>
+                            <div style="opacity:0.9;">Mois</div>
+                        </div>
+                        <div>
+                            <div style="font-size:2rem; font-weight:bold;">{total['nb_lignes']}</div>
+                            <div style="opacity:0.9;">Lignes</div>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Tableau détail mensuel
+                if not recap['detail'].empty:
+                    df_detail = recap['detail'].copy()
+                    
+                    # Ajouter % du total
+                    df_detail['% Total'] = (df_detail['volume_net'] / total['volume_net'] * 100).round(1)
+                    
+                    df_detail = df_detail.rename(columns={
+                        'mois': 'Mois',
+                        'nb_lignes': 'Nb Lignes',
+                        'volume_net': 'Volume Net (T)'
+                    })
+                    
+                    st.markdown("**📊 Détail mensuel**")
+                    st.dataframe(
+                        df_detail,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                
+                st.markdown("---")
+                
+                # Formulaire ajustement (seulement si CAN_EDIT)
+                if CAN_EDIT:
+                    st.markdown("### 🎯 Ajuster Volume Total")
+                    
+                    col1, col2 = st.columns([2, 1])
+                    
+                    with col1:
+                        nouveau_total = st.number_input(
+                            "Nouveau total annuel (T)",
+                            min_value=0.0,
+                            value=float(total['volume_net']),
+                            step=10.0,
+                            key="nouveau_total_mt"
+                        )
+                    
+                    with col2:
+                        if nouveau_total != total['volume_net']:
+                            ratio = nouveau_total / total['volume_net']
+                            delta = nouveau_total - total['volume_net']
+                            variation_pct = (delta / total['volume_net']) * 100
+                            
+                            st.markdown(f"""
+                            <div class="impact-card">
+                                <strong>💡 Impact</strong><br>
+                                Ratio: <strong>{ratio:.3f}</strong><br>
+                                Delta: <strong>{delta:+.1f} T</strong><br>
+                                Variation: <strong>{variation_pct:+.1f}%</strong>
+                            </div>
+                            """, unsafe_allow_html=True)
+                    
+                    if st.button("✅ Appliquer Répartition Proportionnelle", type="primary", use_container_width=True):
+                        if nouveau_total == total['volume_net']:
+                            st.warning("⚠️ Le nouveau total est identique à l'actuel")
+                        else:
+                            success, message = ajuster_volume_proportionnel(
+                                marque_selected, type_selected, nouveau_total, campagne
+                            )
+                            
+                            if success:
+                                st.success(message)
+                                st.balloons()
+                                time.sleep(2)
+                                st.cache_data.clear()  # Vider le cache
+                                st.rerun()
+                            else:
+                                st.error(message)
+                else:
+                    st.info("🔒 Vous n'avez pas les droits de modification")
+            else:
+                st.warning("⚠️ Aucune donnée pour cette combinaison")
+        else:
+            st.warning(f"⚠️ Aucun type produit pour la marque {marque_selected}")
+    else:
+        st.warning("⚠️ Aucune marque disponible")
+
+# ========== ONGLET 7 : RÉCAP VARIÉTÉ (NOUVEAU) ==========
+with tab7:
+    st.subheader("⭐ Récap Variété")
+    st.markdown("*Modification en masse du taux de déchets ou rendement*")
+    
+    varietes = get_varietes_disponibles(campagne)
+    
+    if varietes:
+        # Sélection Variété
+        variete_selected = st.selectbox(
+            "🌱 Sélectionner Variété",
+            options=varietes,
+            key="variete_recap"
+        )
+        
+        st.markdown("---")
+        
+        # Charger récap
+        recap = get_recap_variete_detail(campagne, variete_selected)
+        
+        if recap and recap['total']['nb_lignes'] > 0:
+            total = recap['total']
+            
+            # Carte récap
+            st.markdown(f"""
+            <div class="recap-card">
+                <h3 style="margin:0; color:white;">{variete_selected}</h3>
+                <hr style="border-color: rgba(255,255,255,0.3); margin: 1rem 0;">
+                <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap: 1rem;">
+                    <div>
+                        <div style="font-size:2rem; font-weight:bold;">{total['volume_net']:.1f} T</div>
+                        <div style="opacity:0.9;">Volume Net</div>
+                    </div>
+                    <div>
+                        <div style="font-size:2rem; font-weight:bold;">{total['nb_lignes']}</div>
+                        <div style="opacity:0.9;">Lignes</div>
+                    </div>
+                    <div>
+                        <div style="font-size:2rem; font-weight:bold;">{total['dechets_moyen']:.1f}%</div>
+                        <div style="opacity:0.9;">Déchets Moyen</div>
+                    </div>
+                    <div>
+                        <div style="font-size:2rem; font-weight:bold;">{total['rendement_moyen']:.1f} T/ha</div>
+                        <div style="opacity:0.9;">Rendement Moyen</div>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Tableau détail mensuel
+            if not recap['detail'].empty:
+                df_detail = recap['detail'].copy()
+                
+                df_detail = df_detail.rename(columns={
+                    'mois': 'Mois',
+                    'nb_lignes': 'Nb Lignes',
+                    'volume_net': 'Volume Net (T)',
+                    'dechets_pct': 'Déchets (%)',
+                    'rendement_t_ha': 'Rendement (T/ha)'
+                })
+                
+                # Convertir colonnes numériques
+                for col in ['Volume Net (T)', 'Déchets (%)', 'Rendement (T/ha)']:
+                    if col in df_detail.columns:
+                        df_detail[col] = pd.to_numeric(df_detail[col], errors='coerce')
+                
+                st.markdown("**📊 Détail mensuel**")
+                st.dataframe(
+                    df_detail,
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Liste des mois pour sélection optionnelle
+                mois_disponibles = df_detail['Mois'].tolist()
+            else:
+                mois_disponibles = []
+            
+            st.markdown("---")
+            
+            # Formulaire modification (seulement si CAN_EDIT)
+            if CAN_EDIT:
+                st.markdown("### 🎯 Modifier en Masse")
+                
+                # Sélection mois (optionnelle)
+                st.markdown("**📅 Sélection Mois (optionnel)**")
+                appliquer_sur = st.radio(
+                    "Appliquer sur :",
+                    options=["Tous les mois", "Certains mois uniquement"],
+                    horizontal=True,
+                    key="appliquer_sur_variete"
+                )
+                
+                mois_selectionnes = None
+                if appliquer_sur == "Certains mois uniquement" and mois_disponibles:
+                    mois_selectionnes = st.multiselect(
+                        "Sélectionner mois",
+                        options=mois_disponibles,
+                        key="mois_selectionnes"
+                    )
+                    
+                    if not mois_selectionnes:
+                        st.warning("⚠️ Veuillez sélectionner au moins un mois")
+                
+                st.markdown("---")
+                
+                col1, col2 = st.columns(2)
+                
+                # Ajustement Déchets
+                with col1:
+                    st.markdown("**🗑️ Ajuster Taux Déchets**")
+                    
+                    nouveau_dechets = st.number_input(
+                        "Nouveau taux (%)",
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=float(total['dechets_moyen']),
+                        step=1.0,
+                        key="nouveau_dechets"
+                    )
+                    
+                    if st.button("✅ Appliquer Déchets", use_container_width=True, key="btn_dechets"):
+                        if appliquer_sur == "Certains mois uniquement" and not mois_selectionnes:
+                            st.error("❌ Veuillez sélectionner au moins un mois")
+                        else:
+                            success, message = ajuster_dechets_variete(
+                                variete_selected, nouveau_dechets, campagne, mois_selectionnes
+                            )
+                            
+                            if success:
+                                st.success(message)
+                                st.balloons()
+                                time.sleep(2)
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.error(message)
+                
+                # Ajustement Rendement
+                with col2:
+                    st.markdown("**🌾 Ajuster Rendement**")
+                    
+                    nouveau_rendement = st.number_input(
+                        "Nouveau rendement (T/ha)",
+                        min_value=0.0,
+                        value=float(total['rendement_moyen']),
+                        step=1.0,
+                        key="nouveau_rendement"
+                    )
+                    
+                    if st.button("✅ Appliquer Rendement", use_container_width=True, key="btn_rendement"):
+                        if appliquer_sur == "Certains mois uniquement" and not mois_selectionnes:
+                            st.error("❌ Veuillez sélectionner au moins un mois")
+                        else:
+                            success, message = ajuster_rendement_variete(
+                                variete_selected, nouveau_rendement, campagne, mois_selectionnes
+                            )
+                            
+                            if success:
+                                st.success(message)
+                                st.balloons()
+                                time.sleep(2)
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.error(message)
+            else:
+                st.info("🔒 Vous n'avez pas les droits de modification")
+        else:
+            st.warning("⚠️ Aucune donnée pour cette variété")
+    else:
+        st.warning("⚠️ Aucune variété disponible")
 
 # ==========================================
 # EXPORTS
@@ -754,7 +1166,7 @@ with tab6:
 st.markdown("---")
 st.subheader("📤 Exports")
 
-col1, col2, col3 = st.columns(3)
+col1, col2 = st.columns(2)
 
 with col1:
     # Export Excel complet
@@ -807,15 +1219,5 @@ with col2:
             "text/csv",
             use_container_width=True
         )
-
-with col3:
-    # Bouton vers affectations
-    st.markdown("""
-    <a href="/Affectation_Producteurs" target="_self">
-        <button style="width:100%; padding:0.5rem; cursor:pointer;">
-            ➡️ Affecter Producteurs
-        </button>
-    </a>
-    """, unsafe_allow_html=True)
 
 show_footer()
