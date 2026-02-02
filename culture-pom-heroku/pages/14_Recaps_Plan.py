@@ -167,6 +167,13 @@ def get_recap_par_mois(campagne):
         
         if rows:
             df = pd.DataFrame(rows)
+            
+            # Convertir colonnes numériques Decimal → float
+            numeric_cols = ['nb_lignes', 'nb_varietes', 'volume_net', 'volume_brut', 'hectares', 'hectares_arrondi']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
             df = df.rename(columns={
                 'mois': 'Mois',
                 'nb_lignes': 'Lignes',
@@ -211,6 +218,13 @@ def get_recap_par_variete(campagne):
         
         if rows:
             df = pd.DataFrame(rows)
+            
+            # Convertir colonnes numériques Decimal → float
+            numeric_cols = ['nb_lignes', 'nb_mois', 'volume_net', 'volume_brut', 'hectares', 'hectares_arrondi']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
             df = df.rename(columns={
                 'variete': 'Variété',
                 'nb_lignes': 'Lignes',
@@ -255,6 +269,13 @@ def get_recap_par_marque(campagne):
         
         if rows:
             df = pd.DataFrame(rows)
+            
+            # Convertir colonnes numériques Decimal → float
+            numeric_cols = ['nb_lignes', 'nb_types', 'volume_net', 'volume_brut', 'hectares', 'hectares_arrondi']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
             df = df.rename(columns={
                 'marque': 'Marque',
                 'nb_lignes': 'Lignes',
@@ -299,6 +320,13 @@ def get_recap_par_type(campagne):
         
         if rows:
             df = pd.DataFrame(rows)
+            
+            # Convertir colonnes numériques Decimal → float
+            numeric_cols = ['nb_lignes', 'nb_marques', 'volume_net', 'volume_brut', 'hectares', 'hectares_arrondi']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
             df = df.rename(columns={
                 'type_produit': 'Type Produit',
                 'nb_lignes': 'Lignes',
@@ -344,6 +372,13 @@ def get_besoins_avec_couverture(campagne):
         
         if rows:
             df = pd.DataFrame(rows)
+            
+            # Convertir colonnes numériques Decimal → float
+            numeric_cols = ['volume_net', 'volume_brut', 'hectares_necessaires', 'hectares_arrondi', 'taux_couverture_moyen', 'hectares_avec_couverture']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
             df = df.rename(columns={
                 'mois': 'Mois',
                 'variete': 'Variété',
@@ -451,13 +486,22 @@ def get_recap_marque_type(campagne, marque, type_produit):
         cursor.close()
         conn.close()
         
+        df_detail = pd.DataFrame(detail) if detail else pd.DataFrame()
+        
+        # Convertir colonnes numériques Decimal → float
+        if not df_detail.empty:
+            numeric_cols = ['nb_lignes', 'volume_net']
+            for col in numeric_cols:
+                if col in df_detail.columns:
+                    df_detail[col] = pd.to_numeric(df_detail[col], errors='coerce')
+        
         result = {
             'total': {
                 'nb_lignes': total['nb_lignes'],
                 'nb_mois': total['nb_mois'],
                 'volume_net': float(total['total_volume_net'] or 0)
             },
-            'detail': pd.DataFrame(detail) if detail else pd.DataFrame()
+            'detail': df_detail
         }
         
         return result
@@ -589,6 +633,15 @@ def get_recap_variete_detail(campagne, variete):
         cursor.close()
         conn.close()
         
+        df_detail = pd.DataFrame(detail) if detail else pd.DataFrame()
+        
+        # Convertir colonnes numériques Decimal → float
+        if not df_detail.empty:
+            numeric_cols = ['nb_lignes', 'volume_net', 'dechets_pct', 'rendement_t_ha']
+            for col in numeric_cols:
+                if col in df_detail.columns:
+                    df_detail[col] = pd.to_numeric(df_detail[col], errors='coerce')
+        
         result = {
             'total': {
                 'nb_lignes': total['nb_lignes'],
@@ -596,7 +649,7 @@ def get_recap_variete_detail(campagne, variete):
                 'dechets_moyen': float(total['dechets_moyen'] or 0),
                 'rendement_moyen': float(total['rendement_moyen'] or 0)
             },
-            'detail': pd.DataFrame(detail) if detail else pd.DataFrame()
+            'detail': df_detail
         }
         
         return result
