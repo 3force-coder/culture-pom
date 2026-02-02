@@ -75,20 +75,6 @@ MOIS_LABELS = {
 # FONCTIONS UTILITAIRES
 # ==========================================
 
-def to_native(value):
-    """Convertit numpy/pandas types vers types Python natifs pour psycopg2"""
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return None
-    if pd.isna(value):
-        return None
-    if isinstance(value, (np.integer, np.int64, np.int32)):
-        return int(value)
-    if isinstance(value, (np.floating, np.float64, np.float32)):
-        return float(value)
-    if isinstance(value, np.bool_):
-        return bool(value)
-    return value
-
 def get_mois_numero(mois_str):
     """Extrait le numéro de mois"""
     try:
@@ -211,26 +197,27 @@ def save_changes(original_df, edited_df):
                         changes[col] = new_val
             
             if changes:
-                # Recalculer colonnes automatiques si nécessaire
-                volume_net = changes.get('volume_net_t', edited_df.loc[idx, 'volume_net_t'])
-                dechets = changes.get('dechets_pct', edited_df.loc[idx, 'dechets_pct'])
-                rendement = changes.get('rendement_t_ha', edited_df.loc[idx, 'rendement_t_ha'])
+                # ⭐ Mettre à jour mois_numero si le mois a changé
+                if 'mois' in changes:
+                    changes['mois_numero'] = get_mois_numero(changes['mois'])
                 
-                # ⭐ Convertir en float natif AVANT calcul (évite np.float64)
-                volume_net = to_native(volume_net) or 0
-                dechets = to_native(dechets) or 15
-                rendement = to_native(rendement) or 40
+                # ⭐ NE PAS inclure les colonnes GENERATED (calculées par PostgreSQL)
+                # volume_brut_t, hectares_necessaires sont GENERATED ALWAYS AS
+                for gen_col in ['volume_brut_t', 'hectares_necessaires', 'hectares_ajustes']:
+                    changes.pop(gen_col, None)
                 
-                volume_brut = calculer_volume_brut(volume_net, dechets)
-                hectares = calculer_hectares(volume_brut, rendement)
-                
-                # ⭐ Stocker en float Python natif
-                changes['volume_brut_t'] = float(volume_brut) if volume_brut else 0.0
-                changes['hectares_necessaires'] = float(hectares) if hectares else 0.0
-                changes['mois_numero'] = get_mois_numero(changes.get('mois', edited_df.loc[idx, 'mois']))
-                
-                # ⭐ Convertir TOUTES les valeurs en types natifs (sécurité)
-                changes = {k: to_native(v) for k, v in changes.items()}
+                # ⭐ Convertir tous les types numpy en types Python natifs
+                safe_changes = {}
+                for k, v in changes.items():
+                    if pd.isna(v) if not isinstance(v, str) else False:
+                        safe_changes[k] = None
+                    elif isinstance(v, (np.integer, np.int64, np.int32)):
+                        safe_changes[k] = int(v)
+                    elif isinstance(v, (np.floating, np.float64, np.float32)):
+                        safe_changes[k] = float(v)
+                    else:
+                        safe_changes[k] = v
+                changes = safe_changes
                 
                 # Construire UPDATE
                 set_clause = ", ".join([f"{col} = %s" for col in changes.keys()])
@@ -262,13 +249,9 @@ def add_record(data):
         cursor = conn.cursor()
         username = get_current_username()
         
-        # Calculs automatiques - convertir en types natifs
-        vol_net = to_native(data.get('volume_net_t', 0)) or 0
-        dechets = to_native(data.get('dechets_pct', 15)) or 15
-        rdt = to_native(data.get('rendement_t_ha', 40)) or 40
-        
-        volume_brut = float(calculer_volume_brut(vol_net, dechets))
-        hectares = float(calculer_hectares(volume_brut, rdt))
+        # Calculs automatiques
+        volume_brut = calculer_volume_brut(data.get('volume_net_t', 0), data.get('dechets_pct', 15))
+        hectares = calculer_hectares(volume_brut, data.get('rendement_t_ha', 40))
         mois_numero = get_mois_numero(data.get('mois', ''))
         
         query = """
@@ -288,10 +271,10 @@ def add_record(data):
             data.get('type_produit'),
             data.get('variete'),
             data.get('arrachage_quinzaine'),
-            float(vol_net),
-            float(dechets),
+            data.get('volume_net_t', 0),
+            data.get('dechets_pct', 15),
             volume_brut,
-            float(rdt),
+            data.get('rendement_t_ha', 40),
             hectares,
             100,  # Taux par défaut = 100%
             data.get('notes'),
