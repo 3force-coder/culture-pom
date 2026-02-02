@@ -1,10 +1,9 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-import json
-import streamlit.components.v1 as components
+from streamlit_calendar import fullcalendar_component
 
-st.set_page_config(page_title="POC Planning Lavage - 3 Colonnes", page_icon="🧼", layout="wide")
+st.set_page_config(page_title="Planning Lavage - 3 Modes", page_icon="🧼", layout="wide")
 
 # CSS Culture Pom
 st.markdown("""
@@ -18,36 +17,61 @@ st.markdown("""
         margin-bottom: 0.3rem !important;
     }
     
-    /* Jobs non planifiés */
-    .job-non-planifie {
-        background-color: #f8f9fa;
-        padding: 0.8rem;
-        border-radius: 0.5rem;
-        margin-bottom: 0.5rem;
-        border-left: 4px solid #6c757d;
-    }
-    .job-non-planifie:hover {
-        background-color: #e9ecef;
+    /* Jobs non planifiés - Expanders */
+    .streamlit-expanderHeader {
+        background-color: #f8f9fa !important;
+        border-radius: 6px;
+        font-weight: 600 !important;
     }
     
     /* Détail job */
-    .job-detail {
-        background-color: #f0f7f0;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border-left: 4px solid #2e7d32;
+    .detail-card {
+        background: linear-gradient(135deg, #f0f7f0 0%, #e8f5e9 100%);
+        padding: 1.5rem;
+        border-radius: 8px;
+        border-left: 5px solid #2e7d32;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
     }
-    .metric-box {
-        background-color: #fff;
-        padding: 0.5rem;
-        border-radius: 0.3rem;
-        margin: 0.3rem 0;
+    
+    .info-row {
+        background-color: white;
+        padding: 0.8rem;
+        border-radius: 6px;
+        margin: 0.5rem 0;
+        display: flex;
+        align-items: center;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    
+    .info-icon {
+        margin-right: 0.8rem;
+        font-size: 1.2em;
+    }
+    
+    .info-label {
+        color: #666;
+        font-size: 0.85em;
+        margin-right: 0.5rem;
+    }
+    
+    .info-value {
+        font-weight: 600;
+        color: #2e7d32;
+    }
+    
+    /* Métriques mode */
+    .metric-badge {
+        background-color: #2e7d32;
+        color: white;
+        padding: 0.3rem 0.8rem;
+        border-radius: 20px;
+        font-size: 0.9em;
+        font-weight: 600;
+        display: inline-block;
+        margin: 0.2rem;
     }
 </style>
 """, unsafe_allow_html=True)
-
-st.title("🧼 POC Planning Lavage - 3 Colonnes + Filtres")
-st.markdown("---")
 
 # ==========================================
 # INITIALISATION SESSION STATE
@@ -101,13 +125,7 @@ if 'jobs_planifies' not in st.session_state:
             'statut': 'EN_COURS',
             'date_debut_reel': '2026-02-03 08:32',
             'duree_prevue_min': 90,
-            'duree_reelle_min': None,
-            'poids_lave_kg': None,
-            'poids_grenailles_kg': None,
-            'poids_dechets_kg': None,
-            'poids_terre_kg': None,
-            'tare_pct': None,
-            'rendement_pct': None
+            'duree_reelle_min': None
         },
         {
             'id': 3,
@@ -126,15 +144,7 @@ if 'jobs_planifies' not in st.session_state:
             'heure_fin': '11:50',
             'ligne_lavage': 'LIGNE_1',
             'statut': 'PRÉVU',
-            'date_debut_reel': None,
-            'duree_prevue_min': 110,
-            'duree_reelle_min': None,
-            'poids_lave_kg': None,
-            'poids_grenailles_kg': None,
-            'poids_dechets_kg': None,
-            'poids_terre_kg': None,
-            'tare_pct': None,
-            'rendement_pct': None
+            'duree_prevue_min': 110
         }
     ]
 
@@ -207,179 +217,14 @@ if 'jobs_non_planifies' not in st.session_state:
         }
     ]
 
-if 'job_counter' not in st.session_state:
-    st.session_state.job_counter = 15
-
 if 'selected_job_id' not in st.session_state:
     st.session_state.selected_job_id = None
 
+if 'job_counter' not in st.session_state:
+    st.session_state.job_counter = 15
+
 # ==========================================
 # FONCTIONS MÉTIER
-# ==========================================
-
-def demarrer_job(job_id):
-    """Démarre un job : PRÉVU → EN_COURS"""
-    for job in st.session_state.jobs_planifies:
-        if job['id'] == job_id and job['statut'] == 'PRÉVU':
-            job['statut'] = 'EN_COURS'
-            job['date_debut_reel'] = datetime.now().strftime('%Y-%m-%d %H:%M')
-            return True, f"✅ Job #{job_id} démarré"
-    return False, "❌ Job introuvable ou déjà démarré"
-
-def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets):
-    """Termine un job : calculs + décalage automatique"""
-    for job in st.session_state.jobs_planifies:
-        if job['id'] == job_id and job['statut'] == 'EN_COURS':
-            poids_brut = job['poids_brut_kg']
-            
-            # Calcul terre
-            poids_terre = poids_brut - (poids_lave + poids_grenailles + poids_dechets)
-            
-            # Validation cohérence (tolérance 10 kg)
-            total_calc = poids_lave + poids_grenailles + poids_dechets + poids_terre
-            if abs(total_calc - poids_brut) > 10:
-                return False, f"❌ Incohérence poids : Brut={poids_brut:.0f} vs Total={total_calc:.0f}"
-            
-            # Calculs
-            tare_pct = ((poids_dechets + poids_terre) / poids_brut) * 100
-            rendement_pct = ((poids_lave + poids_grenailles) / poids_brut) * 100
-            
-            # Durée réelle
-            debut = datetime.strptime(job['date_debut_reel'], '%Y-%m-%d %H:%M')
-            fin = datetime.now()
-            duree_reelle_min = int((fin - debut).total_seconds() / 60)
-            
-            # MAJ job
-            job['statut'] = 'TERMINÉ'
-            job['duree_reelle_min'] = duree_reelle_min
-            job['poids_lave_kg'] = poids_lave
-            job['poids_grenailles_kg'] = poids_grenailles
-            job['poids_dechets_kg'] = poids_dechets
-            job['poids_terre_kg'] = poids_terre
-            job['tare_pct'] = tare_pct
-            job['rendement_pct'] = rendement_pct
-            
-            # Décalage automatique
-            decalage_min = duree_reelle_min - job['duree_prevue_min']
-            if decalage_min != 0:
-                decaler_jobs_suivants(job['date_prevue'], job['ligne_lavage'], job['heure_fin'], decalage_min)
-            
-            return True, f"✅ Job terminé - Rendement: {rendement_pct:.1f}%"
-    
-    return False, "❌ Job introuvable ou pas EN_COURS"
-
-def decaler_jobs_suivants(date_job, ligne, heure_fin_job, decalage_min):
-    """Décale les jobs suivants sur même ligne/jour"""
-    for job in st.session_state.jobs_planifies:
-        if (job['date_prevue'] == date_job and 
-            job['ligne_lavage'] == ligne and 
-            job['heure_debut'] >= heure_fin_job and
-            job['statut'] == 'PRÉVU'):
-            
-            # Décaler heure_debut et heure_fin
-            debut = datetime.strptime(f"{date_job} {job['heure_debut']}", '%Y-%m-%d %H:%M')
-            fin = datetime.strptime(f"{date_job} {job['heure_fin']}", '%Y-%m-%d %H:%M')
-            
-            nouveau_debut = debut + timedelta(minutes=decalage_min)
-            nouveau_fin = fin + timedelta(minutes=decalage_min)
-            
-            job['heure_debut'] = nouveau_debut.strftime('%H:%M')
-            job['heure_fin'] = nouveau_fin.strftime('%H:%M')
-
-def ajouter_job_calendrier(job_data, date_prevue, heure_debut, ligne):
-    """Planifie un job non planifié"""
-    poids_kg = job_data['poids_brut_kg']
-    duree_min = int((poids_kg / 1000) / 13.0 * 60)  # 13 T/h
-    
-    heure_debut_dt = datetime.strptime(f"{date_prevue} {heure_debut}", '%Y-%m-%d %H:%M')
-    heure_fin_dt = heure_debut_dt + timedelta(minutes=duree_min)
-    
-    nouveau_job = {
-        'id': st.session_state.job_counter,
-        'lot_id': job_data['lot_id'],
-        'code_lot_interne': job_data['code_lot_interne'],
-        'nom_usage': job_data['nom_usage'],
-        'variete': job_data['variete'],
-        'producteur': job_data['producteur'],
-        'calibre_min': job_data['calibre_min'],
-        'calibre_max': job_data['calibre_max'],
-        'site_stockage': job_data['site_stockage'],
-        'quantite_pallox': job_data['quantite_pallox'],
-        'poids_brut_kg': poids_kg,
-        'date_prevue': date_prevue,
-        'heure_debut': heure_debut,
-        'heure_fin': heure_fin_dt.strftime('%H:%M'),
-        'ligne_lavage': ligne,
-        'statut': 'PRÉVU',
-        'date_debut_reel': None,
-        'duree_prevue_min': duree_min,
-        'duree_reelle_min': None,
-        'poids_lave_kg': None,
-        'poids_grenailles_kg': None,
-        'poids_dechets_kg': None,
-        'poids_terre_kg': None,
-        'tare_pct': None,
-        'rendement_pct': None
-    }
-    
-    st.session_state.jobs_planifies.append(nouveau_job)
-    st.session_state.jobs_non_planifies = [j for j in st.session_state.jobs_non_planifies if j['id'] != job_data['id']]
-    st.session_state.job_counter += 1
-    
-    return True, f"✅ Job #{nouveau_job['id']} planifié"
-
-# ==========================================
-# DONNÉES FILTRES
-# ==========================================
-
-def get_varietes_disponibles():
-    """Récupère toutes les variétés des jobs non planifiés"""
-    varietes = set([j['variete'] for j in st.session_state.jobs_non_planifies])
-    return sorted(list(varietes))
-
-def get_producteurs_disponibles():
-    """Récupère tous les producteurs des jobs non planifiés"""
-    producteurs = set([j['producteur'] for j in st.session_state.jobs_non_planifies])
-    return sorted(list(producteurs))
-
-def get_calibres_disponibles():
-    """Récupère tous les calibres uniques"""
-    calibres = set()
-    for j in st.session_state.jobs_non_planifies:
-        calibres.add(f"{j['calibre_min']}/{j['calibre_max']}")
-    return sorted(list(calibres))
-
-def get_sites_disponibles():
-    """Récupère tous les sites de stockage"""
-    sites = set([j['site_stockage'] for j in st.session_state.jobs_non_planifies])
-    return sorted(list(sites))
-
-def filtrer_jobs_non_planifies(variete_filter, producteur_filter, calibre_filter, site_filter, recherche):
-    """Filtre les jobs non planifiés selon critères"""
-    jobs = st.session_state.jobs_non_planifies.copy()
-    
-    if variete_filter != "Toutes":
-        jobs = [j for j in jobs if j['variete'] == variete_filter]
-    
-    if producteur_filter != "Tous":
-        jobs = [j for j in jobs if j['producteur'] == producteur_filter]
-    
-    if calibre_filter != "Tous":
-        jobs = [j for j in jobs if f"{j['calibre_min']}/{j['calibre_max']}" == calibre_filter]
-    
-    if site_filter != "Tous":
-        jobs = [j for j in jobs if j['site_stockage'] == site_filter]
-    
-    if recherche:
-        recherche_lower = recherche.lower()
-        jobs = [j for j in jobs if 
-                recherche_lower in j['code_lot_interne'].lower() or 
-                recherche_lower in j['nom_usage'].lower()]
-    
-    return jobs
-
-# ==========================================
-# PRÉPARATION EVENTS FULLCALENDAR
 # ==========================================
 
 def preparer_events_calendrier():
@@ -403,7 +248,8 @@ def preparer_events_calendrier():
             'color': color,
             'extendedProps': {
                 'ligne': job['ligne_lavage'],
-                'statut': job['statut']
+                'statut': job['statut'],
+                'code_lot': job['code_lot_interne']
             }
         }
         
@@ -411,347 +257,365 @@ def preparer_events_calendrier():
     
     return events
 
-# ==========================================
-# LAYOUT 3 COLONNES
-# ==========================================
+def get_job_by_id(job_id):
+    """Récupère un job par son ID"""
+    for job in st.session_state.jobs_planifies:
+        if job['id'] == job_id:
+            return job
+    return None
 
-col_gauche, col_centre, col_droite = st.columns([2, 5, 3])
+def get_varietes_disponibles():
+    """Récupère toutes les variétés des jobs non planifiés"""
+    varietes = set([j['variete'] for j in st.session_state.jobs_non_planifies])
+    return sorted(list(varietes))
 
-# ==========================================
-# COLONNE GAUCHE : FILTRES + JOBS NON PLANIFIÉS
-# ==========================================
+def get_producteurs_disponibles():
+    """Récupère tous les producteurs des jobs non planifiés"""
+    producteurs = set([j['producteur'] for j in st.session_state.jobs_non_planifies])
+    return sorted(list(producteurs))
 
-with col_gauche:
-    st.markdown("### 🔍 Filtrer Jobs à Planifier")
+def filtrer_jobs_non_planifies(variete_filter, producteur_filter, recherche):
+    """Filtre les jobs non planifiés selon critères"""
+    jobs = st.session_state.jobs_non_planifies.copy()
     
-    # Filtres
-    varietes = ["Toutes"] + get_varietes_disponibles()
-    filtre_variete = st.selectbox("Variété", varietes, key="filtre_variete")
+    if variete_filter != "Toutes":
+        jobs = [j for j in jobs if j['variete'] == variete_filter]
     
-    producteurs = ["Tous"] + get_producteurs_disponibles()
-    filtre_producteur = st.selectbox("Producteur", producteurs, key="filtre_producteur")
+    if producteur_filter != "Tous":
+        jobs = [j for j in jobs if j['producteur'] == producteur_filter]
     
-    calibres = ["Tous"] + get_calibres_disponibles()
-    filtre_calibre = st.selectbox("Calibre", calibres, key="filtre_calibre")
+    if recherche:
+        recherche_lower = recherche.lower()
+        jobs = [j for j in jobs if 
+                recherche_lower in j['code_lot_interne'].lower() or 
+                recherche_lower in j['nom_usage'].lower()]
     
-    sites = ["Tous"] + get_sites_disponibles()
-    filtre_site = st.selectbox("Site", sites, key="filtre_site")
-    
-    recherche = st.text_input("🔎 Recherche (code/nom)", key="recherche")
-    
-    st.markdown("---")
-    
-    # Appliquer filtres
-    jobs_filtres = filtrer_jobs_non_planifies(
-        filtre_variete, filtre_producteur, filtre_calibre, filtre_site, recherche
-    )
-    
-    total_jobs = len(st.session_state.jobs_non_planifies)
-    nb_filtres = len(jobs_filtres)
-    
-    st.markdown(f"### 📋 Jobs à Planifier ({nb_filtres}/{total_jobs})")
-    
-    if jobs_filtres:
-        for job in jobs_filtres:
-            with st.container():
-                st.markdown(f"""
-                <div class="job-non-planifie">
-                    <strong>{job['variete']}</strong> - {job['code_lot_interne']}<br>
-                    📦 {job['quantite_pallox']} pallox - ⚖️ {job['poids_brut_kg']/1000:.1f} T<br>
-                    👨‍🌾 {job['producteur']}<br>
-                    📏 {job['calibre_min']}/{job['calibre_max']}
-                </div>
-                """, unsafe_allow_html=True)
-                
-                if st.button(f"➕ Planifier", key=f"plan_{job['id']}", use_container_width=True):
-                    st.session_state[f'show_form_plan_{job["id"]}'] = True
-                    st.rerun()
-                
-                # Formulaire planification
-                if st.session_state.get(f'show_form_plan_{job["id"]}', False):
-                    date_plan = st.date_input("Date", value=datetime.now().date(), key=f"date_{job['id']}")
-                    heure_plan = st.time_input("Heure", value=datetime.strptime("08:00", "%H:%M").time(), key=f"heure_{job['id']}")
-                    ligne_plan = st.selectbox("Ligne", ["LIGNE_1", "LIGNE_2"], key=f"ligne_{job['id']}")
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("✅ OK", key=f"ok_{job['id']}", use_container_width=True):
-                            success, msg = ajouter_job_calendrier(
-                                job, 
-                                date_plan.strftime('%Y-%m-%d'), 
-                                heure_plan.strftime('%H:%M'),
-                                ligne_plan
-                            )
-                            if success:
-                                st.success(msg)
-                                st.session_state.pop(f'show_form_plan_{job["id"]}')
-                                st.rerun()
-                            else:
-                                st.error(msg)
-                    
-                    with col2:
-                        if st.button("❌", key=f"cancel_{job['id']}", use_container_width=True):
-                            st.session_state.pop(f'show_form_plan_{job["id"]}')
-                            st.rerun()
-                
-                st.markdown("<br>", unsafe_allow_html=True)
-    else:
-        st.info("Aucun job ne correspond aux filtres")
+    return jobs
 
-# ==========================================
-# COLONNE CENTRE : CALENDRIER FULLCALENDAR
-# ==========================================
-
-with col_centre:
-    st.markdown("### 📅 Planning Lavage")
-    
-    events = preparer_events_calendrier()
-    events_json = json.dumps(events)
-    
-    # HTML FullCalendar avec gestion clic
-    calendar_html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <link href='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.css' rel='stylesheet' />
-        <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js'></script>
-        <style>
-            #calendar {{
-                max-width: 100%;
-                margin: 0 auto;
-                font-family: Arial, sans-serif;
-            }}
-            .fc {{
-                background-color: white;
-            }}
-            .fc-header-toolbar {{
-                margin-bottom: 1em !important;
-            }}
-            .fc-daygrid-day-number {{
-                color: #2e7d32 !important;
-                font-weight: bold;
-            }}
-            .fc-col-header-cell-cushion {{
-                color: #2e7d32 !important;
-                font-weight: bold;
-            }}
-            .fc-timegrid-now-indicator-line {{
-                border-color: #ff8c00 !important;
-                border-width: 2px !important;
-            }}
-            .fc-event {{
-                cursor: pointer;
-            }}
-            .fc-event:hover {{
-                opacity: 0.8;
-            }}
-        </style>
-    </head>
-    <body>
-        <div id='calendar'></div>
-        
-        <script>
-            document.addEventListener('DOMContentLoaded', function() {{
-                var calendarEl = document.getElementById('calendar');
-                
-                var calendar = new FullCalendar.Calendar(calendarEl, {{
-                    initialView: 'timeGridWeek',
-                    locale: 'fr',
-                    headerToolbar: {{
-                        left: 'prev,next today',
-                        center: 'title',
-                        right: 'timeGridWeek,timeGridDay'
-                    }},
-                    slotMinTime: '06:00:00',
-                    slotMaxTime: '20:00:00',
-                    allDaySlot: false,
-                    height: 'auto',
-                    nowIndicator: true,
-                    scrollTime: '08:00:00',
-                    events: {events_json},
-                    eventClick: function(info) {{
-                        // Envoyer l'ID du job cliqué à Streamlit
-                        var jobId = info.event.id;
-                        
-                        // Communication via query params (workaround)
-                        var newUrl = window.location.origin + window.location.pathname + '?selected_job=' + jobId;
-                        window.parent.postMessage({{
-                            type: 'streamlit:setComponentValue',
-                            value: jobId
-                        }}, '*');
-                        
-                        // Alternative : stocker dans localStorage
-                        localStorage.setItem('selected_job_id', jobId);
-                    }}
-                }});
-                
-                calendar.render();
-                
-                // Auto-scroll aujourd'hui
-                setTimeout(function() {{
-                    calendar.scrollToTime(new Date().getHours() + ':00:00');
-                }}, 500);
-            }});
-        </script>
-    </body>
-    </html>
-    """
-    
-    # Afficher calendrier
-    components.html(calendar_html, height=650, scrolling=True)
-    
-    # Workaround : Sélection manuelle sous calendrier
-    st.markdown("---")
-    st.markdown("**Sélectionner un job** *(cliquer dans calendrier à venir)*")
-    
-    jobs_options = {f"#{j['id']} - {j['code_lot_interne']} - {j['variete']}": j['id'] 
-                    for j in st.session_state.jobs_planifies}
-    
-    if jobs_options:
-        selected_label = st.selectbox(
-            "Job à afficher",
-            options=[""] + list(jobs_options.keys()),
-            key="manual_job_select"
-        )
-        
-        if selected_label:
-            st.session_state.selected_job_id = jobs_options[selected_label]
-
-# ==========================================
-# COLONNE DROITE : DÉTAIL JOB
-# ==========================================
-
-with col_droite:
-    st.markdown("### 📋 Détails Job")
-    
-    if st.session_state.selected_job_id:
-        # Trouver le job sélectionné
-        job_detail = None
-        for j in st.session_state.jobs_planifies:
-            if j['id'] == st.session_state.selected_job_id:
-                job_detail = j
-                break
-        
-        if job_detail:
-            st.markdown(f"""
-            <div class="job-detail">
-                <h4>🎯 Job #{job_detail['id']}</h4>
-                <strong>{job_detail['variete']}</strong><br>
-                {job_detail['code_lot_interne']}<br><br>
-                
-                📦 {job_detail['quantite_pallox']} pallox<br>
-                ⚖️ {job_detail['poids_brut_kg']/1000:.1f} T<br>
-                👨‍🌾 {job_detail['producteur']}<br>
-                📏 {job_detail['calibre_min']}/{job_detail['calibre_max']}<br><br>
-                
-                📅 {job_detail['date_prevue']}<br>
-                🕒 {job_detail['heure_debut']} - {job_detail['heure_fin']}<br>
-                🔧 {job_detail['ligne_lavage']}<br>
-                🏷️ <strong>{job_detail['statut']}</strong>
-            </div>
-            """, unsafe_allow_html=True)
+def update_job_times(job_id, new_start, new_end):
+    """Met à jour les horaires d'un job après drag & drop"""
+    for job in st.session_state.jobs_planifies:
+        if job['id'] == job_id:
+            # Parser les nouvelles dates
+            start_dt = datetime.fromisoformat(new_start.replace('Z', '+00:00'))
+            end_dt = datetime.fromisoformat(new_end.replace('Z', '+00:00'))
             
-            st.markdown("<br>", unsafe_allow_html=True)
+            job['date_prevue'] = start_dt.strftime('%Y-%m-%d')
+            job['heure_debut'] = start_dt.strftime('%H:%M')
+            job['heure_fin'] = end_dt.strftime('%H:%M')
             
-            # ACTIONS SELON STATUT
-            if job_detail['statut'] == 'PRÉVU':
-                if st.button("▶️ Démarrer Job", type="primary", use_container_width=True):
-                    success, msg = demarrer_job(job_detail['id'])
-                    if success:
-                        st.success(msg)
-                        st.rerun()
-                    else:
-                        st.error(msg)
+            # Recalculer durée
+            duree_min = int((end_dt - start_dt).total_seconds() / 60)
+            job['duree_prevue_min'] = duree_min
             
-            elif job_detail['statut'] == 'EN_COURS':
-                st.info(f"⏱️ Démarré : {job_detail['date_debut_reel']}")
-                
-                if st.button("⏸️ Terminer Job", type="primary", use_container_width=True):
-                    st.session_state[f'show_qualification_{job_detail["id"]}'] = True
-                    st.rerun()
-                
-                # Modal qualification
-                if st.session_state.get(f'show_qualification_{job_detail["id"]}', False):
-                    st.markdown("---")
-                    st.markdown("**📊 Qualification Tares**")
-                    
-                    poids_lave = st.number_input(
-                        "Poids lavé net (kg) *",
-                        min_value=0.0,
-                        value=float(job_detail['poids_brut_kg']) * 0.75,
-                        step=100.0,
-                        key=f"lave_{job_detail['id']}"
-                    )
-                    
-                    poids_grenailles = st.number_input(
-                        "Poids grenailles (kg) *",
-                        min_value=0.0,
-                        value=float(job_detail['poids_brut_kg']) * 0.05,
-                        step=10.0,
-                        key=f"gren_{job_detail['id']}"
-                    )
-                    
-                    poids_dechets = st.number_input(
-                        "Poids déchets (kg) *",
-                        min_value=0.0,
-                        value=float(job_detail['poids_brut_kg']) * 0.05,
-                        step=10.0,
-                        key=f"dech_{job_detail['id']}"
-                    )
-                    
-                    poids_terre_calc = job_detail['poids_brut_kg'] - poids_lave - poids_grenailles - poids_dechets
-                    st.metric("Terre calculée", f"{poids_terre_calc:.0f} kg")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        if st.button("✅ Valider", type="primary", use_container_width=True, key=f"valid_{job_detail['id']}"):
-                            success, msg = terminer_job(job_detail['id'], poids_lave, poids_grenailles, poids_dechets)
-                            if success:
-                                st.success(msg)
-                                st.session_state.pop(f'show_qualification_{job_detail["id"]}')
-                                st.rerun()
-                            else:
-                                st.error(msg)
-                    
-                    with col2:
-                        if st.button("❌ Annuler", use_container_width=True, key=f"annul_{job_detail['id']}"):
-                            st.session_state.pop(f'show_qualification_{job_detail["id"]}')
-                            st.rerun()
-            
-            elif job_detail['statut'] == 'TERMINÉ':
-                st.markdown("---")
-                st.markdown("**📊 Résultats**")
-                
-                st.markdown(f"""
-                <div class="metric-box">
-                    <strong>Rendement</strong><br>
-                    {job_detail['rendement_pct']:.1f}%
-                </div>
-                <div class="metric-box">
-                    <strong>Tare réelle</strong><br>
-                    {job_detail['tare_pct']:.1f}%
-                </div>
-                <div class="metric-box">
-                    <strong>Durée réelle</strong><br>
-                    {job_detail['duree_reelle_min']} min ({job_detail['duree_reelle_min']//60}h{job_detail['duree_reelle_min']%60:02d})
-                </div>
-                """, unsafe_allow_html=True)
-                
-                st.markdown("---")
-                st.markdown(f"""
-                **Détails poids** :<br>
-                • Lavé : {job_detail['poids_lave_kg']:.0f} kg<br>
-                • Grenailles : {job_detail['poids_grenailles_kg']:.0f} kg<br>
-                • Déchets : {job_detail['poids_dechets_kg']:.0f} kg<br>
-                • Terre : {job_detail['poids_terre_kg']:.0f} kg
-                """, unsafe_allow_html=True)
-        
-        else:
-            st.info("Job sélectionné introuvable")
-    
-    else:
-        st.info("👈 Sélectionnez un job dans le calendrier ou le dropdown")
+            return True
+    return False
+
+# ==========================================
+# HEADER
+# ==========================================
+
+st.title("🧼 Planning Lavage")
+
+# Métriques en haut
+col1, col2, col3, col4 = st.columns(4)
+
+nb_prevus = len([j for j in st.session_state.jobs_planifies if j['statut'] == 'PRÉVU'])
+nb_en_cours = len([j for j in st.session_state.jobs_planifies if j['statut'] == 'EN_COURS'])
+nb_termines = len([j for j in st.session_state.jobs_planifies if j['statut'] == 'TERMINÉ'])
+nb_non_planifies = len(st.session_state.jobs_non_planifies)
+
+with col1:
+    st.metric("🎯 Jobs Prévus", nb_prevus)
+
+with col2:
+    st.metric("⚙️ Jobs En Cours", nb_en_cours)
+
+with col3:
+    st.metric("✅ Jobs Terminés", nb_termines)
+
+with col4:
+    st.metric("📦 Jobs à Planifier", nb_non_planifies)
 
 st.markdown("---")
-st.caption("POC - Données en session_state (pas DB)")
+
+# ==========================================
+# SÉLECTION MODE
+# ==========================================
+
+mode = st.radio(
+    "Mode",
+    ["📋 Planification", "🔄 Réorganisation"],
+    horizontal=True,
+    label_visibility="collapsed"
+)
+
+st.markdown("---")
+
+# ==========================================
+# MODE 1 : PLANIFICATION (3 colonnes)
+# ==========================================
+
+if mode == "📋 Planification":
+    
+    col_gauche, col_centre, col_droite = st.columns([2, 5, 3])
+    
+    # ===== COLONNE GAUCHE : FILTRES + JOBS NON PLANIFIÉS =====
+    with col_gauche:
+        st.markdown("### 🔍 Filtrer Jobs")
+        
+        # Filtres
+        varietes = ["Toutes"] + get_varietes_disponibles()
+        filtre_variete = st.selectbox("Variété", varietes, key="filtre_var_plan")
+        
+        producteurs = ["Tous"] + get_producteurs_disponibles()
+        filtre_producteur = st.selectbox("Producteur", producteurs, key="filtre_prod_plan")
+        
+        recherche = st.text_input("🔎 Recherche", key="recherche_plan")
+        
+        st.markdown("---")
+        
+        # Appliquer filtres
+        jobs_filtres = filtrer_jobs_non_planifies(filtre_variete, filtre_producteur, recherche)
+        
+        total_jobs = len(st.session_state.jobs_non_planifies)
+        nb_filtres = len(jobs_filtres)
+        
+        st.markdown(f"### 📦 Jobs à Planifier ({nb_filtres}/{total_jobs})")
+        
+        if jobs_filtres:
+            # Grouper par variété
+            varietes_groupes = {}
+            for job in jobs_filtres:
+                var = job['variete']
+                if var not in varietes_groupes:
+                    varietes_groupes[var] = []
+                varietes_groupes[var].append(job)
+            
+            # Afficher par variété avec expanders
+            for variete, jobs_var in sorted(varietes_groupes.items()):
+                with st.expander(f"🌱 {variete} ({len(jobs_var)} jobs)", expanded=len(varietes_groupes)==1):
+                    for job in jobs_var:
+                        st.markdown(f"**{job['nom_usage']}**")
+                        st.caption(f"📦 {job['quantite_pallox']} pallox - ⚖️ {job['poids_brut_kg']/1000:.1f} T")
+                        st.caption(f"👨‍🌾 {job['producteur']} - 📏 {job['calibre_min']}/{job['calibre_max']}")
+                        
+                        if st.button(f"➕ Planifier", key=f"plan_{job['id']}", use_container_width=True):
+                            st.info("📅 Fonctionnalité de planification à implémenter")
+                        
+                        st.markdown("---")
+        else:
+            st.info("Aucun job ne correspond aux filtres")
+    
+    # ===== COLONNE CENTRE : CALENDRIER LECTURE SEULE =====
+    with col_centre:
+        st.markdown("### 📅 Planning (lecture seule)")
+        st.caption("👉 Cliquez sur un job pour voir les détails")
+        
+        events = preparer_events_calendrier()
+        
+        # Calendrier LECTURE SEULE (editable=False)
+        calendar_event = fullcalendar_component(
+            events=events,
+            editable=False,
+            height=600,
+            key="calendar_planification"
+        )
+        
+        # Détecter clic
+        if calendar_event and isinstance(calendar_event, dict) and calendar_event.get('type') == 'click':
+            st.session_state.selected_job_id = calendar_event['job_id']
+            st.rerun()
+    
+    # ===== COLONNE DROITE : DÉTAIL JOB =====
+    with col_droite:
+        st.markdown("### 📋 Détails Job")
+        
+        if st.session_state.selected_job_id:
+            job = get_job_by_id(st.session_state.selected_job_id)
+            
+            if job:
+                st.markdown(f"""
+                <div class="detail-card">
+                    <h3 style="color: #2e7d32; margin-top: 0;">🎯 Job #{job['id']}</h3>
+                    <p style="font-size: 1.2em; font-weight: 700; margin: 0.5rem 0;">{job['variete']}</p>
+                    <p style="color: #666; margin-bottom: 1rem;">{job['code_lot_interne']}</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Informations avec icônes
+                st.markdown(f"""
+                <div class="info-row">
+                    <span class="info-icon">📦</span>
+                    <span class="info-label">Quantité:</span>
+                    <span class="info-value">{job['quantite_pallox']} pallox</span>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown(f"""
+                <div class="info-row">
+                    <span class="info-icon">⚖️</span>
+                    <span class="info-label">Poids:</span>
+                    <span class="info-value">{job['poids_brut_kg']/1000:.1f} T</span>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown(f"""
+                <div class="info-row">
+                    <span class="info-icon">👨‍🌾</span>
+                    <span class="info-label">Producteur:</span>
+                    <span class="info-value">{job['producteur']}</span>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown(f"""
+                <div class="info-row">
+                    <span class="info-icon">📏</span>
+                    <span class="info-label">Calibre:</span>
+                    <span class="info-value">{job['calibre_min']}/{job['calibre_max']}</span>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown(f"""
+                <div class="info-row">
+                    <span class="info-icon">📅</span>
+                    <span class="info-label">Date:</span>
+                    <span class="info-value">{job['date_prevue']}</span>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown(f"""
+                <div class="info-row">
+                    <span class="info-icon">🕒</span>
+                    <span class="info-label">Horaire:</span>
+                    <span class="info-value">{job['heure_debut']} - {job['heure_fin']}</span>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown(f"""
+                <div class="info-row">
+                    <span class="info-icon">🔧</span>
+                    <span class="info-label">Ligne:</span>
+                    <span class="info-value">{job['ligne_lavage']}</span>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown(f"""
+                <div class="info-row">
+                    <span class="info-icon">🏷️</span>
+                    <span class="info-label">Statut:</span>
+                    <span class="metric-badge">{job['statut']}</span>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                # Boutons actions selon statut
+                if job['statut'] == 'PRÉVU':
+                    if st.button("▶️ Démarrer Job", type="primary", use_container_width=True):
+                        st.info("⚙️ Fonctionnalité de démarrage à implémenter")
+                    
+                    if st.button("📝 Modifier", use_container_width=True):
+                        st.info("✏️ Fonctionnalité de modification à implémenter")
+                
+                elif job['statut'] == 'EN_COURS':
+                    st.info(f"⏱️ Démarré: {job.get('date_debut_reel', 'N/A')}")
+                    
+                    if st.button("⏸️ Terminer Job", type="primary", use_container_width=True):
+                        st.info("🏁 Fonctionnalité de terminaison à implémenter")
+                
+                elif job['statut'] == 'TERMINÉ':
+                    st.success("✅ Job terminé")
+                    
+                    if job.get('rendement_pct'):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Rendement", f"{job['rendement_pct']:.1f}%")
+                        with col2:
+                            st.metric("Tare", f"{job['tare_pct']:.1f}%")
+            
+            else:
+                st.warning("Job introuvable")
+        
+        else:
+            st.info("👈 Cliquez sur un job dans le calendrier pour voir les détails")
+
+# ==========================================
+# MODE 2 : RÉORGANISATION (plein écran drag & drop)
+# ==========================================
+
+elif mode == "🔄 Réorganisation":
+    
+    st.markdown("### 🔄 Mode Réorganisation - Drag & Drop Actif")
+    st.caption("📌 Glissez-déposez les jobs pour réorganiser le planning")
+    
+    events = preparer_events_calendrier()
+    
+    # Calendrier ÉDITABLE (editable=True)
+    calendar_event = fullcalendar_component(
+        events=events,
+        editable=True,
+        height=700,
+        key="calendar_reorganisation"
+    )
+    
+    # Détecter drag & drop
+    if calendar_event and isinstance(calendar_event, dict):
+        
+        if calendar_event.get('type') == 'drop':
+            # Mise à jour après drag & drop
+            job_id = calendar_event['job_id']
+            new_start = calendar_event['new_start']
+            new_end = calendar_event['new_end']
+            
+            if update_job_times(job_id, new_start, new_end):
+                st.success(f"✅ Job #{job_id} déplacé avec succès")
+                st.rerun()
+            else:
+                st.error(f"❌ Erreur lors du déplacement du job #{job_id}")
+        
+        elif calendar_event.get('type') == 'resize':
+            # Mise à jour après redimensionnement
+            job_id = calendar_event['job_id']
+            new_start = calendar_event['new_start']
+            new_end = calendar_event['new_end']
+            
+            if update_job_times(job_id, new_start, new_end):
+                st.success(f"✅ Durée du job #{job_id} modifiée")
+                st.rerun()
+            else:
+                st.error(f"❌ Erreur lors de la modification")
+        
+        elif calendar_event.get('type') == 'click':
+            # Afficher détails en modal (ou panneau)
+            st.session_state.selected_job_id = calendar_event['job_id']
+            st.rerun()
+    
+    # Afficher détail job si sélectionné
+    if st.session_state.selected_job_id:
+        job = get_job_by_id(st.session_state.selected_job_id)
+        
+        if job:
+            st.markdown("---")
+            st.markdown(f"### 📋 Job sélectionné : #{job['id']} - {job['variete']}")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.info(f"📦 {job['quantite_pallox']} pallox")
+                st.info(f"⚖️ {job['poids_brut_kg']/1000:.1f} T")
+            
+            with col2:
+                st.info(f"📅 {job['date_prevue']}")
+                st.info(f"🕒 {job['heure_debut']} - {job['heure_fin']}")
+            
+            with col3:
+                st.info(f"🔧 {job['ligne_lavage']}")
+                st.info(f"🏷️ {job['statut']}")
+            
+            if st.button("❌ Fermer détails"):
+                st.session_state.selected_job_id = None
+                st.rerun()
+
+st.markdown("---")
+st.caption("POC - Données en session_state (pas DB) - FullCalendar gratuit avec drag & drop")
