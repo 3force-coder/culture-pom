@@ -407,19 +407,25 @@ with st.expander("📖 Ce que tu dois tester", expanded=True):
     - [ ] 4 jobs avec couleurs (vert/orange/gris)
     - [ ] Heures 05:00 - 22:00
     
-    **Interactions** :
-    - [ ] Glisser Job #1 (AGATA vert) du lundi au mardi
-    - [ ] Glisser Job #3 (CHARLOTTE orange) de LIGNE_2 vers LIGNE_1
-    - [ ] Redimensionner Job #2 (tirer bord droit)
-    - [ ] Job #4 (ROSEVAL gris) refuse de bouger
+    **Interactions visuelles** :
+    - [ ] Glisser Job #1 (AGATA vert) du lundi au mardi → **Se déplace visuellement**
+    - [ ] Glisser Job #3 (CHARLOTTE orange) de LIGNE_2 vers LIGNE_1 → **Change de ligne**
+    - [ ] Redimensionner Job #2 (tirer bord droit) → **Durée change**
+    - [ ] Job #4 (ROSEVAL gris) refuse de bouger → **Bloqué**
     
-    **Communication** :
-    - [ ] Log en haut à droite affiche actions
-    - [ ] Modifications affichées en dessous
+    **Log JavaScript** (en haut à droite du calendrier) :
+    - [ ] Affiche "Job #X déplacé" quand tu glisses
+    - [ ] Affiche "Job #X redimensionné" quand tu agrandis
+    
+    💡 **Note ÉTAPE 1** : C'est juste un POC visuel
+    - Les modifications NE sont PAS sauvegardées en DB
+    - Le log Python en dessous ne s'affichera pas encore
+    - L'ÉTAPE 2 ajoutera la communication JS → Python → DB
     
     ### 🎯 Validation
     
-    Dis-moi : **"✅ ÉTAPE 1 validée, on passe ÉTAPE 2"**
+    Si tout fonctionne visuellement, dis-moi :  
+    **"✅ ÉTAPE 1 validée, drag & drop fonctionne"**
     """)
 
 st.markdown("---")
@@ -444,13 +450,14 @@ st.subheader("📅 Calendrier FullCalendar")
 
 result = render_calendar(jobs, lignes, week_start)
 
-# Afficher résultat si modification
-if result:
-    action = result.get('action')
-    job_id = result.get('id')
-    
+# Afficher résultat si modification (pour ÉTAPE 2)
+# Pour l'ÉTAPE 1, on vérifie juste visuellement que le drag & drop fonctionne
+if result is not None and isinstance(result, dict):
     st.markdown("---")
     st.subheader("🔔 Modification détectée")
+    
+    action = result.get('action', '')
+    job_id = result.get('id', 0)
     
     if action == 'move':
         st.success(f"✅ Job #{job_id} déplacé")
@@ -462,6 +469,15 @@ if result:
         st.success(f"✅ Job #{job_id} redimensionné ({duration_change_min:+d} min)")
         with st.expander("Détails JSON"):
             st.json(result)
+else:
+    # Pour ÉTAPE 1 : Communication JS → Python sera implémentée à l'ÉTAPE 2
+    st.info("""
+    💡 **Pour l'ÉTAPE 1** : Vérifie visuellement que le drag & drop fonctionne
+    
+    - Glisse les jobs dans le calendrier
+    - Regarde le **log en haut à droite** du calendrier (il affiche tes actions)
+    - La sauvegarde en DB sera implémentée à l'ÉTAPE 2
+    """)
 
 # Debug
 with st.expander("🔍 Données de test (Debug)"):
