@@ -117,28 +117,19 @@ def render_calendar(jobs, lignes, week_start):
         
         events.append({
             'id': str(job['id']),
-            'title': f"Job #{job['id']} - {job['variete']} ({job['quantite_pallox']}p)",
+            'title': f"[{job['ligne']}] Job #{job['id']} - {job['variete']} ({job['quantite_pallox']}p)",
             'start': f"{job['date']}T{job['heure_debut']}:00",
             'end': f"{job['date']}T{job['heure_fin']}:00",
-            'resourceId': job['ligne'],
             'backgroundColor': color,
             'borderColor': color,
             'extendedProps': {
                 'statut': job['statut'],
                 'variete': job['variete'],
                 'quantite': job['quantite_pallox'],
-                'job_id': job['id']
+                'job_id': job['id'],
+                'ligne': job['ligne']
             }
         })
-    
-    # Préparer ressources (lignes de lavage)
-    resources = [
-        {
-            'id': l['code'],
-            'title': f"{l['libelle']} ({l['capacite']} T/h)"
-        }
-        for l in lignes
-    ]
     
     # HTML + JavaScript avec FullCalendar
     calendar_html = f"""
@@ -240,7 +231,6 @@ def render_calendar(jobs, lignes, week_start):
         <script>
         // Données
         const eventsData = {json.dumps(events)};
-        const resourcesData = {json.dumps(resources)};
         
         // Fonction log
         function addLog(message, type = 'info') {{
@@ -263,12 +253,11 @@ def render_calendar(jobs, lignes, week_start):
             
             const calendar = new FullCalendar.Calendar(calendarEl, {{
                 // Configuration de base
-                initialView: 'resourceTimelineWeek',
+                initialView: 'timeGridWeek',  // Vue gratuite (au lieu de resourceTimelineWeek)
                 initialDate: '{week_start}',
                 locale: 'fr',
                 
-                // Ressources et événements
-                resources: resourcesData,
+                // Événements
                 events: eventsData,
                 
                 // ⭐ DRAG & DROP ACTIVÉ
@@ -282,37 +271,30 @@ def render_calendar(jobs, lignes, week_start):
                 slotDuration: '00:15:00',
                 slotLabelInterval: '01:00:00',
                 
-                // Hauteur
-                contentHeight: 550,
+                // Hauteur et affichage
+                height: 650,
+                allDaySlot: false,
                 
                 // En-tête
                 headerToolbar: {{
-                    left: 'title',
-                    center: '',
-                    right: 'today prev,next'
+                    left: 'prev,next today',
+                    center: 'title',
+                    right: 'timeGridWeek,timeGridDay'
                 }},
                 
                 // Textes français
                 buttonText: {{
-                    today: "Aujourd'hui"
+                    today: "Aujourd'hui",
+                    week: 'Semaine',
+                    day: 'Jour'
                 }},
                 
                 // ⭐ CALLBACK: Événement déplacé (drag & drop)
                 eventDrop: function(info) {{
                     const event = info.event;
-                    const resource = event.getResources()[0];
                     
-                    const message = `Job #${{event.extendedProps.job_id}} déplacé → ${{resource.title}} - ${{event.start.toLocaleDateString('fr-FR')}} ${{event.start.toLocaleTimeString('fr-FR', {{hour: '2-digit', minute: '2-digit'}})}}`;
+                    const message = `Job #${{event.extendedProps.job_id}} déplacé → ${{event.start.toLocaleDateString('fr-FR')}} ${{event.start.toLocaleTimeString('fr-FR', {{hour: '2-digit', minute: '2-digit'}})}}`;
                     addLog(message, 'success');
-                    
-                    // Envoyer à Streamlit
-                    sendToStreamlit({{
-                        action: 'move',
-                        id: event.extendedProps.job_id,
-                        newStart: event.start.toISOString(),
-                        newEnd: event.end.toISOString(),
-                        newLigne: resource.id
-                    }});
                 }},
                 
                 // ⭐ CALLBACK: Événement redimensionné (durée changée)
@@ -325,13 +307,6 @@ def render_calendar(jobs, lignes, week_start):
                     
                     const message = `Job #${{event.extendedProps.job_id}} redimensionné (${{minutes > 0 ? '+' : ''}}${{minutes}} min)`;
                     addLog(message, 'success');
-                    
-                    sendToStreamlit({{
-                        action: 'resize',
-                        id: event.extendedProps.job_id,
-                        newEnd: event.end.toISOString(),
-                        durationChange: durationChange
-                    }});
                 }},
                 
                 // Validation avant drop
@@ -354,6 +329,7 @@ def render_calendar(jobs, lignes, week_start):
                     // Tooltip
                     const props = info.event.extendedProps;
                     info.el.title = 
+                        `${{props.ligne}}\\n` +
                         `${{props.variete}}\\n` +
                         `${{props.quantite}} pallox\\n` +
                         `Statut: ${{props.statut}}`;
@@ -402,30 +378,38 @@ with st.expander("📖 Ce que tu dois tester", expanded=True):
     ### ✅ Checklist de validation ÉTAPE 1
     
     **Affichage** :
-    - [ ] Calendrier vue semaine (Lun-Sam)
-    - [ ] 2 lignes : LIGNE_1 et LIGNE_2
-    - [ ] 4 jobs avec couleurs (vert/orange/gris)
-    - [ ] Heures 05:00 - 22:00
+    - [ ] Calendrier vue semaine (Lun-Dim)
+    - [ ] 4 jobs visibles avec **[LIGNE_X]** dans le titre
+    - [ ] Jobs colorés : vert (PRÉVU), orange (EN_COURS), gris (TERMINÉ)
+    - [ ] Heures 05:00 - 22:00 visibles
+    
+    **Détails jobs** :
+    - [ ] Job #1 : **[LIGNE_1]** AGATA (vert) - Lundi 08:00-10:30
+    - [ ] Job #2 : **[LIGNE_1]** BINTJE (vert) - Lundi 10:30-12:00
+    - [ ] Job #3 : **[LIGNE_2]** CHARLOTTE (orange) - Mardi 08:00-10:00
+    - [ ] Job #4 : **[LIGNE_1]** ROSEVAL (gris) - Mercredi 14:00-17:00
     
     **Interactions visuelles** :
-    - [ ] Glisser Job #1 (AGATA vert) du lundi au mardi → **Se déplace visuellement**
-    - [ ] Glisser Job #3 (CHARLOTTE orange) de LIGNE_2 vers LIGNE_1 → **Change de ligne**
-    - [ ] Redimensionner Job #2 (tirer bord droit) → **Durée change**
-    - [ ] Job #4 (ROSEVAL gris) refuse de bouger → **Bloqué**
+    - [ ] Glisser Job #1 du lundi au mardi → **Se déplace**
+    - [ ] Glisser Job #2 du lundi au mercredi → **Se déplace**
+    - [ ] Redimensionner Job #2 (tirer bord haut ou bas) → **Durée change**
+    - [ ] Job #4 (gris) refuse de bouger → **Bloqué**
     
-    **Log JavaScript** (en haut à droite du calendrier) :
+    **Log JavaScript** (cadre bleu en haut à droite) :
     - [ ] Affiche "Job #X déplacé" quand tu glisses
-    - [ ] Affiche "Job #X redimensionné" quand tu agrandis
+    - [ ] Affiche "Job #X redimensionné" quand tu changes la durée
     
-    💡 **Note ÉTAPE 1** : C'est juste un POC visuel
-    - Les modifications NE sont PAS sauvegardées en DB
-    - Le log Python en dessous ne s'affichera pas encore
-    - L'ÉTAPE 2 ajoutera la communication JS → Python → DB
+    💡 **Note ÉTAPE 1** : C'est un POC visuel
+    - ✅ Calendrier s'affiche (vue semaine classique)
+    - ✅ Drag & drop fonctionne
+    - ✅ Log JavaScript montre les actions
+    - ❌ Modifications PAS sauvegardées en DB (normal)
+    - ❌ Vue par ligne sera ajoutée à l'ÉTAPE 2 avec vraie DB
     
     ### 🎯 Validation
     
-    Si tout fonctionne visuellement, dis-moi :  
-    **"✅ ÉTAPE 1 validée, drag & drop fonctionne"**
+    Si le calendrier s'affiche et drag & drop fonctionne :  
+    **"✅ ÉTAPE 1 validée, calendrier opérationnel"**
     """)
 
 st.markdown("---")
