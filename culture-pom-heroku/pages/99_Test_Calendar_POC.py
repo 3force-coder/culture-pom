@@ -1,18 +1,18 @@
 """
-ÉTAPE 1 : POC Planning Lavage avec FullCalendar
-================================================
+ÉTAPE 1.5 : POC Planning Lavage - Design Culture Pom
+====================================================
 
-PAGE DE TEST dans l'application Culture Pom
-Déployée sur Heroku pour validation
-
-⚠️ NE TOUCHE PAS à la DB - Données de test uniquement
-
-Accès : Menu latéral → "🧪 Test Calendar POC"
+Version améliorée avec :
+- Design cohérent avec l'application
+- Ligne heure actuelle (now indicator)
+- Vue centrée sur aujourd'hui
+- Couleurs et style Culture Pom
 """
 
 import streamlit as st
 import streamlit.components.v1 as components
 import json
+from datetime import datetime
 from auth import is_authenticated
 from components import show_footer
 
@@ -40,19 +40,19 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================
-# DONNÉES DE TEST (pas la vraie DB)
+# DONNÉES DE TEST
 # ============================================================
 
 def get_test_jobs():
-    """4 jobs de test pour valider le POC"""
+    """4 jobs de test"""
     return [
         {
             'id': 1,
             'variete': 'AGATA',
             'quantite_pallox': 5,
-            'date': '2026-02-03',  # Lundi
-            'heure_debut': '08:00',
-            'heure_fin': '10:30',
+            'date': '2026-02-03',
+            'heure_debut': '06:00',
+            'heure_fin': '08:30',
             'ligne': 'LIGNE_1',
             'statut': 'PRÉVU'
         },
@@ -60,9 +60,9 @@ def get_test_jobs():
             'id': 2,
             'variete': 'BINTJE',
             'quantite_pallox': 3,
-            'date': '2026-02-03',  # Lundi
-            'heure_debut': '10:30',
-            'heure_fin': '12:00',
+            'date': '2026-02-05',
+            'heure_debut': '09:00',
+            'heure_fin': '10:30',
             'ligne': 'LIGNE_1',
             'statut': 'PRÉVU'
         },
@@ -70,9 +70,9 @@ def get_test_jobs():
             'id': 3,
             'variete': 'CHARLOTTE',
             'quantite_pallox': 4,
-            'date': '2026-02-04',  # Mardi
-            'heure_debut': '08:00',
-            'heure_fin': '10:00',
+            'date': '2026-02-03',
+            'heure_debut': '08:30',
+            'heure_fin': '09:45',
             'ligne': 'LIGNE_2',
             'statut': 'EN_COURS'
         },
@@ -80,7 +80,7 @@ def get_test_jobs():
             'id': 4,
             'variete': 'ROSEVAL',
             'quantite_pallox': 6,
-            'date': '2026-02-05',  # Mercredi
+            'date': '2026-02-02',
             'heure_debut': '14:00',
             'heure_fin': '17:00',
             'ligne': 'LIGNE_1',
@@ -88,40 +88,35 @@ def get_test_jobs():
         }
     ]
 
-def get_test_lignes():
-    """2 lignes de lavage de test"""
-    return [
-        {'code': 'LIGNE_1', 'libelle': 'Ligne principale', 'capacite': 13.0},
-        {'code': 'LIGNE_2', 'libelle': 'Ligne secondaire', 'capacite': 6.0}
-    ]
-
 # ============================================================
 # COMPOSANT FULLCALENDAR
 # ============================================================
 
-def render_calendar(jobs, lignes, week_start):
-    """
-    Affiche le calendrier FullCalendar avec drag & drop
-    """
+def render_calendar(jobs):
+    """Calendrier FullCalendar avec design Culture Pom"""
     
-    # Préparer événements pour FullCalendar
+    # Préparer événements
     events = []
     for job in jobs:
-        # Couleur selon statut
+        # Couleurs selon statut (palette Culture Pom)
         if job['statut'] == 'EN_COURS':
-            color = '#ff9800'  # Orange
+            color = '#FF6B35'  # Orange Culture Pom
+            text_color = '#FFFFFF'
         elif job['statut'] == 'TERMINÉ':
-            color = '#757575'  # Gris
+            color = '#95A5A6'  # Gris
+            text_color = '#FFFFFF'
         else:
-            color = '#4caf50'  # Vert
+            color = '#2ECC71'  # Vert Culture Pom
+            text_color = '#FFFFFF'
         
         events.append({
             'id': str(job['id']),
-            'title': f"[{job['ligne']}] Job #{job['id']} - {job['variete']} ({job['quantite_pallox']}p)",
+            'title': f"[{job['ligne']}] {job['variete']} ({job['quantite_pallox']}p)",
             'start': f"{job['date']}T{job['heure_debut']}:00",
             'end': f"{job['date']}T{job['heure_fin']}:00",
             'backgroundColor': color,
             'borderColor': color,
+            'textColor': text_color,
             'extendedProps': {
                 'statut': job['statut'],
                 'variete': job['variete'],
@@ -131,90 +126,206 @@ def render_calendar(jobs, lignes, week_start):
             }
         })
     
-    # HTML + JavaScript avec FullCalendar
+    # Date actuelle pour initialisation
+    today = datetime.now().strftime('%Y-%m-%d')
+    
     calendar_html = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="utf-8">
-        <title>Planning Lavage POC</title>
-        
-        <!-- FullCalendar CSS -->
+        <title>Planning Lavage</title>
         <link href='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.css' rel='stylesheet' />
         
         <style>
-            body {{
+            * {{
                 margin: 0;
-                padding: 10px;
-                font-family: 'Segoe UI', Arial, sans-serif;
-                background: #fafafa;
+                padding: 0;
+                box-sizing: border-box;
+            }}
+            
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: #FAFAFA;
+                padding: 0;
             }}
             
             #calendar {{
-                max-width: 100%;
-                height: 600px;
                 background: white;
-                border-radius: 8px;
-                padding: 10px;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                border-radius: 12px;
+                padding: 20px;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+                margin: 10px;
             }}
             
-            /* Style des événements */
+            /* ===== STYLE CULTURE POM ===== */
+            
+            /* Header */
+            .fc .fc-toolbar {{
+                background: linear-gradient(135deg, #2E7D32 0%, #388E3C 100%);
+                padding: 15px 20px;
+                border-radius: 8px;
+                margin-bottom: 15px;
+            }}
+            
+            .fc .fc-toolbar-title {{
+                color: white !important;
+                font-size: 1.4rem !important;
+                font-weight: 600 !important;
+            }}
+            
+            .fc .fc-button {{
+                background: rgba(255,255,255,0.2) !important;
+                border: 1px solid rgba(255,255,255,0.3) !important;
+                color: white !important;
+                border-radius: 6px !important;
+                padding: 8px 16px !important;
+                font-weight: 500 !important;
+                transition: all 0.2s !important;
+            }}
+            
+            .fc .fc-button:hover {{
+                background: rgba(255,255,255,0.3) !important;
+                border-color: rgba(255,255,255,0.5) !important;
+            }}
+            
+            .fc .fc-button-active {{
+                background: rgba(255,255,255,0.4) !important;
+                border-color: rgba(255,255,255,0.6) !important;
+            }}
+            
+            /* Jours de la semaine */
+            .fc .fc-col-header-cell {{
+                background: #F5F5F5;
+                padding: 12px 8px;
+                font-weight: 600;
+                color: #2E7D32;
+                border: none !important;
+            }}
+            
+            .fc .fc-col-header-cell-cushion {{
+                color: #2E7D32;
+                font-size: 0.9rem;
+            }}
+            
+            /* Grille horaire */
+            .fc .fc-timegrid-slot {{
+                height: 3em !important;
+                border-color: #E8E8E8 !important;
+            }}
+            
+            .fc .fc-timegrid-slot-label {{
+                color: #666;
+                font-size: 0.85rem;
+                font-weight: 500;
+            }}
+            
+            /* Aujourd'hui */
+            .fc .fc-day-today {{
+                background: rgba(46, 125, 50, 0.03) !important;
+            }}
+            
+            /* ⭐ LIGNE HEURE ACTUELLE (NOW INDICATOR) */
+            .fc .fc-timegrid-now-indicator-line {{
+                border-color: #E74C3C !important;
+                border-width: 2px !important;
+            }}
+            
+            .fc .fc-timegrid-now-indicator-arrow {{
+                border-color: #E74C3C !important;
+                border-width: 6px !important;
+            }}
+            
+            /* Événements */
             .fc-event {{
                 cursor: move !important;
-                border-radius: 4px;
-                padding: 4px;
-                font-size: 0.85rem;
+                border-radius: 6px !important;
+                padding: 6px 8px !important;
+                font-size: 0.85rem !important;
+                font-weight: 500 !important;
+                border: none !important;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+                transition: all 0.2s !important;
+            }}
+            
+            .fc-event:hover {{
+                transform: translateY(-1px);
+                box-shadow: 0 4px 8px rgba(0,0,0,0.15) !important;
             }}
             
             .fc-event.statut-termine {{
                 cursor: not-allowed !important;
-                opacity: 0.6;
+                opacity: 0.7 !important;
             }}
             
-            /* Log des actions */
+            .fc-event-title {{
+                font-weight: 600 !important;
+            }}
+            
+            /* Scrollbar personnalisé */
+            .fc-scroller::-webkit-scrollbar {{
+                width: 8px;
+                height: 8px;
+            }}
+            
+            .fc-scroller::-webkit-scrollbar-track {{
+                background: #F5F5F5;
+                border-radius: 4px;
+            }}
+            
+            .fc-scroller::-webkit-scrollbar-thumb {{
+                background: #2E7D32;
+                border-radius: 4px;
+            }}
+            
+            .fc-scroller::-webkit-scrollbar-thumb:hover {{
+                background: #1B5E20;
+            }}
+            
+            /* Log Actions */
             #log {{
                 position: fixed;
                 top: 80px;
                 right: 20px;
                 background: white;
-                border: 2px solid #1976d2;
+                border: 2px solid #2E7D32;
+                border-radius: 10px;
                 padding: 15px;
-                border-radius: 8px;
                 max-width: 320px;
-                font-size: 13px;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                box-shadow: 0 4px 12px rgba(0,0,0,0.1);
                 z-index: 1000;
             }}
             
             #log h4 {{
-                margin: 0 0 10px 0;
-                color: #1976d2;
-                font-size: 14px;
+                margin: 0 0 12px 0;
+                color: #2E7D32;
+                font-size: 15px;
+                font-weight: 600;
             }}
             
             #log .log-entry {{
-                margin: 6px 0;
-                padding: 6px;
-                background: #f5f5f5;
-                border-radius: 4px;
-                border-left: 3px solid #1976d2;
+                margin: 8px 0;
+                padding: 8px 10px;
+                background: #F5F5F5;
+                border-radius: 6px;
+                border-left: 3px solid #2E7D32;
                 font-size: 12px;
+                color: #333;
             }}
             
             #log .log-entry.success {{
-                border-left-color: #4caf50;
-                background: #e8f5e9;
+                border-left-color: #2ECC71;
+                background: #E8F5E9;
             }}
             
             #log .log-entry.warning {{
-                border-left-color: #ff9800;
-                background: #fff3e0;
+                border-left-color: #FF6B35;
+                background: #FFF3E0;
             }}
         </style>
     </head>
     <body>
-        <!-- Log des actions -->
+        <!-- Log Actions -->
         <div id="log">
             <h4>📋 Log Actions</h4>
             <div id="log-content">
@@ -225,14 +336,11 @@ def render_calendar(jobs, lignes, week_start):
         <!-- Calendrier -->
         <div id='calendar'></div>
         
-        <!-- FullCalendar JS -->
         <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js'></script>
         
         <script>
-        // Données
         const eventsData = {json.dumps(events)};
         
-        // Fonction log
         function addLog(message, type = 'info') {{
             const logContent = document.getElementById('log-content');
             const entry = document.createElement('div');
@@ -241,63 +349,57 @@ def render_calendar(jobs, lignes, week_start):
             entry.textContent = time + ' - ' + message;
             logContent.insertBefore(entry, logContent.firstChild);
             
-            // Garder max 8 entrées
             while (logContent.children.length > 8) {{
                 logContent.removeChild(logContent.lastChild);
             }}
         }}
         
-        // Initialisation FullCalendar
         document.addEventListener('DOMContentLoaded', function() {{
             const calendarEl = document.getElementById('calendar');
             
             const calendar = new FullCalendar.Calendar(calendarEl, {{
-                // Configuration de base
-                initialView: 'timeGridWeek',  // Vue gratuite (au lieu de resourceTimelineWeek)
-                initialDate: '{week_start}',
+                initialView: 'timeGridWeek',
+                initialDate: '{today}',  // ⭐ Date actuelle
                 locale: 'fr',
                 
-                // Événements
                 events: eventsData,
                 
-                // ⭐ DRAG & DROP ACTIVÉ
                 editable: true,
                 droppable: true,
                 eventResizableFromStart: true,
                 
-                // Plage horaire
                 slotMinTime: '05:00:00',
                 slotMaxTime: '22:00:00',
                 slotDuration: '00:15:00',
                 slotLabelInterval: '01:00:00',
                 
-                // Hauteur et affichage
-                height: 650,
+                // ⭐ SCROLL AUTO vers heure actuelle
+                scrollTime: new Date().toTimeString().slice(0, 8),
+                
+                height: 700,
                 allDaySlot: false,
                 
-                // En-tête
+                // ⭐ LIGNE HEURE ACTUELLE
+                nowIndicator: true,
+                
                 headerToolbar: {{
                     left: 'prev,next today',
                     center: 'title',
                     right: 'timeGridWeek,timeGridDay'
                 }},
                 
-                // Textes français
                 buttonText: {{
                     today: "Aujourd'hui",
                     week: 'Semaine',
                     day: 'Jour'
                 }},
                 
-                // ⭐ CALLBACK: Événement déplacé (drag & drop)
                 eventDrop: function(info) {{
                     const event = info.event;
-                    
                     const message = `Job #${{event.extendedProps.job_id}} déplacé → ${{event.start.toLocaleDateString('fr-FR')}} ${{event.start.toLocaleTimeString('fr-FR', {{hour: '2-digit', minute: '2-digit'}})}}`;
                     addLog(message, 'success');
                 }},
                 
-                // ⭐ CALLBACK: Événement redimensionné (durée changée)
                 eventResize: function(info) {{
                     const event = info.event;
                     const oldDuration = info.oldEvent.end - info.oldEvent.start;
@@ -309,9 +411,7 @@ def render_calendar(jobs, lignes, week_start):
                     addLog(message, 'success');
                 }},
                 
-                // Validation avant drop
                 eventAllow: function(dropInfo, draggedEvent) {{
-                    // Bloquer si TERMINÉ
                     if (draggedEvent.extendedProps.statut === 'TERMINÉ') {{
                         addLog('⛔ Job TERMINÉ non déplaçable', 'warning');
                         return false;
@@ -319,14 +419,11 @@ def render_calendar(jobs, lignes, week_start):
                     return true;
                 }},
                 
-                // Style et tooltip
                 eventDidMount: function(info) {{
-                    // Ajouter classe si terminé
                     if (info.event.extendedProps.statut === 'TERMINÉ') {{
                         info.el.classList.add('statut-termine');
                     }}
                     
-                    // Tooltip
                     const props = info.event.extendedProps;
                     info.el.title = 
                         `${{props.ligne}}\\n` +
@@ -336,81 +433,50 @@ def render_calendar(jobs, lignes, week_start):
                 }}
             }});
             
-            // Communication avec Streamlit
-            function sendToStreamlit(data) {{
-                window.parent.postMessage({{
-                    type: 'streamlit:setComponentValue',
-                    value: data
-                }}, '*');
-            }}
-            
-            // Rendre le calendrier
             calendar.render();
-            addLog('Drag & drop activé - Testez !', 'success');
+            addLog('Drag & drop activé !', 'success');
         }});
         </script>
     </body>
     </html>
     """
     
-    # Afficher le composant et récupérer les modifications
-    result = components.html(calendar_html, height=650, scrolling=False)
-    
+    result = components.html(calendar_html, height=750, scrolling=False)
     return result
 
 # ============================================================
-# INTERFACE STREAMLIT
+# INTERFACE
 # ============================================================
 
-st.title("🧪 ÉTAPE 1 : POC Planning Lavage")
-st.caption("Test FullCalendar avec données fictives (pas la vraie DB)")
+st.title("🧪 POC Planning - Design Culture Pom")
+st.caption("Version améliorée avec design cohérent")
 
 st.markdown("---")
 
-# Alert
-st.warning("""
-⚠️ **PAGE DE TEST** : Données fictives uniquement - Ne touche pas à la DB Planning Lavage
-""")
-
-# Instructions
-with st.expander("📖 Ce que tu dois tester", expanded=True):
-    st.markdown("""
-    ### ✅ Checklist de validation ÉTAPE 1
+# Comparaison design
+with st.expander("🎨 Améliorations design appliquées", expanded=True):
+    col1, col2 = st.columns(2)
     
-    **Affichage** :
-    - [ ] Calendrier vue semaine (Lun-Dim)
-    - [ ] 4 jobs visibles avec **[LIGNE_X]** dans le titre
-    - [ ] Jobs colorés : vert (PRÉVU), orange (EN_COURS), gris (TERMINÉ)
-    - [ ] Heures 05:00 - 22:00 visibles
+    with col1:
+        st.markdown("### ❌ AVANT")
+        st.markdown("""
+        - Header bleu basique
+        - Couleurs FullCalendar par défaut
+        - Vue fixe semaine 03-08 Fév
+        - Pas de ligne heure actuelle
+        - Style générique
+        """)
     
-    **Détails jobs** :
-    - [ ] Job #1 : **[LIGNE_1]** AGATA (vert) - Lundi 08:00-10:30
-    - [ ] Job #2 : **[LIGNE_1]** BINTJE (vert) - Lundi 10:30-12:00
-    - [ ] Job #3 : **[LIGNE_2]** CHARLOTTE (orange) - Mardi 08:00-10:00
-    - [ ] Job #4 : **[LIGNE_1]** ROSEVAL (gris) - Mercredi 14:00-17:00
-    
-    **Interactions visuelles** :
-    - [ ] Glisser Job #1 du lundi au mardi → **Se déplace**
-    - [ ] Glisser Job #2 du lundi au mercredi → **Se déplace**
-    - [ ] Redimensionner Job #2 (tirer bord haut ou bas) → **Durée change**
-    - [ ] Job #4 (gris) refuse de bouger → **Bloqué**
-    
-    **Log JavaScript** (cadre bleu en haut à droite) :
-    - [ ] Affiche "Job #X déplacé" quand tu glisses
-    - [ ] Affiche "Job #X redimensionné" quand tu changes la durée
-    
-    💡 **Note ÉTAPE 1** : C'est un POC visuel
-    - ✅ Calendrier s'affiche (vue semaine classique)
-    - ✅ Drag & drop fonctionne
-    - ✅ Log JavaScript montre les actions
-    - ❌ Modifications PAS sauvegardées en DB (normal)
-    - ❌ Vue par ligne sera ajoutée à l'ÉTAPE 2 avec vraie DB
-    
-    ### 🎯 Validation
-    
-    Si le calendrier s'affiche et drag & drop fonctionne :  
-    **"✅ ÉTAPE 1 validée, calendrier opérationnel"**
-    """)
+    with col2:
+        st.markdown("### ✅ APRÈS")
+        st.markdown("""
+        - **Header vert Culture Pom** (dégradé)
+        - **Couleurs cohérentes** (vert/orange/gris)
+        - **Vue sur aujourd'hui** (02/02/2026 19h35)
+        - **Ligne rouge heure actuelle** ⭐
+        - **Scroll auto** vers heure actuelle
+        - **Style Culture Pom** (arrondi, ombres)
+        """)
 
 st.markdown("---")
 
@@ -419,58 +485,44 @@ col1, col2, col3 = st.columns(3)
 with col1:
     st.metric("📦 Jobs test", "4")
 with col2:
-    st.metric("🔧 Lignes", "2")
+    st.metric("📅 Vue", "Aujourd'hui")
 with col3:
-    st.metric("📅 Semaine", "03-08 Fév 2026")
+    st.metric("🎨 Design", "Culture Pom")
 
 st.markdown("---")
 
 # Calendrier
+st.subheader("📅 Calendrier Planning Lavage")
+
 jobs = get_test_jobs()
-lignes = get_test_lignes()
-week_start = "2026-02-03"  # Lundi
+result = render_calendar(jobs)
 
-st.subheader("📅 Calendrier FullCalendar")
-
-result = render_calendar(jobs, lignes, week_start)
-
-# Afficher résultat si modification (pour ÉTAPE 2)
-# Pour l'ÉTAPE 1, on vérifie juste visuellement que le drag & drop fonctionne
+# Message
 if result is not None and isinstance(result, dict):
     st.markdown("---")
-    st.subheader("🔔 Modification détectée")
-    
-    action = result.get('action', '')
-    job_id = result.get('id', 0)
-    
-    if action == 'move':
-        st.success(f"✅ Job #{job_id} déplacé")
-        with st.expander("Détails JSON"):
-            st.json(result)
-        
-    elif action == 'resize':
-        duration_change_min = int(result.get('durationChange', 0) / 60000)
-        st.success(f"✅ Job #{job_id} redimensionné ({duration_change_min:+d} min)")
-        with st.expander("Détails JSON"):
-            st.json(result)
+    st.success("🔔 Modification détectée (sera implémenté ÉTAPE 2)")
 else:
-    # Pour ÉTAPE 1 : Communication JS → Python sera implémentée à l'ÉTAPE 2
     st.info("""
-    💡 **Pour l'ÉTAPE 1** : Vérifie visuellement que le drag & drop fonctionne
+    💡 **Design amélioré** :
     
-    - Glisse les jobs dans le calendrier
-    - Regarde le **log en haut à droite** du calendrier (il affiche tes actions)
-    - La sauvegarde en DB sera implémentée à l'ÉTAPE 2
+    - **Ligne rouge** = Heure actuelle (19h35)
+    - **Vue centrée** sur aujourd'hui (02/02)
+    - **Couleurs** cohérentes avec Culture Pom
+    - **Header vert** au lieu de bleu
+    - **Scroll auto** vers l'heure actuelle
+    
+    **Glisse les jobs pour tester !** Le design reste cohérent.
     """)
 
-# Debug
-with st.expander("🔍 Données de test (Debug)"):
-    st.write("**Jobs** :")
-    st.dataframe(jobs, use_container_width=True)
-    st.write("**Lignes** :")
-    st.dataframe(lignes, use_container_width=True)
-
 st.markdown("---")
-st.info("**ÉTAPE 2** : Connexion vraie DB Planning Lavage (si ÉTAPE 1 OK)")
+
+# Validation
+st.success("""
+✅ **ÉTAPE 1 validée** - Le calendrier fonctionne !
+
+🎨 **Design amélioré** - Cohérence Culture Pom
+
+➡️ **Prochaine étape** : ÉTAPE 2 - Connexion vraie DB Planning Lavage
+""")
 
 show_footer()
