@@ -278,7 +278,7 @@ def get_kpis_lavage():
         return None
 
 def get_jobs_a_placer():
-    """Récupère les jobs PRÉVU prêts à être placés avec infos producteur et produit"""
+    """Récupère les jobs PRÉVU prêts à être placés avec infos producteur"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -296,13 +296,11 @@ def get_jobs_a_placer():
                 lj.capacite_th,
                 lb.code_producteur,
                 p.nom as nom_producteur,
-                pa.code_produit_commercial,
-                pc.libelle as produit_libelle
+                '' as code_produit_commercial,
+                '' as produit_libelle
             FROM lavages_jobs lj
             LEFT JOIN lots_bruts lb ON lj.lot_id = lb.id
             LEFT JOIN ref_producteurs p ON lb.code_producteur = p.code_producteur
-            LEFT JOIN previsions_affectations pa ON lb.id = pa.lot_id AND pa.is_active = TRUE
-            LEFT JOIN ref_produits_commerciaux pc ON pa.code_produit_commercial = pc.code_produit
             WHERE lj.id NOT IN (
                 SELECT job_id FROM lavages_planning_elements 
                 WHERE job_id IS NOT NULL
@@ -1513,10 +1511,14 @@ with tab1:
                     
                     # Infos enrichies
                     # Textes complets sans troncature
-                    producteur_full = str(job['nom_producteur']) if pd.notna(job['nom_producteur']) else "-"
-                    produit_full = str(job['produit_libelle']) if pd.notna(job['produit_libelle']) else "-"
+                    producteur_full = str(job['nom_producteur']) if pd.notna(job['nom_producteur']) and str(job['nom_producteur']).strip() not in ['', '-'] else None
+                    produit_full = str(job['produit_libelle']) if pd.notna(job['produit_libelle']) and str(job['produit_libelle']).strip() not in ['', '-'] else None
                     
                     date_prev = job['date_prevue'].strftime('%d/%m') if pd.notna(job['date_prevue']) else "-"
+                    
+                    # Construire les lignes optionnelles
+                    ligne_producteur = f'<div style="font-size: 0.75rem; color: #666;">👤 {producteur_full}</div>' if producteur_full else ''
+                    ligne_produit = f'<div style="font-size: 0.75rem; color: #666;">📦 {produit_full}</div>' if produit_full else ''
                     
                     event_data = {
                         'id': f"job_{int(job['id'])}",
@@ -1552,12 +1554,8 @@ with tab1:
                         <div style="font-size: 0.8rem; color: #555; margin-bottom: 0.2rem;">
                             📅 {date_prev} | {int(job['quantite_pallox'])}p | ⏱️ {duree_h:.1f}h
                         </div>
-                        <div style="font-size: 0.75rem; color: #666;">
-                            👤 {producteur_full}
-                        </div>
-                        <div style="font-size: 0.75rem; color: #666;">
-                            📦 {produit_full}
-                        </div>
+                        {ligne_producteur}
+                        {ligne_produit}
                     </div>
                     """, unsafe_allow_html=True)
             else:
@@ -2438,6 +2436,11 @@ with tab3:
                             lignes = get_lignes_lavage()
                             ligne_opts = [f"{l['code']} ({l['capacite_th']} T/h)" for l in lignes]
                             ligne_sel = st.selectbox("Ligne de lavage", ligne_opts, key="ligne_besoins_create")
+                            
+                            # Récupérer capacité de la ligne sélectionnée
+                            ligne_idx = ligne_opts.index(ligne_sel)
+                            capacite_defaut = float(lignes[ligne_idx]['capacite_th'])
+                            
                             # Option modifier capacité
                             modifier_capacite = st.checkbox("✏️ Modifier la capacité de la ligne", value=False)
                             
@@ -2446,21 +2449,17 @@ with tab3:
                                     "Capacité (T/h) *",
                                     min_value=1.0,
                                     max_value=20.0,
-                                    value=float(capacite_ligne),
+                                    value=float(capacite_defaut),
                                     step=0.5,
                                     help="Capacité réelle pour ce job"
                                 )
                             else:
-                                capacite_utilisee = float(capacite_ligne)
+                                capacite_utilisee = float(capacite_defaut)
                             
-                            # Calcul avec capacité choisie
-                            temps_estime = (poids_brut_kg / 1000) / capacite_utilisee
-                            st.metric("Temps estimé", f"{temps_estime:.1f}h")
+                            # Calculs
                             poids_brut = quantite * poids_unit
                             poids_net_estime = poids_brut * rendement
-                            ligne_idx = ligne_opts.index(ligne_sel)
-                            capacite = float(lignes[ligne_idx]['capacite_th'])
-                            temps_estime = (poids_brut / 1000) / capacite
+                            temps_estime = (poids_brut / 1000) / capacite_utilisee
                             
                             st.metric("Poids BRUT", f"{poids_brut:,.0f} kg ({poids_brut/1000:.1f} T)")
                             st.metric("NET estimé (~78%)", f"{poids_net_estime:,.0f} kg ({poids_net_estime/1000:.1f} T)")
@@ -2472,7 +2471,7 @@ with tab3:
                             ligne_code = lignes[ligne_idx]['code']
                             success, message = create_job_lavage(
                                 lot_id_besoin, empl_id, quantite, poids_brut,
-                                date_prevue, ligne_code, capacite, notes
+                                date_prevue, ligne_code, capacite_utilisee, notes
                             )
                             if success:
                                 st.success(message)
