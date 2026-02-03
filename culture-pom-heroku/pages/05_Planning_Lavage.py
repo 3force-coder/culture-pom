@@ -1347,20 +1347,20 @@ with tab1:
                 
                 emoji = "🟢" if job_statut == 'PRÉVU' else "⏱️" if job_statut == 'EN_COURS' else "✅"
                 
-               event.update({ 
-                        'title': f"{emoji} Job #{int(elem['job_id'])} - {variete}",
-                        'backgroundColor': get_statut_color(job_statut),    # ← Modifié
-                        'borderColor': get_statut_color(job_statut),        # ← Modifié
-                        'className': f"statut-{job_statut.lower().replace('é','e').replace('î','i')}",
-                        'extendedProps': {
-                            'type': 'job',
-                            'job_id': int(elem['job_id']),
-                            'element_id': int(elem['id']),
-                            'variete': variete,
-                            'statut': job_statut,
-                            'quantite_pallox': int(elem['quantite_pallox']) if pd.notna(elem['quantite_pallox']) else 0
-                        }
-                    })
+                event.update({
+                    'title': f"{emoji} Job #{int(elem['job_id'])} - {variete}",
+                    'backgroundColor': get_statut_color(job_statut),    # ← Modifié
+                    'borderColor': get_statut_color(job_statut),        # ← Modifié
+                    'className': f"statut-{job_statut.lower().replace('é','e').replace('î','i')}",
+                    'extendedProps': {
+                        'type': 'job',
+                        'job_id': int(elem['job_id']),
+                        'element_id': int(elem['id']),
+                        'variete': variete,
+                        'statut': job_statut,
+                        'quantite_pallox': int(elem['quantite_pallox']) if pd.notna(elem['quantite_pallox']) else 0
+                    }
+                })
             else:  # CUSTOM
                 event.update({
                     'title': f"{elem.get('custom_emoji', '🔧')} {elem.get('custom_libelle', 'Temps custom')}",
@@ -2151,71 +2151,33 @@ with tab1:
             cal_max_lave = col_cal2.number_input("Cal max", 0, 100, 0, key=f"cal_max_lave_{job_en_terminaison}")
         
         with col2:
-            lignes = get_lignes_lavage()
-            ligne_opts = [f"{l['code']} ({l['capacite_th']} T/h)" for l in lignes]
-            ligne_sel = st.selectbox("Ligne de lavage", ligne_opts, key="ligne_besoins_create")
+            st.markdown("#### 🟢 GRENAILLES")
+            nb_pallox_gren = st.number_input("Nb pallox", 0, 1000, 0, key=f"nb_gren_{job_en_terminaison}")
+            type_gren = st.selectbox("Type", ["Pallox", "Petit Pallox", "Big Bag"], key=f"type_gren_{job_en_terminaison}")
+            p_gren = st.number_input("Poids (kg)", 0.0, 100000.0, 0.0, 100.0, key=f"p_gren_{job_en_terminaison}")
             
-            # Récupérer la capacité de la ligne sélectionnée
-            ligne_idx = ligne_opts.index(ligne_sel)
-            capacite_defaut = float(lignes[ligne_idx]['capacite_th'])
+            col_cal3, col_cal4 = st.columns(2)
+            cal_min_gren = col_cal3.number_input("Cal min", 0, 100, 0, key=f"cal_min_gren_{job_en_terminaison}")
+            cal_max_gren = col_cal4.number_input("Cal max", 0, 100, 0, key=f"cal_max_gren_{job_en_terminaison}")
             
-            # Option modifier capacité
-            modifier_capacite = st.checkbox("✏️ Modifier la capacité de la ligne", value=False)
+            st.markdown("#### ❌ DÉCHETS")
+            p_dech = st.number_input("Poids déchets (kg)", 0.0, 100000.0, 0.0, 100.0, key=f"p_dech_{job_en_terminaison}")
             
-            if modifier_capacite:
-                capacite_utilisee = st.number_input(
-                    "Capacité (T/h) *",
-                    min_value=1.0,
-                    max_value=20.0,
-                    value=capacite_defaut,
-                    step=0.5,
-                    help="Capacité réelle pour ce job"
-                )
-            else:
-                capacite_utilisee = capacite_defaut
+            # Calcul terre
+            total_sorties = p_lave + p_gren + p_dech
+            p_terre = max(0, poids_brut_total - total_sorties)
+            ecart = abs(poids_brut_total - total_sorties - p_terre)
             
-            # Calcul avec capacité choisie
-            poids_brut = quantite * poids_unit
-            poids_net_estime = poids_brut * rendement
-            temps_estime = (poids_brut / 1000) / capacite_utilisee
-            
-            st.metric("Poids BRUT", f"{poids_brut:,.0f} kg ({poids_brut/1000:.1f} T)")
-            st.metric("NET estimé (~78%)", f"{poids_net_estime:,.0f} kg ({poids_net_estime/1000:.1f} T)")
-            st.metric("Temps estimé", f"{temps_estime:.1f} h")
+            st.metric("🟤 Terre (calculée)", f"{p_terre:,.0f} kg")
+            if ecart > 1:
+                st.warning(f"⚠️ Écart : {ecart:.0f} kg")
         
-        notes = st.text_input("Notes (optionnel)", key="notes_besoins_create")
+        st.markdown("---")
+        empl_opts = get_emplacements_saint_flavy()
+        empl_list = [e[0] for e in empl_opts]
+        empl = st.selectbox("Emplacement destination (LAVÉ) *", [""] + empl_list, key=f"empl_{job_en_terminaison}")
         
-        if st.button("✅ Créer Job de Lavage", type="primary", use_container_width=True, key="btn_create_besoins"):
-            ligne_code = lignes[ligne_idx]['code']
-            success, message = create_job_lavage(
-                lot_id_besoin, empl_id, quantite, poids_brut,
-                date_prevue, ligne_code, capacite_utilisee,
-                notes
-            )
-            if success:
-                st.success(message)
-                st.balloons()
-                st.rerun()
-            else:
-                st.error(message)
-
-notes = st.text_input("Notes (optionnel)", key="notes_besoins_create")
-
-if st.button("✅ Créer Job de Lavage", type="primary", use_container_width=True, key="btn_create_besoins"):
-    ligne_code = lignes[ligne_idx]['code']
-    success, message = create_job_lavage(
-        lot_id_besoin, empl_id, quantite, poids_brut,
-        date_prevue, ligne_code, capacite_utilisee,  # ← Utilise capacite_utilisee
-        notes
-    )
-    if success:
-        st.success(message)
-        st.balloons()
-        st.rerun()
-    else:
-        st.error(message)
-else:
-    st.info("👆 Sélectionnez un emplacement ci-dessus pour créer le job")
+        col_save, col_cancel = st.columns(2)
         
         with col_save:
             if st.button("💾 Valider", key=f"save_{job_en_terminaison}", type="primary", use_container_width=True):
@@ -2239,6 +2201,7 @@ else:
             if st.button("❌ Annuler", key=f"cancel_{job_en_terminaison}", use_container_width=True):
                 st.session_state.pop(f'show_finish_{job_en_terminaison}', None)
                 st.rerun()
+
 
 with tab2:
     st.subheader("📋 Historique des Jobs")
