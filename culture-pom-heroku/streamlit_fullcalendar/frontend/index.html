@@ -1,1 +1,157 @@
-
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/locales-all.global.min.js"></script>
+    <script src="./streamlit-component-lib.js"></script>
+    
+    <style>
+        body { margin: 0; padding: 5px; font-family: sans-serif; }
+        #external-events { margin-bottom: 15px; padding: 12px; background: #f8f9fa; border-radius: 8px; border: 2px dashed #1976d2; }
+        #external-events h4 { margin: 0 0 10px 0; color: #1976d2; }
+        .fc-event.external-draggable { cursor: grab; margin: 5px 0; padding: 10px; background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-left: 4px solid #1976d2; border-radius: 6px; }
+        .fc-event.external-draggable:hover { transform: translateX(5px); box-shadow: 0 4px 12px rgba(25, 118, 210, 0.3); }
+        #calendar { height: 650px; }
+        .fc-timegrid-slot { height: 2.5em !important; }
+        .fc-event.statut-prevu { background: linear-gradient(135deg, #c8e6c9 0%, #a5d6a7 100%) !important; border: 2px solid #388e3c !important; color: #1b5e20 !important; font-weight: 600; }
+        .fc-event.statut-encours { background: linear-gradient(135deg, #fff3e0 0%, #ffcc80 100%) !important; border: 2px solid #f57c00 !important; color: #e65100 !important; font-weight: 600; animation: pulse 2s infinite; }
+        .fc-event.statut-termine { background: linear-gradient(135deg, #f5f5f5 0%, #e0e0e0 100%) !important; border: 2px solid #757575 !important; color: #424242 !important; opacity: 0.7; }
+        .fc-event.type-custom { background: linear-gradient(135deg, #e1bee7 0%, #ce93d8 100%) !important; border: 2px solid #7b1fa2 !important; color: #4a148c !important; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.85; } }
+        .fc-timegrid-now-indicator-line { border-color: #f44336 !important; border-width: 3px !important; }
+        .fc-highlight { background: rgba(25, 118, 210, 0.15) !important; border: 2px dashed #1976d2 !important; }
+    </style>
+</head>
+<body>
+    <div id="external-events">
+        <h4>📦 Jobs à placer (glisser-déposer)</h4>
+        <div id="external-events-list"></div>
+    </div>
+    <div id="calendar"></div>
+    
+    <script>
+        const Streamlit = window.parent.Streamlit;
+        let calendar = null;
+        
+        function onRender(event) {
+            const data = event.detail.args;
+            const events = data.events || [];
+            const externalEvents = data.external_events || [];
+            const initialDate = data.initial_date || new Date().toISOString().split('T')[0];
+            const editable = data.editable !== undefined ? data.editable : true;
+            const droppable = data.droppable !== undefined ? data.droppable : true;
+            
+            const externalEl = document.getElementById('external-events-list');
+            externalEl.innerHTML = '';
+            
+            if (externalEvents.length > 0) {
+                externalEvents.forEach(extEvent => {
+                    const eventEl = document.createElement('div');
+                    eventEl.className = 'fc-event external-draggable';
+                    eventEl.innerHTML = `<div><strong>${extEvent.title}</strong></div>${extEvent.subtitle ? `<div style="font-size:0.75rem;color:#666;">${extEvent.subtitle}</div>` : ''}`;
+                    eventEl.draggable = true;
+                    eventEl.dataset.event = JSON.stringify({
+                        id: extEvent.id,
+                        title: extEvent.title,
+                        duration: extEvent.duration || '01:00',
+                        backgroundColor: extEvent.backgroundColor || '#1976d2',
+                        borderColor: extEvent.borderColor || '#1976d2',
+                        extendedProps: extEvent.extendedProps || {}
+                    });
+                    externalEl.appendChild(eventEl);
+                });
+            } else {
+                externalEl.innerHTML = '<div style="color:#999;padding:10px;">Aucun job à placer</div>';
+            }
+            
+            if (!calendar) {
+                const calendarEl = document.getElementById('calendar');
+                calendar = new FullCalendar.Calendar(calendarEl, {
+                    initialView: 'timeGridWeek',
+                    headerToolbar: false,
+                    locale: 'fr',
+                    firstDay: 1,
+                    slotMinTime: '05:00:00',
+                    slotMaxTime: '20:00:00',
+                    slotDuration: '00:15:00',
+                    height: 650,
+                    allDaySlot: false,
+                    nowIndicator: true,
+                    editable: editable,
+                    droppable: droppable,
+                    initialDate: initialDate,
+                    events: events,
+                    
+                    drop: function(info) {
+                        const eventData = JSON.parse(info.draggedEl.dataset.event);
+                        Streamlit.setComponentValue({
+                            action: 'drop',
+                            event_id: eventData.id,
+                            start: info.dateStr,
+                            extendedProps: eventData.extendedProps
+                        });
+                        info.draggedEl.parentNode.removeChild(info.draggedEl);
+                    },
+                    
+                    eventDrop: function(info) {
+                        Streamlit.setComponentValue({
+                            action: 'move',
+                            event_id: info.event.id,
+                            old_start: info.oldEvent.startStr,
+                            new_start: info.event.startStr,
+                            new_end: info.event.endStr,
+                            extendedProps: info.event.extendedProps
+                        });
+                    },
+                    
+                    eventResize: function(info) {
+                        Streamlit.setComponentValue({
+                            action: 'resize',
+                            event_id: info.event.id,
+                            old_end: info.oldEvent.endStr,
+                            new_start: info.event.startStr,
+                            new_end: info.event.endStr,
+                            extendedProps: info.event.extendedProps
+                        });
+                    },
+                    
+                    eventClick: function(info) {
+                        Streamlit.setComponentValue({
+                            action: 'click',
+                            event_id: info.event.id,
+                            title: info.event.title,
+                            start: info.event.startStr,
+                            end: info.event.endStr,
+                            extendedProps: info.event.extendedProps
+                        });
+                    }
+                });
+                
+                calendar.render();
+                
+                if (droppable) {
+                    const containerEl = document.getElementById('external-events-list');
+                    new FullCalendar.Draggable(containerEl, {
+                        itemSelector: '.fc-event',
+                        eventData: function(eventEl) {
+                            return JSON.parse(eventEl.dataset.event);
+                        }
+                    });
+                }
+            } else {
+                calendar.removeAllEvents();
+                calendar.addEventSource(events);
+                calendar.gotoDate(initialDate);
+            }
+            
+            Streamlit.setFrameHeight(800);
+        }
+        
+        Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, onRender);
+        Streamlit.setComponentReady();
+        Streamlit.setFrameHeight(800);
+    </script>
+</body>
+</html>
