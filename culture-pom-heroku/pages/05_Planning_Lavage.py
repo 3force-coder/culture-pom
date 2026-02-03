@@ -1349,8 +1349,8 @@ with tab1:
                 
                 event.update({
                     'title': f"{emoji} Job #{int(elem['job_id'])} - {variete}",
-                    'backgroundColor': get_variete_color(statut),
-                    'borderColor': get_variete_color(statut),
+                    'backgroundColor': get_variete_color(job_statut),
+                    'borderColor': get_variete_color(job_statut),
                     'className': f"statut-{job_statut.lower().replace('é','e').replace('î','i')}",
                     'extendedProps': {
                         'type': 'job',
@@ -1396,8 +1396,8 @@ with tab1:
                 'title': f"Job #{int(job['id'])} - {variete}",
                 'subtitle': f"{int(job['quantite_pallox'])}p - {duree_h:.1f}h",
                 'duration': duration_str,
-                'backgroundColor': get_variete_color(statut),
-                'borderColor': get_variete_color(statut),
+                'backgroundColor': get_variete_color('PRÉVU'),
+                'borderColor': get_variete_color('PRÉVU'),
                 'extendedProps': {
                     'type': 'job',
                     'job_id': int(job['id']),
@@ -1500,6 +1500,16 @@ with tab1:
                     duree_h = float(job['temps_estime_heures']) if pd.notna(job['temps_estime_heures']) else 1.0
                     heures = int(duree_h)
                     minutes = int((duree_h - heures) * 60)
+
+                    # Limite affichage
+                    LIMITE_AFFICHAGE = 5
+                    total_jobs = len(jobs_df)
+                    
+                    if total_jobs > LIMITE_AFFICHAGE:
+                        jobs_affichage = jobs_df.head(LIMITE_AFFICHAGE)
+                        st.info(f"📊 {LIMITE_AFFICHAGE}/{total_jobs} jobs affichés (tri par date)")
+                    else:
+                        jobs_affichage = jobs_df
                     
                     # Infos enrichies
                     # Textes complets sans troncature
@@ -2429,7 +2439,24 @@ with tab3:
                             lignes = get_lignes_lavage()
                             ligne_opts = [f"{l['code']} ({l['capacite_th']} T/h)" for l in lignes]
                             ligne_sel = st.selectbox("Ligne de lavage", ligne_opts, key="ligne_besoins_create")
+                            # Option modifier capacité
+                            modifier_capacite = st.checkbox("✏️ Modifier la capacité de la ligne", value=False)
                             
+                            if modifier_capacite:
+                                capacite_utilisee = st.number_input(
+                                    "Capacité (T/h) *",
+                                    min_value=1.0,
+                                    max_value=20.0,
+                                    value=float(capacite_ligne),
+                                    step=0.5,
+                                    help="Capacité réelle pour ce job"
+                                )
+                            else:
+                                capacite_utilisee = float(capacite_ligne)
+                            
+                            # Calcul avec capacité choisie
+                            temps_estime = (poids_brut_kg / 1000) / capacite_utilisee
+                            st.metric("Temps estimé", f"{temps_estime:.1f}h")
                             poids_brut = quantite * poids_unit
                             poids_net_estime = poids_brut * rendement
                             ligne_idx = ligne_opts.index(ligne_sel)
