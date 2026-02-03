@@ -1393,7 +1393,87 @@ with tab1:
     # ========================================
     # CALENDRIER AVEC DRAG & DROP
     # ========================================
+    # ========================================
+    # AFFICHAGE JOBS EXTERNES DRAGGABLES
+    # ========================================
     
+    import json
+    
+    if not jobs_non_planifies.empty or temps_customs:
+        st.markdown("### 📦 Éléments à Planifier")
+        st.caption("💡 **Glissez** les éléments ci-dessous dans le calendrier")
+        
+        col1, col2 = st.columns(2)
+        
+        # Jobs non planifiés
+        if not jobs_non_planifies.empty:
+            with col1:
+                st.markdown("#### 🟢 Jobs")
+                for _, job in jobs_non_planifies.iterrows():
+                    variete = str(job['variete']) if pd.notna(job['variete']) else 'INCONNUE'
+                    duree_h = float(job['temps_estime_heures']) if pd.notna(job['temps_estime_heures']) else 1.0
+                    heures = int(duree_h)
+                    minutes = int((duree_h - heures) * 60)
+                    
+                    event_data = {
+                        'id': f"job_{int(job['id'])}",
+                        'title': f"Job #{int(job['id'])} - {variete}",
+                        'duration': f"{heures:02d}:{minutes:02d}",
+                        'backgroundColor': get_variete_color(variete),
+                        'borderColor': get_variete_color(variete),
+                        'extendedProps': {
+                            'type': 'job',
+                            'job_id': int(job['id']),
+                            'variete': variete,
+                            'quantite': int(job['quantite_pallox']),
+                            'duree_heures': duree_h
+                        }
+                    }
+                    
+                    st.markdown(f"""
+                    <div class="job-card" 
+                         draggable="true"
+                         data-fc-event='{json.dumps(event_data)}'
+                         style="cursor: move; user-select: none;">
+                        <strong>🟢 Job #{int(job['id'])}</strong><br>
+                        🌱 {variete}<br>
+                        📊 {int(job['quantite_pallox'])} pallox<br>
+                        ⏱️ {duree_h:.1f}h
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        # Temps customs
+        if temps_customs:
+            with col2:
+                st.markdown("#### 🔧 Temps Customs")
+                for tc in temps_customs:
+                    heures_tc = int(tc['duree_minutes'] // 60)
+                    minutes_tc = int(tc['duree_minutes'] % 60)
+                    
+                    event_data = {
+                        'id': f"custom_{tc['id']}",
+                        'title': f"{tc['emoji']} {tc['libelle']}",
+                        'duration': f"{heures_tc:02d}:{minutes_tc:02d}",
+                        'backgroundColor': '#7b1fa2',
+                        'borderColor': '#7b1fa2',
+                        'extendedProps': {
+                            'type': 'custom',
+                            'custom_id': tc['id'],
+                            'duree_minutes': tc['duree_minutes']
+                        }
+                    }
+                    
+                    st.markdown(f"""
+                    <div class="custom-card" 
+                         draggable="true"
+                         data-fc-event='{json.dumps(event_data)}'
+                         style="cursor: move; user-select: none;">
+                        <strong>{tc['emoji']} {tc['libelle']}</strong><br>
+                        ⏱️ {tc['duree_minutes']}min
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        st.markdown("---")
     st.markdown("### 📅 Calendrier Interactif")
     if fc_external:
         st.info("💡 **Glisser-déposer** jobs dans calendrier | **Déplacer** en cliquant-glissant | **Redimensionner** en tirant sur les bords")
@@ -1406,6 +1486,7 @@ with tab1:
         <meta charset='utf-8'>
         <link href='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css' rel='stylesheet'>
         <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js'></script>
+        <script src='https://cdn.jsdelivr.net/npm/@fullcalendar/interaction@6.1.15/index.global.min.js'></script>
         <style>
             body {{ margin: 0; padding: 10px; }}
             #calendar {{ height: 650px; }}
@@ -1424,18 +1505,93 @@ with tab1:
                 height: 650,
                 allDaySlot: false,
                 nowIndicator: true,
-                editable: false,
+                editable: true,
+                droppable: true,
                 initialDate: '{week_start.isoformat()}',
-                events: {fc_events}
+                events: {fc_events},
+                
+                // DROP externe
+                drop: function(info) {{
+                    var eventData = info.draggedEl.getAttribute('data-fc-event');
+                    if (!eventData) return;
+                    
+                    try {{
+                        var data = JSON.parse(eventData);
+                        var duration = data.duration || '01:00';
+                        var durationParts = duration.split(':');
+                        var endDate = new Date(info.date);
+                        endDate.setHours(endDate.getHours() + parseInt(durationParts[0]));
+                        endDate.setMinutes(endDate.getMinutes() + parseInt(durationParts[1]));
+                        
+                        calendar.addEvent({{
+                            id: 'temp_' + data.id,
+                            title: data.title,
+                            start: info.date,
+                            end: endDate,
+                            backgroundColor: data.backgroundColor,
+                            borderColor: data.borderColor,
+                            extendedProps: data.extendedProps
+                        }});
+                        
+                        if (window.parent && window.parent.Streamlit) {{
+                            window.parent.Streamlit.setComponentValue({{
+                                action: 'drop',
+                                event_id: data.id,
+                                start: info.date.toISOString(),
+                                extendedProps: data.extendedProps
+                            }});
+                        }}
+                    }} catch(e) {{
+                        console.error('Drop error:', e);
+                    }}
+                }},
+                
+                // MOVE
+                eventDrop: function(info) {{
+                    if (window.parent && window.parent.Streamlit) {{
+                        window.parent.Streamlit.setComponentValue({{
+                            action: 'move',
+                            event_id: info.event.id,
+                            new_start: info.event.start.toISOString(),
+                            new_end: info.event.end ? info.event.end.toISOString() : null,
+                            extendedProps: info.event.extendedProps
+                        }});
+                    }}
+                }},
+                
+                // RESIZE
+                eventResize: function(info) {{
+                    if (window.parent && window.parent.Streamlit) {{
+                        window.parent.Streamlit.setComponentValue({{
+                            action: 'resize',
+                            event_id: info.event.id,
+                            new_start: info.event.start.toISOString(),
+                            new_end: info.event.end ? info.event.end.toISOString() : null,
+                            extendedProps: info.event.extendedProps
+                        }});
+                    }}
+                }}
             }});
             calendar.render();
+            
+            // Draggables externes
+            setTimeout(function() {{
+                if (window.parent && window.parent.document) {{
+                    var externalEvents = window.parent.document.querySelectorAll('[data-fc-event]');
+                    externalEvents.forEach(function(el) {{
+                        if (!el._fcDraggable) {{
+                            new FullCalendar.Draggable(el);
+                            el._fcDraggable = true;
+                        }}
+                    }});
+                }}
+            }}, 500);
         </script>
     </body>
     </html>
     """
     
-    stc.html(calendar_html, height=700)
-    calendar_event = None
+    calendar_event = stc.html(calendar_html, height=700)
     # ========================================
     # GÉRER LES ACTIONS DRAG & DROP
     # ========================================
