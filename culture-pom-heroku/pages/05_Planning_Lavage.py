@@ -1390,7 +1390,7 @@ with tab1:
                                 duree_min = int(float(job['temps_estime_heures']) * 60)
                                 
                                 # Vérif chevauchement
-                                chev = verifier_chevauchement_planning(
+                                ok, msg_chev, heure_prop = verifier_chevauchement(
                                     planning_df,
                                     date_placement,
                                     st.session_state.selected_ligne,
@@ -1398,8 +1398,8 @@ with tab1:
                                     duree_min
                                 )
                                 
-                                if chev:
-                                    st.error(f"❌ {chev}")
+                                if not ok:
+                                    st.error(f"❌ {msg_chev}")
                                 else:
                                     success, msg = ajouter_element_planning(
                                         'JOB',
