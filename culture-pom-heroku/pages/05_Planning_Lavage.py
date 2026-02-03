@@ -306,7 +306,6 @@ def place_job_in_calendar(job_id, date_prevue, ligne_lavage):
             SET date_prevue = %s,
                 ligne_lavage = %s,
                 temps_estime_heures = %s,
-                updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
         """, (date_prevue, ligne_lavage, temps_estime, job_id))
         
@@ -331,7 +330,6 @@ def remove_job_from_calendar(job_id):
             UPDATE lavages_jobs
             SET date_prevue = NULL,
                 ligne_lavage = NULL,
-                updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
         """, (job_id,))
         
@@ -1332,7 +1330,7 @@ st.markdown("---")
 # ONGLETS PRINCIPAUX
 # ============================================================
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📅 Planning Semaine", "📋 Liste Jobs", "➕ Créer Job", "📊 Stats & Recap", "🖨️ Imprimer", "⚙️ Admin"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["📅 Planning Semaine", "⚙️ Démarrer", "✅ Terminer", "📋 Liste Jobs", "➕ Créer Job", "📊 Stats & Recap", "🖨️ Imprimer", "⚙️ Admin"])
 
 # ============================================================
 # ONGLET 1 : PLANNING SEMAINE (fusionné de page 06)
@@ -1533,6 +1531,13 @@ with tab1:
                 initialView: 'timeGridWeek',
                 locale: 'fr',
                 firstDay: 1,
+                dayHeaderFormat: { weekday: 'short', day: '2-digit', month: '2-digit' },
+                buttonText: {
+                    today: "Aujourd'hui",
+                    month: 'Mois',
+                    week: 'Semaine',
+                    day: 'Jour'
+                },
                 slotMinTime: '04:00:00',
                 slotMaxTime: '22:00:00',
                 hiddenDays: [0],
@@ -1783,7 +1788,260 @@ with tab1:
             st.error(f"❌ Erreur : {str(e)}")
 
 
+
+# ============================================================
+# ONGLET 2 : DÉMARRER UN JOB
+# ============================================================
+
 with tab2:
+    st.subheader("⚙️ Démarrer un Job de Lavage")
+    st.markdown("*Jobs PRÉVU avec date et ligne planifiées*")
+    
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT 
+                lj.id, lj.code_lot_interne, lj.variete, lj.producteur,
+                lj.quantite_pallox, lj.poids_brut_kg,
+                lj.date_prevue, lj.ligne_lavage, lj.temps_estime_heures,
+                ll.libelle as ligne_libelle, ll.capacite_th
+            FROM lavages_jobs lj
+            LEFT JOIN lavages_lignes ll ON lj.ligne_lavage = ll.code
+            WHERE lj.statut = 'PRÉVU'
+              AND lj.date_prevue IS NOT NULL
+              AND lj.ligne_lavage IS NOT NULL
+            ORDER BY lj.date_prevue, lj.ligne_lavage
+        """)
+        
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if not rows:
+            st.info("📭 Aucun job prêt à démarrer\n\n💡 Placez d'abord les jobs dans le planning")
+        else:
+            df = pd.DataFrame(rows)
+            for col in ['quantite_pallox', 'poids_brut_kg', 'temps_estime_heures']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            st.success(f"✅ **{len(df)} job(s) prêt(s) à démarrer**")
+            
+            for idx, job in df.iterrows():
+                with st.expander(f"🟡 Job #{int(job['id'])} - {job['variete']}", expanded=False):
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.write(f"**Lot** : {job['code_lot_interne']}")
+                        st.write(f"**Variété** : {job['variete']}")
+                        if pd.notna(job['producteur']):
+                            st.write(f"**Producteur** : {job['producteur']}")
+                    
+                    with col2:
+                        st.write(f"**Quantité** : {int(job['quantite_pallox'])} pallox")
+                        st.write(f"**Poids** : {job['poids_brut_kg']/1000:.1f} T")
+                        st.write(f"**Temps estimé** : {job['temps_estime_heures']:.1f}h")
+                    
+                    with col3:
+                        date_str = job['date_prevue'].strftime('%d/%m/%Y') if pd.notna(job['date_prevue']) else 'N/A'
+                        st.write(f"**📅 Date** : {date_str}")
+                        st.write(f"**🔧 Ligne** : {job['ligne_lavage']}")
+                    
+                    st.markdown("---")
+                    
+                    if st.button(f"▶️ Démarrer Job #{int(job['id'])}", 
+                               key=f"start_{int(job['id'])}", 
+                               type="primary",
+                               use_container_width=True):
+                        try:
+                            conn2 = get_connection()
+                            cursor2 = conn2.cursor()
+                            activated_by = st.session_state.get('username', 'system')
+                            cursor2.execute("""
+                                UPDATE lavages_jobs
+                                SET statut = 'EN_COURS',
+                                    date_activation = CURRENT_TIMESTAMP,
+                                    activated_by = %s
+                                WHERE id = %s
+                            """, (activated_by, int(job['id'])))
+                            conn2.commit()
+                            cursor2.close()
+                            conn2.close()
+                            st.success(f"✅ Job démarré !")
+                            st.balloons()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Erreur : {str(e)}")
+    
+    except Exception as e:
+        st.error(f"❌ Erreur : {str(e)}")
+
+
+
+# ============================================================
+# ONGLET 3 : TERMINER UN JOB + QUALIFICATION
+# ============================================================
+
+with tab3:
+    st.subheader("✅ Terminer un Job + Qualification")
+    st.markdown("*Jobs EN_COURS avec saisie tares*")
+    
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT 
+                lj.id, lj.code_lot_interne, lj.variete, lj.producteur,
+                lj.quantite_pallox, lj.poids_brut_kg,
+                lj.date_prevue, lj.ligne_lavage, lj.date_activation,
+                lj.temps_estime_heures
+            FROM lavages_jobs lj
+            WHERE lj.statut = 'EN_COURS'
+            ORDER BY lj.date_activation
+        """)
+        
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if not rows:
+            st.info("📭 Aucun job en cours")
+        else:
+            df = pd.DataFrame(rows)
+            for col in ['quantite_pallox', 'poids_brut_kg', 'temps_estime_heures']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            st.success(f"⚙️ **{len(df)} job(s) en cours**")
+            
+            for idx, job in df.iterrows():
+                job_id = int(job['id'])
+                
+                with st.expander(f"🟠 Job #{job_id} - {job['variete']} - EN COURS", expanded=True):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.write(f"**Lot** : {job['code_lot_interne']}")
+                        st.write(f"**Variété** : {job['variete']}")
+                        st.write(f"**Quantité** : {int(job['quantite_pallox'])} pallox")
+                        st.write(f"**Poids brut** : {job['poids_brut_kg']:.0f} kg")
+                    
+                    with col2:
+                        st.write(f"**Ligne** : {job['ligne_lavage']}")
+                        if pd.notna(job['date_activation']):
+                            st.write(f"**Démarré** : {job['date_activation'].strftime('%d/%m %H:%M')}")
+                        st.write(f"**Temps estimé** : {job['temps_estime_heures']:.1f}h")
+                    
+                    st.markdown("---")
+                    st.markdown("##### 📝 Qualification des tares")
+                    
+                    poids_brut = float(job['poids_brut_kg'])
+                    
+                    col_l, col_g, col_d = st.columns(3)
+                    
+                    with col_l:
+                        poids_lave = st.number_input(
+                            "🟢 Poids LAVÉ (kg) *",
+                            min_value=0.0,
+                            value=poids_brut * 0.75,
+                            step=10.0,
+                            key=f"lave_{job_id}"
+                        )
+                    
+                    with col_g:
+                        poids_gren = st.number_input(
+                            "🟡 Grenailles (kg) *",
+                            min_value=0.0,
+                            value=poids_brut * 0.05,
+                            step=10.0,
+                            key=f"gren_{job_id}"
+                        )
+                    
+                    with col_d:
+                        poids_dech = st.number_input(
+                            "🔴 Déchets (kg) *",
+                            min_value=0.0,
+                            value=poids_brut * 0.05,
+                            step=10.0,
+                            key=f"dech_{job_id}"
+                        )
+                    
+                    poids_terre_calc = poids_brut - poids_lave - poids_gren - poids_dech
+                    tare_calc = ((poids_dech + poids_terre_calc) / poids_brut) * 100
+                    rend_calc = ((poids_lave + poids_gren) / poids_brut) * 100
+                    
+                    col_info1, col_info2, col_info3 = st.columns(3)
+                    col_info1.metric("🟤 Terre calculée", f"{poids_terre_calc:.0f} kg")
+                    col_info2.metric("📉 Tare réelle", f"{tare_calc:.1f}%")
+                    col_info3.metric("📈 Rendement", f"{rend_calc:.1f}%")
+                    
+                    # Validation
+                    total_sorties = poids_lave + poids_gren + poids_dech + poids_terre_calc
+                    ecart = abs(poids_brut - total_sorties)
+                    
+                    if ecart > 1:
+                        st.warning(f"⚠️ Écart : {ecart:.0f} kg (Brut={poids_brut:.0f} vs Total={total_sorties:.0f})")
+                    else:
+                        st.success(f"✅ Cohérence OK (écart {ecart:.1f} kg)")
+                    
+                    st.markdown("---")
+                    emplacements = [("SAINT_FLAVY", "A"), ("SAINT_FLAVY", "B"), ("SAINT_FLAVY", "C")]
+                    empl_dest = st.selectbox(
+                        "📍 Emplacement destination *",
+                        options=[f"{s}-{e}" for s, e in emplacements],
+                        key=f"empl_{job_id}"
+                    )
+                    
+                    notes_term = st.text_area("📝 Notes", key=f"notes_{job_id}")
+                    
+                    col_save, col_cancel = st.columns(2)
+                    
+                    with col_save:
+                        if st.button("💾 Terminer Job", key=f"finish_{job_id}", type="primary"):
+                            if ecart > 1:
+                                st.error("❌ Écart trop important, vérifiez les poids")
+                            else:
+                                # Appeler terminer_job (fonction existante - version simplifiée)
+                                try:
+                                    conn3 = get_connection()
+                                    cursor3 = conn3.cursor()
+                                    terminated_by = st.session_state.get('username', 'system')
+                                    
+                                    cursor3.execute("""
+                                        UPDATE lavages_jobs
+                                        SET statut = 'TERMINÉ',
+                                            date_terminaison = CURRENT_TIMESTAMP,
+                                            poids_lave_net_kg = %s,
+                                            poids_grenailles_kg = %s,
+                                            poids_dechets_kg = %s,
+                                            poids_terre_calcule_kg = %s,
+                                            tare_reelle_pct = %s,
+                                            rendement_pct = %s,
+                                            terminated_by = %s,
+                                            notes = %s
+                                        WHERE id = %s
+                                    """, (poids_lave, poids_gren, poids_dech, poids_terre_calc,
+                                          tare_calc, rend_calc, terminated_by, notes_term, job_id))
+                                    
+                                    conn3.commit()
+                                    cursor3.close()
+                                    conn3.close()
+                                    
+                                    st.success(f"✅ Job #{job_id} terminé ! Rendement: {rend_calc:.1f}%")
+                                    st.balloons()
+                                    st.rerun()
+                                    
+                                except Exception as e:
+                                    st.error(f"❌ Erreur : {str(e)}")
+    
+    except Exception as e:
+        st.error(f"❌ Erreur : {str(e)}")
+
+
+with tab4:  # Liste Jobs
     st.subheader("📋 Historique des Jobs")
     
     try:
@@ -1829,7 +2087,7 @@ with tab2:
 # ONGLET 3 : CRÉER JOB
 # ============================================================
 
-with tab3:
+with tab5:  # Créer Job
     st.subheader("➕ Créer un Job de Lavage")
     
     # Deux sous-onglets : Besoins basés sur affectations VS Tous les lots BRUT
@@ -2213,7 +2471,7 @@ with tab3:
 # ONGLET 4 : STATS & RECAP
 # ============================================================
 
-with tab4:
+with tab6:  # Stats
     st.subheader("📊 Statistiques & Récapitulatif")
     st.caption("*Vue d'ensemble des affectations et tonnages*")
     
@@ -2419,7 +2677,7 @@ with tab4:
 # ONGLET 5 : IMPRIMER
 # ============================================================
 
-with tab5:
+with tab7:  # Imprimer
     st.subheader("🖨️ Imprimer Planning Journée")
     st.caption("*Générer une fiche imprimable pour une équipe de lavage*")
     
@@ -2685,7 +2943,7 @@ with tab5:
 # ONGLET 6 : ADMIN
 # ============================================================
 
-with tab6:
+with tab8:  # Admin
     if not is_admin():
         st.warning("⚠️ Accès réservé aux administrateurs")
     else:
