@@ -278,6 +278,91 @@ def get_kpis_lavage():
     except Exception as e:
         return None
 
+def save_calendar_changes(changes):
+    """Sauvegarde les changements du calendrier en BDD"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        saved = 0
+        
+        for change in changes:
+            action = change.get('action')
+            data = change.get('data', {})
+            
+            if action == 'move_element':
+                # Déplacement d'un job
+                job_id_str = data.get('element_id', '').replace('job_', '')
+                if not job_id_str.isdigit():
+                    continue
+                job_id = int(job_id_str)
+                new_start = data.get('new_start')
+                new_end = data.get('new_end')
+                
+                if job_id and new_start:
+                    from datetime import datetime as dt_import
+                    dt_start = dt_import.fromisoformat(new_start.replace('Z', '+00:00'))
+                    new_date = dt_start.date()
+                    
+                    if new_end:
+                        dt_end = dt_import.fromisoformat(new_end.replace('Z', '+00:00'))
+                        duration_hours = (dt_end - dt_start).total_seconds() / 3600
+                        
+                        cursor.execute("""
+                            UPDATE lavages_jobs
+                            SET date_prevue = %s,
+                                temps_estime_heures = %s,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = %s
+                        """, (new_date, duration_hours, job_id))
+                    else:
+                        cursor.execute("""
+                            UPDATE lavages_jobs
+                            SET date_prevue = %s,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = %s
+                        """, (new_date, job_id))
+                    
+                    saved += 1
+            
+            elif action == 'resize_element':
+                job_id_str = data.get('element_id', '').replace('job_', '')
+                if not job_id_str.isdigit():
+                    continue
+                job_id = int(job_id_str)
+                new_end = data.get('new_end')
+                
+                if job_id and new_end:
+                    cursor.execute("SELECT date_prevue FROM lavages_jobs WHERE id = %s", (job_id,))
+                    row = cursor.fetchone()
+                    
+                    if row:
+                        from datetime import datetime as dt_import
+                        dt_end = dt_import.fromisoformat(new_end.replace('Z', '+00:00'))
+                        dt_start = dt_import.combine(row['date_prevue'], dt_import.min.time().replace(hour=8))
+                        duration_hours = (dt_end - dt_start).total_seconds() / 3600
+                        
+                        cursor.execute("""
+                            UPDATE lavages_jobs
+                            SET temps_estime_heures = %s,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = %s
+                        """, (duration_hours, job_id))
+                        
+                        saved += 1
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, f"✅ {saved} changement(s) sauvegardé(s)"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+
 def get_jobs_a_placer():
     """Récupère les jobs PRÉVU prêts à être placés avec infos producteur"""
     try:
@@ -1516,10 +1601,9 @@ with tab1:
                 
                 // Callback déplacement event
                 eventDrop: function(info) {{
-                    console.log('Event dropped:', info);
-                    var elementId = info.event.id.replace('element_', '');
+                    console.log('✅ Event dropped:', info.event.id);
                     recordChange('move_element', {{
-                        element_id: elementId,
+                        element_id: info.event.id,
                         new_start: info.event.start.toISOString(),
                         new_end: info.event.end ? info.event.end.toISOString() : null
                     }});
@@ -1527,10 +1611,9 @@ with tab1:
                 
                 // Callback resize event
                 eventResize: function(info) {{
-                    console.log('Event resized:', info);
-                    var elementId = info.event.id.replace('element_', '');
+                    console.log('✅ Event resized:', info.event.id);
                     recordChange('resize_element', {{
-                        element_id: elementId,
+                        element_id: info.event.id,
                         new_end: info.event.end.toISOString()
                     }});
                 }},
@@ -1572,34 +1655,50 @@ with tab1:
         var pendingChanges = [];
         
         function recordChange(action, data) {{
-            console.log('Change recorded:', action, data);
-            pendingChanges.push({{ action: action, data: data }});
+            console.log('📝 Change recorded:', action, data);
+            pendingChanges.push({{
+                action: action,
+                data: data,
+                timestamp: new Date().toISOString()
+            }});
             
-            // Afficher badge notification
             updateChangesCount();
         }}
         
         function updateChangesCount() {{
-            var count = pendingChanges.length;
-            console.log('Pending changes:', count);
-            
-            // Envoyer au parent pour afficher un badge
-            if (window.parent) {{
-                try {{
-                    window.parent.postMessage({{
-                        type: 'changes_count',
-                        count: count
-                    }}, '*');
-                }} catch(e) {{
-                    console.log('Cannot send to parent:', e);
-                }}
-            }}
+            console.log('📊 Pending changes:', pendingChanges.length);
         }}
+        
+        // Exposer fonction pour Streamlit
+        window.getCalendarChanges = function() {{
+            return pendingChanges;
+        }};
     </script>
 </body>
 </html>"""
         
         stc.html(calendar_html, height=650, scrolling=True)
+        
+        # ============================================================
+        # BOUTON SAUVEGARDER LES CHANGEMENTS
+        # ============================================================
+        
+        st.markdown("---")
+        
+        # Simuler tracking des changements (à améliorer avec JS postMessage)
+        if 'calendar_changes' not in st.session_state:
+            st.session_state.calendar_changes = []
+        
+        col1, col2, col3 = st.columns([2, 1, 2])
+        
+        with col2:
+            # Zone pour ajouter manuellement des changements (temporaire)
+            st.markdown("#### 💾 Sauvegarde")
+            
+            if st.button("🔄 Rafraîchir le calendrier", use_container_width=True):
+                st.rerun()
+            
+            st.info("Les changements drag & drop seront sauvegardés dans une prochaine version")
 
 with tab2:
     st.subheader("📋 Historique des Jobs")
