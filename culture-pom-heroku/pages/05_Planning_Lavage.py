@@ -1775,7 +1775,7 @@ with tab1:
     
     action_data = stc.html(read_script, height=0)
     
-    if action_data and action_data.strip():
+    if action_data:
         try:
             action = json.loads(action_data)
             
