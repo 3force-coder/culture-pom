@@ -1461,13 +1461,17 @@ with tab1:
         events_json = json.dumps(events_data, ensure_ascii=False)
         week_iso = week_start.isoformat()
         
+        # Debug : afficher nombre d'events
+        st.info(f"📊 DEBUG : {len(events_data)} event(s) à afficher | Semaine du {week_iso}")
+        if events_data:
+            st.json(events_data)
+        
         calendar_html = f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset='utf-8'>
-    <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/main.min.js'></script>
-    <link href='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/main.min.css' rel='stylesheet'>
-    <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/locales/fr.js'></script>
+    <link href='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css' rel='stylesheet'>
+    <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js'></script>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ font-family: -apple-system, sans-serif; background: white; }}
@@ -1478,16 +1482,19 @@ with tab1:
     <div id="calendar"></div>
     <script>
         document.addEventListener('DOMContentLoaded', function() {{
+            console.log('=== CALENDAR DEBUG ===');
+            console.log('Events data:', {events_json});
+            console.log('Week start:', '{week_iso}');
+            
             var calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{
-                plugins: ['timeGrid'],
-                defaultView: 'timeGridWeek',
+                initialView: 'timeGridWeek',
                 locale: 'fr',
                 firstDay: 1,
                 slotMinTime: '04:00:00',
                 slotMaxTime: '22:00:00',
                 hiddenDays: [0],
                 slotDuration: '00:15:00',
-                height: 'auto',
+                height: 730,
                 allDaySlot: false,
                 nowIndicator: true,
                 header: {{
