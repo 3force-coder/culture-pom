@@ -260,7 +260,7 @@ def get_kpis_lavage():
         return None
 
 def get_jobs_a_placer():
-    """Récupère les jobs PRÉVU non encore planifiés"""
+    """Récupère les jobs PRÉVU avec producteur et produit commercial"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -268,8 +268,16 @@ def get_jobs_a_placer():
             SELECT 
                 lj.id, lj.lot_id, lj.code_lot_interne, lj.variete,
                 lj.quantite_pallox, lj.poids_brut_kg, lj.temps_estime_heures,
-                lj.date_prevue, lj.ligne_lavage as ligne_origine, lj.statut
+                lj.date_prevue, lj.ligne_lavage as ligne_origine, lj.statut,
+                lb.code_producteur,
+                COALESCE(p.nom, lb.code_producteur) as nom_producteur,
+                pa.code_produit_commercial,
+                COALESCE(pc.libelle, pa.code_produit_commercial) as produit_libelle
             FROM lavages_jobs lj
+            LEFT JOIN lots_bruts lb ON lj.lot_id = lb.id
+            LEFT JOIN ref_producteurs p ON lb.code_producteur = p.code_producteur
+            LEFT JOIN previsions_affectations pa ON lb.id = pa.lot_id AND pa.is_active = TRUE
+            LEFT JOIN ref_produits_commerciaux pc ON pa.code_produit_commercial = pc.code_produit
             WHERE lj.statut = 'PRÉVU'
             ORDER BY lj.date_prevue, lj.id
         """)
@@ -284,6 +292,7 @@ def get_jobs_a_placer():
             return df
         return pd.DataFrame()
     except Exception as e:
+        st.error(f"Erreur get_jobs_a_placer: {str(e)}")
         return pd.DataFrame()
 
 def get_planning_semaine(annee, semaine):
@@ -1394,30 +1403,87 @@ with tab1:
     # CALENDRIER AVEC DRAG & DROP
     # ========================================
     # ========================================
-    # AFFICHAGE JOBS EXTERNES DRAGGABLES
+   # ========================================
+    # LAYOUT 2 COLONNES : JOBS | CALENDRIER
     # ========================================
     
     import json
     
-    if not jobs_non_planifies.empty or temps_customs:
-        st.markdown("### 📦 Éléments à Planifier")
-        st.caption("💡 **Glissez** les éléments ci-dessous dans le calendrier")
+    col_jobs, col_calendar = st.columns([3, 7])
+    
+    # ========================================
+    # COLONNE GAUCHE : JOBS DRAGGABLES
+    # ========================================
+    
+    with col_jobs:
+        st.markdown("### 📦 Jobs")
         
-        col1, col2 = st.columns(2)
+        # Filtres compacts
+        with st.expander("🔍 Filtres"):
+            # Variétés
+            varietes_dispo = ["Toutes"] + sorted(jobs_a_placer['variete'].dropna().unique().tolist()) if not jobs_a_placer.empty else ["Toutes"]
+            filtre_variete = st.selectbox("Variété", varietes_dispo, key="fv")
+            
+            # Producteurs
+            if not jobs_a_placer.empty and 'nom_producteur' in jobs_a_placer.columns:
+                producteurs_dispo = ["Tous"] + sorted([str(p) for p in jobs_a_placer['nom_producteur'].dropna().unique() if p])
+                filtre_producteur = st.selectbox("Producteur", producteurs_dispo, key="fp")
+            else:
+                filtre_producteur = "Tous"
+            
+            # Date
+            if not jobs_a_placer.empty:
+                date_min = jobs_a_placer['date_prevue'].min()
+                date_max = jobs_a_placer['date_prevue'].max()
+                col_d1, col_d2 = st.columns(2)
+                date_debut = col_d1.date_input("Du", value=date_min, key="dd")
+                date_fin = col_d2.date_input("Au", value=date_max, key="df")
+            else:
+                date_debut = datetime.now().date()
+                date_fin = datetime.now().date()
         
-        # Jobs non planifiés
-        if not jobs_non_planifies.empty:
-            with col1:
-                st.markdown("#### 🟢 Jobs")
+        # Toggle temps customs
+        show_customs = st.checkbox("🔧 Temps customs", value=False)
+        
+        # Filtrage
+        jobs_filtres = jobs_a_placer.copy() if not jobs_a_placer.empty else pd.DataFrame()
+        
+        if not jobs_filtres.empty:
+            if filtre_variete != "Toutes":
+                jobs_filtres = jobs_filtres[jobs_filtres['variete'] == filtre_variete]
+            
+            if filtre_producteur != "Tous":
+                jobs_filtres = jobs_filtres[jobs_filtres['nom_producteur'] == filtre_producteur]
+            
+            if 'date_prevue' in jobs_filtres.columns:
+                jobs_filtres = jobs_filtres[(jobs_filtres['date_prevue'] >= date_debut) & (jobs_filtres['date_prevue'] <= date_fin)]
+        
+        st.caption(f"📊 {len(jobs_filtres)}/{len(jobs_a_placer)}")
+        st.markdown("---")
+        
+        # Affichage jobs
+        if not jobs_filtres.empty:
+            jobs_non_planifies = jobs_filtres[~jobs_filtres['id'].isin(jobs_planifies_ids)] if jobs_planifies_ids else jobs_filtres
+            
+            if not jobs_non_planifies.empty:
                 for _, job in jobs_non_planifies.iterrows():
                     variete = str(job['variete']) if pd.notna(job['variete']) else 'INCONNUE'
                     duree_h = float(job['temps_estime_heures']) if pd.notna(job['temps_estime_heures']) else 1.0
                     heures = int(duree_h)
                     minutes = int((duree_h - heures) * 60)
                     
+                    # Infos enrichies
+                    producteur = str(job['nom_producteur'])[:12] + "..." if pd.notna(job['nom_producteur']) and len(str(job['nom_producteur'])) > 12 else (str(job['nom_producteur']) if pd.notna(job['nom_producteur']) else "-")
+                    
+                    produit = "-"
+                    if pd.notna(job.get('produit_libelle')):
+                        produit = str(job['produit_libelle'])[:12] + "..." if len(str(job['produit_libelle'])) > 12 else str(job['produit_libelle'])
+                    
+                    date_prev = job['date_prevue'].strftime('%d/%m') if pd.notna(job['date_prevue']) else "-"
+                    
                     event_data = {
                         'id': f"job_{int(job['id'])}",
-                        'title': f"Job #{int(job['id'])} - {variete}",
+                        'title': f"#{int(job['id'])} - {variete}",
                         'duration': f"{heures:02d}:{minutes:02d}",
                         'backgroundColor': get_variete_color(variete),
                         'borderColor': get_variete_color(variete),
@@ -1430,168 +1496,184 @@ with tab1:
                         }
                     }
                     
+                    # Card ultra-compacte
                     st.markdown(f"""
                     <div class="job-card" 
                          draggable="true"
                          data-fc-event='{json.dumps(event_data)}'
-                         style="cursor: move; user-select: none;">
-                        <strong>🟢 Job #{int(job['id'])}</strong><br>
-                        🌱 {variete}<br>
-                        📊 {int(job['quantite_pallox'])} pallox<br>
-                        ⏱️ {duree_h:.1f}h
+                         style="cursor: move; user-select: none; 
+                                font-size: 0.7rem; 
+                                padding: 0.3rem 0.4rem; 
+                                margin-bottom: 0.3rem;
+                                border-left: 3px solid {get_variete_color(variete)};
+                                background: #f8f9fa;
+                                border-radius: 4px;">
+                        <strong style="font-size: 0.75rem;">🟢 #{int(job['id'])}</strong> {variete}<br>
+                        <small style="font-size: 0.65rem;">
+                        📅 {date_prev} • {int(job['quantite_pallox'])}p • {duree_h:.1f}h<br>
+                        👤 {producteur}<br>
+                        📦 {produit}
+                        </small>
                     </div>
                     """, unsafe_allow_html=True)
+            else:
+                st.info("✅ Tous planifiés")
+        else:
+            st.info("Aucun job")
         
         # Temps customs
-        if temps_customs:
-            with col2:
-                st.markdown("#### 🔧 Temps Customs")
-                for tc in temps_customs:
-                    heures_tc = int(tc['duree_minutes'] // 60)
-                    minutes_tc = int(tc['duree_minutes'] % 60)
-                    
-                    event_data = {
-                        'id': f"custom_{tc['id']}",
-                        'title': f"{tc['emoji']} {tc['libelle']}",
-                        'duration': f"{heures_tc:02d}:{minutes_tc:02d}",
-                        'backgroundColor': '#7b1fa2',
-                        'borderColor': '#7b1fa2',
-                        'extendedProps': {
-                            'type': 'custom',
-                            'custom_id': tc['id'],
-                            'duree_minutes': tc['duree_minutes']
-                        }
-                    }
-                    
-                    st.markdown(f"""
-                    <div class="custom-card" 
-                         draggable="true"
-                         data-fc-event='{json.dumps(event_data)}'
-                         style="cursor: move; user-select: none;">
-                        <strong>{tc['emoji']} {tc['libelle']}</strong><br>
-                        ⏱️ {tc['duree_minutes']}min
-                    </div>
-                    """, unsafe_allow_html=True)
-        
-        st.markdown("---")
-    st.markdown("### 📅 Calendrier Interactif")
-    if fc_external:
-        st.info("💡 **Glisser-déposer** jobs dans calendrier | **Déplacer** en cliquant-glissant | **Redimensionner** en tirant sur les bords")
-    
-    # Générer HTML du calendrier
-    calendar_html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset='utf-8'>
-        <link href='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css' rel='stylesheet'>
-        <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js'></script>
-        <script src='https://cdn.jsdelivr.net/npm/@fullcalendar/interaction@6.1.15/index.global.min.js'></script>
-        <style>
-            body {{ margin: 0; padding: 10px; }}
-            #calendar {{ height: 650px; }}
-        </style>
-    </head>
-    <body>
-        <div id='calendar'></div>
-        <script>
-            var calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{
-                initialView: 'timeGridWeek',
-                locale: 'fr',
-                firstDay: 1,
-                slotMinTime: '05:00:00',
-                slotMaxTime: '20:00:00',
-                slotDuration: '00:15:00',
-                height: 650,
-                allDaySlot: false,
-                nowIndicator: true,
-                editable: true,
-                droppable: true,
-                initialDate: '{week_start.isoformat()}',
-                events: {fc_events},
+        if show_customs and temps_customs:
+            st.markdown("---")
+            st.markdown("#### 🔧 Customs")
+            
+            for tc in temps_customs:
+                heures_tc = int(tc['duree_minutes'] // 60)
+                minutes_tc = int(tc['duree_minutes'] % 60)
                 
-                // DROP externe
-                drop: function(info) {{
-                    var eventData = info.draggedEl.getAttribute('data-fc-event');
-                    if (!eventData) return;
+                event_data = {
+                    'id': f"custom_{tc['id']}",
+                    'title': f"{tc['emoji']} {tc['libelle']}",
+                    'duration': f"{heures_tc:02d}:{minutes_tc:02d}",
+                    'backgroundColor': '#7b1fa2',
+                    'borderColor': '#7b1fa2',
+                    'extendedProps': {
+                        'type': 'custom',
+                        'custom_id': tc['id'],
+                        'duree_minutes': tc['duree_minutes']
+                    }
+                }
+                
+                st.markdown(f"""
+                <div class="custom-card" 
+                     draggable="true"
+                     data-fc-event='{json.dumps(event_data)}'
+                     style="cursor: move; user-select: none; 
+                            font-size: 0.7rem; 
+                            padding: 0.3rem 0.4rem;
+                            margin-bottom: 0.3rem;
+                            background: #f3e5f5;
+                            border-radius: 4px;">
+                    <strong>{tc['emoji']} {tc['libelle']}</strong><br>
+                    <small>⏱️ {tc['duree_minutes']}min</small>
+                </div>
+                """, unsafe_allow_html=True)
+    
+    # ========================================
+    # COLONNE DROITE : CALENDRIER
+    # ========================================
+    
+    with col_calendar:
+        st.markdown("### 📅 Calendrier")
+        
+        calendar_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset='utf-8'>
+            <link href='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css' rel='stylesheet'>
+            <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js'></script>
+            <script src='https://cdn.jsdelivr.net/npm/@fullcalendar/interaction@6.1.15/index.global.min.js'></script>
+            <style>
+                body {{ margin: 0; padding: 5px; }}
+                #calendar {{ height: 600px; }}
+            </style>
+        </head>
+        <body>
+            <div id='calendar'></div>
+            <script>
+                var calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{
+                    initialView: 'timeGridWeek',
+                    locale: 'fr',
+                    firstDay: 1,
+                    slotMinTime: '05:00:00',
+                    slotMaxTime: '20:00:00',
+                    slotDuration: '00:15:00',
+                    height: 600,
+                    allDaySlot: false,
+                    nowIndicator: true,
+                    editable: true,
+                    droppable: true,
+                    initialDate: '{week_start.isoformat()}',
+                    events: {fc_events},
                     
-                    try {{
-                        var data = JSON.parse(eventData);
-                        var duration = data.duration || '01:00';
-                        var durationParts = duration.split(':');
-                        var endDate = new Date(info.date);
-                        endDate.setHours(endDate.getHours() + parseInt(durationParts[0]));
-                        endDate.setMinutes(endDate.getMinutes() + parseInt(durationParts[1]));
+                    drop: function(info) {{
+                        var eventData = info.draggedEl.getAttribute('data-fc-event');
+                        if (!eventData) return;
                         
-                        calendar.addEvent({{
-                            id: 'temp_' + data.id,
-                            title: data.title,
-                            start: info.date,
-                            end: endDate,
-                            backgroundColor: data.backgroundColor,
-                            borderColor: data.borderColor,
-                            extendedProps: data.extendedProps
-                        }});
-                        
-                        if (window.parent && window.parent.Streamlit) {{
-                            window.parent.Streamlit.setComponentValue({{
-                                action: 'drop',
-                                event_id: data.id,
-                                start: info.date.toISOString(),
+                        try {{
+                            var data = JSON.parse(eventData);
+                            var duration = data.duration || '01:00';
+                            var durationParts = duration.split(':');
+                            var endDate = new Date(info.date);
+                            endDate.setHours(endDate.getHours() + parseInt(durationParts[0]));
+                            endDate.setMinutes(endDate.getMinutes() + parseInt(durationParts[1]));
+                            
+                            calendar.addEvent({{
+                                id: 'temp_' + data.id,
+                                title: data.title,
+                                start: info.date,
+                                end: endDate,
+                                backgroundColor: data.backgroundColor,
+                                borderColor: data.borderColor,
                                 extendedProps: data.extendedProps
                             }});
+                            
+                            if (window.parent && window.parent.Streamlit) {{
+                                window.parent.Streamlit.setComponentValue({{
+                                    action: 'drop',
+                                    event_id: data.id,
+                                    start: info.date.toISOString(),
+                                    extendedProps: data.extendedProps
+                                }});
+                            }}
+                        }} catch(e) {{
+                            console.error('Drop error:', e);
                         }}
-                    }} catch(e) {{
-                        console.error('Drop error:', e);
+                    }},
+                    
+                    eventDrop: function(info) {{
+                        if (window.parent && window.parent.Streamlit) {{
+                            window.parent.Streamlit.setComponentValue({{
+                                action: 'move',
+                                event_id: info.event.id,
+                                new_start: info.event.start.toISOString(),
+                                new_end: info.event.end ? info.event.end.toISOString() : null,
+                                extendedProps: info.event.extendedProps
+                            }});
+                        }}
+                    }},
+                    
+                    eventResize: function(info) {{
+                        if (window.parent && window.parent.Streamlit) {{
+                            window.parent.Streamlit.setComponentValue({{
+                                action: 'resize',
+                                event_id: info.event.id,
+                                new_start: info.event.start.toISOString(),
+                                new_end: info.event.end ? info.event.end.toISOString() : null,
+                                extendedProps: info.event.extendedProps
+                            }});
+                        }}
                     }}
-                }},
+                }});
+                calendar.render();
                 
-                // MOVE
-                eventDrop: function(info) {{
-                    if (window.parent && window.parent.Streamlit) {{
-                        window.parent.Streamlit.setComponentValue({{
-                            action: 'move',
-                            event_id: info.event.id,
-                            new_start: info.event.start.toISOString(),
-                            new_end: info.event.end ? info.event.end.toISOString() : null,
-                            extendedProps: info.event.extendedProps
+                setTimeout(function() {{
+                    if (window.parent && window.parent.document) {{
+                        var externalEvents = window.parent.document.querySelectorAll('[data-fc-event]');
+                        externalEvents.forEach(function(el) {{
+                            if (!el._fcDraggable) {{
+                                new FullCalendar.Draggable(el);
+                                el._fcDraggable = true;
+                            }}
                         }});
                     }}
-                }},
-                
-                // RESIZE
-                eventResize: function(info) {{
-                    if (window.parent && window.parent.Streamlit) {{
-                        window.parent.Streamlit.setComponentValue({{
-                            action: 'resize',
-                            event_id: info.event.id,
-                            new_start: info.event.start.toISOString(),
-                            new_end: info.event.end ? info.event.end.toISOString() : null,
-                            extendedProps: info.event.extendedProps
-                        }});
-                    }}
-                }}
-            }});
-            calendar.render();
-            
-            // Draggables externes
-            setTimeout(function() {{
-                if (window.parent && window.parent.document) {{
-                    var externalEvents = window.parent.document.querySelectorAll('[data-fc-event]');
-                    externalEvents.forEach(function(el) {{
-                        if (!el._fcDraggable) {{
-                            new FullCalendar.Draggable(el);
-                            el._fcDraggable = true;
-                        }}
-                    }});
-                }}
-            }}, 500);
-        </script>
-    </body>
-    </html>
-    """
-    
-    calendar_event = stc.html(calendar_html, height=700)
+                }}, 500);
+            </script>
+        </body>
+        </html>
+        """
+        
+        calendar_event = stc.html(calendar_html, height=620)
     # ========================================
     # GÉRER LES ACTIONS DRAG & DROP
     # ========================================
