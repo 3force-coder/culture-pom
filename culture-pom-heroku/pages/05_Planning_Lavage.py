@@ -10,12 +10,6 @@ import io
 import math
 
 # ✅ IMPORT DU CUSTOM COMPONENT AVEC DRAG & DROP
-try:
-    from streamlit_fullcalendar import fullcalendar
-    st.success("✅ Component chargé !")
-except Exception as e:
-    st.error(f"❌ Erreur import : {e}")
-    fullcalendar = None
 
 # ============================================================
 # COULEURS PAR VARIÉTÉ
@@ -1404,15 +1398,44 @@ with tab1:
     if fc_external:
         st.info("💡 **Glisser-déposer** jobs dans calendrier | **Déplacer** en cliquant-glissant | **Redimensionner** en tirant sur les bords")
     
-    calendar_event = fullcalendar(
-        events=fc_events,
-        external_events=fc_external,
-        initial_date=week_start.isoformat(),
-        editable=True,
-        droppable=True,
-        key='planning_calendar'
-    )
+    # Générer HTML du calendrier
+    calendar_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset='utf-8'>
+        <link href='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css' rel='stylesheet'>
+        <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js'></script>
+        <style>
+            body {{ margin: 0; padding: 10px; }}
+            #calendar {{ height: 650px; }}
+        </style>
+    </head>
+    <body>
+        <div id='calendar'></div>
+        <script>
+            var calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{
+                initialView: 'timeGridWeek',
+                locale: 'fr',
+                firstDay: 1,
+                slotMinTime: '05:00:00',
+                slotMaxTime: '20:00:00',
+                slotDuration: '00:15:00',
+                height: 650,
+                allDaySlot: false,
+                nowIndicator: true,
+                editable: false,
+                initialDate: '{week_start.isoformat()}',
+                events: {fc_events}
+            }});
+            calendar.render();
+        </script>
+    </body>
+    </html>
+    """
     
+    st.components.html(calendar_html, height=700)
+    calendar_event = None
     # ========================================
     # GÉRER LES ACTIONS DRAG & DROP
     # ========================================
