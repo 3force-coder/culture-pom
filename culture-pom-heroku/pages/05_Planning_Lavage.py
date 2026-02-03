@@ -1337,95 +1337,56 @@ with tab1:
         st.caption(f"{len(jobs_non_planifies)} job(s) disponible(s)")
         
         if not jobs_non_planifies.empty:
+            import json
             for idx, job in jobs_non_planifies.iterrows():
                 variete = str(job['variete']) if pd.notna(job['variete']) else 'INCONNUE'
                 variete_color = VARIETE_COLORS.get(variete, '#757575')
+                duree_h = float(job['temps_estime_heures']) if pd.notna(job['temps_estime_heures']) else 1.0
+                heures = int(duree_h)
+                minutes = int((duree_h - heures) * 60)
                 
-                with st.expander(f"🟢 #{int(job['id'])} - {variete}", expanded=False):
-                    st.write(f"**Lot** : {job['code_lot_interne']}")
-                    st.write(f"**Quantité** : {int(job['quantite_pallox'])} pallox")
-                    st.write(f"**Durée** : {float(job['temps_estime_heures']):.1f}h")
-                    
-                    if st.button(f"📌 Placer Job #{int(job['id'])}", key=f"place_{int(job['id'])}", type="primary", use_container_width=True):
-                        st.session_state[f'placing_job_{int(job["id"])}'] = True
-                        st.rerun()
-                    
-                    # Modal placement
-                    if st.session_state.get(f'placing_job_{int(job["id"])}', False):
-                        st.markdown("---")
-                        st.markdown("##### 🎯 Choisir Date/Heure")
-                        
-                        # Date
-                        date_options = []
-                        for i in range(6):
-                            d = week_start + timedelta(days=i)
-                            date_options.append(d)  # d est déjà un date
-                        
-                        date_placement = st.selectbox(
-                            "Date",
-                            options=date_options,
-                            format_func=lambda x: f"{x.strftime('%a %d/%m')}",
-                            key=f"date_{int(job['id'])}"
-                        )
-                        
-                        # Heure
-                        heures = []
-                        h = 4
-                        while h < 22:
-                            for m in [0, 15, 30, 45]:
-                                heures.append(time(h, m))
-                            h += 1
-                        
-                        heure_placement = st.selectbox(
-                            "Heure",
-                            options=heures,
-                            format_func=lambda x: x.strftime('%H:%M'),
-                            key=f"heure_{int(job['id'])}"
-                        )
-                        
-                        col_save, col_cancel = st.columns(2)
-                        
-                        with col_save:
-                            if st.button("✅ OK", key=f"confirm_{int(job['id'])}", type="primary", use_container_width=True):
-                                duree_min = int(float(job['temps_estime_heures']) * 60)
-                                
-                                # Vérif chevauchement
-                                ok, msg_chev, heure_prop = verifier_chevauchement(
-                                    planning_df,
-                                    date_placement,
-                                    st.session_state.selected_ligne,
-                                    heure_placement,
-                                    duree_min
-                                )
-                                
-                                if not ok:
-                                    st.error(f"❌ {msg_chev}")
-                                else:
-                                    success, msg = ajouter_element_planning(
-                                        'JOB',
-                                        int(job['id']),
-                                        None,
-                                        date_placement,
-                                        st.session_state.selected_ligne,
-                                        duree_min,
-                                        annee,
-                                        semaine,
-                                        heure_placement
-                                    )
-                                    
-                                    if success:
-                                        st.success(f"✅ {msg}")
-                                        st.balloons()
-                                        st.session_state.pop(f'placing_job_{int(job["id"])}')
-                                        time_module.sleep(0.3)
-                                        st.rerun()
-                                    else:
-                                        st.error(f"❌ {msg}")
-                        
-                        with col_cancel:
-                            if st.button("❌", key=f"cancel_{int(job['id'])}", use_container_width=True):
-                                st.session_state.pop(f'placing_job_{int(job["id"])}')
-                                st.rerun()
+                # Données pour FullCalendar
+                event_data = {
+                    'id': f"job_{int(job['id'])}",
+                    'title': f"🟢 #{int(job['id'])} - {variete}",
+                    'duration': f"{heures:02d}:{minutes:02d}",
+                    'backgroundColor': variete_color,
+                    'borderColor': variete_color,
+                    'extendedProps': {
+                        'type': 'job',
+                        'job_id': int(job['id']),
+                        'variete': variete,
+                        'quantite': int(job['quantite_pallox']),
+                        'duree_heures': duree_h
+                    }
+                }
+                
+                # Card draggable
+                st.markdown(f"""
+                <div class="job-card" 
+                     draggable="true"
+                     data-fc-event='{json.dumps(event_data)}'
+                     style="cursor: move; 
+                            user-select: none; 
+                            font-size: 0.85rem; 
+                            padding: 0.6rem 0.7rem; 
+                            margin-bottom: 0.5rem;
+                            border-left: 4px solid {variete_color};
+                            background: #f8f9fa;
+                            border-radius: 4px;
+                            line-height: 1.3;
+                            box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                    <div style="font-size: 0.95rem; font-weight: 600; margin-bottom: 0.3rem; color: #333;">
+                        🟢 #{int(job['id'])} - {variete}
+                    </div>
+                    <div style="font-size: 0.8rem; color: #666; margin-bottom: 0.2rem;">
+                        📦 {int(job['quantite_pallox'])} pallox • ⏱️ {duree_h:.1f}h
+                    </div>
+                    <div style="font-size: 0.75rem; color: #999;">
+                        💡 Glissez-déposez sur le calendrier
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
         else:
             st.info("✅ Tous les jobs sont planifiés")
     
@@ -1473,6 +1434,7 @@ with tab1:
     <meta charset='utf-8'>
     <link href='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css' rel='stylesheet'>
     <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js'></script>
+    <script src='https://cdn.jsdelivr.net/npm/@fullcalendar/interaction@6.1.15/index.global.min.js'></script>
     <style>
         body {{ margin: 0; padding: 5px; }}
         #calendar {{ 
@@ -1509,14 +1471,131 @@ with tab1:
                 height: 730,
                 allDaySlot: false,
                 nowIndicator: true,
-                editable: false,
+                editable: true,
+                droppable: true,
                 initialDate: '{week_iso}',
+                ,
+                
+                // Callback drop (job externe -> calendrier)
+                drop: function(info) {{
+                    console.log('Drop event:', info);
+                    var eventData = info.draggedEl.getAttribute('data-fc-event');
+                    if (eventData) {{
+                        var data = JSON.parse(eventData);
+                        
+                        // Ajouter event au calendrier
+                        var duration = data.duration || '01:00';
+                        var parts = duration.split(':');
+                        var endDate = new Date(info.date);
+                        endDate.setHours(endDate.getHours() + parseInt(parts[0]));
+                        endDate.setMinutes(endDate.getMinutes() + parseInt(parts[1]));
+                        
+                        calendar.addEvent({{
+                            id: 'temp_' + data.id,
+                            title: data.title,
+                            start: info.date,
+                            end: endDate,
+                            backgroundColor: data.backgroundColor,
+                            borderColor: data.borderColor,
+                            extendedProps: data.extendedProps
+                        }});
+                        
+                        // Enregistrer le changement
+                        recordChange('place_job', {{
+                            job_id: data.extendedProps.job_id,
+                            start: info.date.toISOString(),
+                            end: endDate.toISOString()
+                        }});
+                        
+                        // Cacher le job de la liste
+                        if (info.draggedEl) {{
+                            info.draggedEl.style.opacity = '0.3';
+                            info.draggedEl.style.pointerEvents = 'none';
+                        }}
+                    }}
+                }},
+                
+                // Callback déplacement event
+                eventDrop: function(info) {{
+                    console.log('Event dropped:', info);
+                    var elementId = info.event.id.replace('element_', '');
+                    recordChange('move_element', {{
+                        element_id: elementId,
+                        new_start: info.event.start.toISOString(),
+                        new_end: info.event.end ? info.event.end.toISOString() : null
+                    }});
+                }},
+                
+                // Callback resize event
+                eventResize: function(info) {{
+                    console.log('Event resized:', info);
+                    var elementId = info.event.id.replace('element_', '');
+                    recordChange('resize_element', {{
+                        element_id: elementId,
+                        new_end: info.event.end.toISOString()
+                    }});
+                }}
                 events: {events_json}
             }});
             
             calendar.render();
-            console.log('Calendar rendered!');
+            console.log('Calendar rendered with drag & drop enabled!');
+            
+            // Initialiser draggables externe
+            setTimeout(function() {{
+                if (window.parent && window.parent.document) {{
+                    var jobCards = window.parent.document.querySelectorAll('[data-fc-event]');
+                    console.log('Found ' + jobCards.length + ' draggable jobs');
+                    
+                    jobCards.forEach(function(el) {{
+                        if (!el._fcDraggable) {{
+                            new FullCalendar.Draggable(el, {{
+                                eventData: function() {{
+                                    var data = JSON.parse(el.getAttribute('data-fc-event'));
+                                    return {{
+                                        id: data.id,
+                                        title: data.title,
+                                        duration: data.duration,
+                                        backgroundColor: data.backgroundColor,
+                                        borderColor: data.borderColor,
+                                        extendedProps: data.extendedProps
+                                    }};
+                                }}
+                            }});
+                            el._fcDraggable = true;
+                        }}
+                    }});
+                }}
+            }}, 500);
         }});
+        
+        // Stocker les changements en localStorage (temporaire, dans la page)
+        var pendingChanges = [];
+        
+        function recordChange(action, data) {{
+            console.log('Change recorded:', action, data);
+            pendingChanges.push({{ action: action, data: data }});
+            
+            // Afficher badge notification
+            updateChangesCount();
+        }}
+        
+        function updateChangesCount() {{
+            var count = pendingChanges.length;
+            console.log('Pending changes:', count);
+            
+            // Envoyer au parent pour afficher un badge
+            if (window.parent) {{
+                try {{
+                    window.parent.postMessage({{
+                        type: 'changes_count',
+                        count: count
+                    }}, '*');
+                }} catch(e) {{
+                    console.log('Cannot send to parent:', e);
+                }}
+            }}
+        }}
     </script>
 </body>
 </html>"""
