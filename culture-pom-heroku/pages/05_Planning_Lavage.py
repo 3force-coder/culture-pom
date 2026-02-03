@@ -51,266 +51,6 @@ def get_variete_color(variete):
     return colors.get(variete, '#757575')
 
 
-
-
-# ============================================================
-# FONCTION RENDER FULLCALENDAR - ACCOLADES ÉCHAPPÉES ✅
-# ============================================================
-
-def render_fullcalendar_with_jobs(jobs_data, events_data, week_start, selected_ligne):
-    """
-    Rend FullCalendar avec drag & drop
-    ✅ Accolades JavaScript/CSS doublées pour .format()
-    """
-    import json
-    
-    jobs_json = json.dumps(jobs_data, ensure_ascii=False)
-    events_json = json.dumps(events_data, ensure_ascii=False)
-    
-    # Toutes les accolades {{ }} sont doublées pour .format()
-    html = """<!DOCTYPE html>
-<html>
-<head>
-    <meta charset='utf-8'>
-    <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/main.min.js'></script>
-    <link href='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/main.min.css' rel='stylesheet'>
-    <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/locales/fr.js'></script>
-    <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/interaction/main.min.js'></script>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            display: flex;
-            height: 100vh;
-            overflow: hidden;
-            background: #f8f9fa;
-        }}
-        #sidebar {{
-            width: 340px;
-            background: white;
-            border-right: 2px solid #e0e0e0;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            box-shadow: 2px 0 8px rgba(0,0,0,0.05);
-        }}
-        .sidebar-header {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 16px 20px;
-            font-weight: 600;
-            font-size: 1.1rem;
-            position: sticky;
-            top: 0;
-            z-index: 10;
-            display: flex;
-            justify-content: space-between;
-        }}
-        #external-events {{
-            padding: 12px;
-            flex: 1;
-        }}
-        .fc-event {{
-            cursor: move !important;
-            margin-bottom: 10px;
-            padding: 12px;
-            border-radius: 8px;
-            border-left: 5px solid;
-            background: white;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
-            transition: all 0.2s;
-        }}
-        .fc-event:hover {{
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            transform: translateY(-2px);
-        }}
-        .fc-event:active {{
-            cursor: grabbing !important;
-            opacity: 0.7;
-        }}
-        .job-title {{
-            font-weight: 600;
-            font-size: 0.95rem;
-            margin-bottom: 6px;
-        }}
-        .job-info {{
-            font-size: 0.8rem;
-            color: #7f8c8d;
-        }}
-        #calendar-container {{
-            flex: 1;
-            padding: 15px;
-            background: white;
-        }}
-        #calendar {{
-            height: calc(100vh - 50px);
-        }}
-        .toast {{
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: #10b981;
-            color: white;
-            padding: 15px 25px;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(16,185,129,0.4);
-            z-index: 99999;
-            display: none;
-        }}
-        .toast.show {{ display: block; }}
-        .empty-state {{
-            text-align: center;
-            padding: 60px 20px;
-            color: #aaa;
-        }}
-    </style>
-</head>
-<body>
-    <div id="toast" class="toast"></div>
-    
-    <div id="sidebar">
-        <div class="sidebar-header">
-            <span>📦 Jobs</span>
-            <span id="job-count" style="background: rgba(255,255,255,0.2); padding: 4px 12px; border-radius: 12px;">0</span>
-        </div>
-        <div id="external-events"></div>
-    </div>
-    
-    <div id="calendar-container">
-        <div id="calendar"></div>
-    </div>
-    
-    <script>
-        var JOBS = {jobs_json};
-        var EVENTS = {events_json};
-        var WEEK = '{week_start}';
-        var LIGNE = '{selected_ligne}';
-        var calendar;
-        
-        document.addEventListener('DOMContentLoaded', function() {{
-            renderJobs();
-            initCalendar();
-            initDraggable();
-        }});
-        
-        function renderJobs() {{
-            var container = document.getElementById('external-events');
-            container.innerHTML = '';
-            
-            if (JOBS.length === 0) {{
-                container.innerHTML = '<div class="empty-state">Aucun job</div>';
-                document.getElementById('job-count').textContent = '0';
-                return;
-            }}
-            
-            JOBS.forEach(function(job) {{
-                var el = document.createElement('div');
-                el.className = 'fc-event';
-                el.style.borderLeftColor = job.backgroundColor;
-                el.innerHTML = '<div class="job-title">🟢 ' + job.title + '</div><div class="job-info">' + (job.subtitle || '') + '</div>';
-                el.setAttribute('data-event', JSON.stringify({{
-                    id: job.id,
-                    title: job.title,
-                    duration: job.duration,
-                    backgroundColor: job.backgroundColor,
-                    borderColor: job.backgroundColor,
-                    extendedProps: job.extendedProps
-                }}));
-                container.appendChild(el);
-            }});
-            
-            document.getElementById('job-count').textContent = JOBS.length;
-        }}
-        
-        function initCalendar() {{
-            calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{
-                plugins: ['interaction', 'timeGrid'],
-                defaultView: 'timeGridWeek',
-                locale: 'fr',
-                firstDay: 1,
-                slotMinTime: '04:00:00',
-                slotMaxTime: '22:00:00',
-                hiddenDays: [0],
-                slotDuration: '00:15:00',
-                height: 'auto',
-                allDaySlot: false,
-                nowIndicator: true,
-                header: {{
-                    left: 'prev,next today',
-                    center: 'title',
-                    right: 'timeGridWeek'
-                }},
-                buttonText: {{
-                    today: 'Aujourd\'hui',
-                    week: 'Semaine'
-                }},
-                defaultDate: WEEK,
-                events: EVENTS,
-                editable: true,
-                droppable: true,
-                drop: function(info) {{
-                    var eventData = JSON.parse(info.draggedEl.getAttribute('data-event'));
-                    var parts = eventData.duration.split(':');
-                    var end = new Date(info.date);
-                    end.setHours(end.getHours() + parseInt(parts[0]));
-                    end.setMinutes(end.getMinutes() + parseInt(parts[1]));
-                    
-                    calendar.addEvent({{
-                        id: eventData.id,
-                        title: eventData.title,
-                        start: info.date,
-                        end: end,
-                        backgroundColor: eventData.backgroundColor,
-                        borderColor: eventData.borderColor,
-                        extendedProps: eventData.extendedProps
-                    }});
-                    
-                    localStorage.setItem('fc_action', JSON.stringify({{
-                        action: 'drop',
-                        event_id: eventData.id,
-                        start: info.date.toISOString(),
-                        end: end.toISOString(),
-                        extendedProps: eventData.extendedProps,
-                        ligne: LIGNE
-                    }}));
-                    
-                    info.draggedEl.remove();
-                    document.getElementById('job-count').textContent = 
-                        document.querySelectorAll('#external-events .fc-event').length;
-                    
-                    showToast('✅ Job placé !');
-                }}
-            }});
-            
-            calendar.render();
-        }}
-        
-        function initDraggable() {{
-            new FullCalendar.Draggable(document.getElementById('external-events'), {{
-                itemSelector: '.fc-event',
-                eventData: function(el) {{
-                    return JSON.parse(el.getAttribute('data-event'));
-                }}
-            }});
-        }}
-        
-        function showToast(msg) {{
-            var toast = document.getElementById('toast');
-            toast.textContent = msg;
-            toast.classList.add('show');
-            setTimeout(function() {{ toast.classList.remove('show'); }}, 2500);
-        }}
-    </script>
-</body>
-</html>""".format(
-        jobs_json=jobs_json,
-        events_json=events_json,
-        week_start=week_start,
-        selected_ligne=selected_ligne
-    )
-    
-    return html
-
 # ============================================================
 # CSS CUSTOM
 # ============================================================
@@ -1535,8 +1275,8 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📅 Planning Semaine", "📋 Lis
 # ============================================================
 
 with tab1:
-    st.subheader("📅 Planning Semaine - Drag & Drop")
-    st.caption("*Glisser jobs dans le calendrier - Déplacer - Redimensionner si retard*")
+    st.subheader("📅 Planning Semaine - Placement par boutons")
+    st.info("📌 Sélectionnez un job puis cliquez sur 'Placer' pour choisir date/heure")
     
     # ========================================
     # CONTRÔLES SEMAINE + LIGNE
@@ -1578,255 +1318,197 @@ with tab1:
     # CHARGEMENT DONNÉES
     # ========================================
     jobs_a_placer = get_jobs_a_placer()
-    temps_customs = get_temps_customs()
-    horaires_config = get_config_horaires()
     planning_df = get_planning_semaine(annee, semaine)
-    lignes_dict = {l['code']: float(l['capacite_th']) for l in lignes} if lignes else {}
     
-    # ========================================
-    # PRÉPARER EVENTS FULLCALENDAR
-    # ========================================
-    
-    # Events dans le calendrier
-    fc_events = []
-    if not planning_df.empty:
-        ligne_aff = st.session_state.selected_ligne
-        planning_ligne = planning_df[planning_df['ligne_lavage'] == ligne_aff]
-        
-        for _, elem in planning_ligne.iterrows():
-            event = {
-                'id': f"planning_{elem['id']}",
-                'start': f"{elem['date_prevue']}T{elem['heure_debut'].strftime('%H:%M:%S')}",
-                'end': f"{elem['date_prevue']}T{elem['heure_fin'].strftime('%H:%M:%S')}",
-            }
-            
-            if elem['type_element'] == 'JOB':
-                job_statut = elem.get('job_statut', 'PRÉVU')
-                variete = str(elem['variete']) if pd.notna(elem['variete']) else 'INCONNUE'
-                
-                emoji = "🟢" if job_statut == 'PRÉVU' else "⏱️" if job_statut == 'EN_COURS' else "✅"
-                
-                event.update({
-                    'title': f"{emoji} Job #{int(elem['job_id'])} - {variete}",
-                    'backgroundColor': get_statut_color(job_statut),    # ← Modifié
-                    'borderColor': get_statut_color(job_statut),        # ← Modifié
-                    'className': f"statut-{job_statut.lower().replace('é','e').replace('î','i')}",
-                    'extendedProps': {
-                        'type': 'job',
-                        'job_id': int(elem['job_id']),
-                        'element_id': int(elem['id']),
-                        'variete': variete,
-                        'statut': job_statut,
-                        'quantite_pallox': int(elem['quantite_pallox']) if pd.notna(elem['quantite_pallox']) else 0
-                    }
-                })
-            else:  # CUSTOM
-                event.update({
-                    'title': f"{elem.get('custom_emoji', '🔧')} {elem.get('custom_libelle', 'Temps custom')}",
-                    'className': 'type-custom',
-                    'backgroundColor': '#7b1fa2',
-                    'borderColor': '#7b1fa2',
-                    'extendedProps': {
-                        'type': 'custom',
-                        'custom_id': int(elem['temps_custom_id']) if pd.notna(elem['temps_custom_id']) else 0,
-                        'element_id': int(elem['id'])
-                    }
-                })
-            
-            fc_events.append(event)
-    
-    # Jobs draggables externes (non planifiés)
+    # Jobs planifiés
     jobs_planifies_ids = planning_df[planning_df['type_element'] == 'JOB']['job_id'].dropna().astype(int).tolist() if not planning_df.empty else []
     jobs_non_planifies = jobs_a_placer[~jobs_a_placer['id'].isin(jobs_planifies_ids)] if not jobs_a_placer.empty else pd.DataFrame()
     
-    fc_external = []
-    if not jobs_non_planifies.empty:
-        for _, job in jobs_non_planifies.iterrows():
-            variete = str(job['variete']) if pd.notna(job['variete']) else 'INCONNUE'
-            duree_h = float(job['temps_estime_heures']) if pd.notna(job['temps_estime_heures']) else 1.0
-            
-            # Convertir durée en HH:MM
-            heures = int(duree_h)
-            minutes = int((duree_h - heures) * 60)
-            duration_str = f"{heures:02d}:{minutes:02d}"
-            
-            fc_external.append({
-                'id': f"job_{int(job['id'])}",
-                'title': f"Job #{int(job['id'])} - {variete}",
-                'subtitle': f"{int(job['quantite_pallox'])}p - {duree_h:.1f}h",
-                'duration': duration_str,
-                'backgroundColor': get_statut_color('PRÉVU'),    # ← Modifié
-                'borderColor': get_statut_color('PRÉVU'),        # ← Modifié
-                'extendedProps': {
-                    'type': 'job',
-                    'job_id': int(job['id']),
-                    'variete': variete,
-                    'quantite': int(job['quantite_pallox']),
-                    'duree_heures': duree_h
-                }
-            })
-    
-    # Temps customs draggables
-    if temps_customs:
-        for tc in temps_customs:
-            heures_tc = int(tc['duree_minutes'] // 60)
-            minutes_tc = int(tc['duree_minutes'] % 60)
-            duration_tc = f"{heures_tc:02d}:{minutes_tc:02d}"
-            
-            fc_external.append({
-                'id': f"custom_{tc['id']}",
-                'title': f"{tc['emoji']} {tc['libelle']}",
-                'subtitle': f"{tc['duree_minutes']}min",
-                'duration': duration_tc,
-                'backgroundColor': '#7b1fa2',
-                'borderColor': '#7b1fa2',
-                'extendedProps': {
-                    'type': 'custom',
-                    'custom_id': tc['id'],
-                    'duree_minutes': tc['duree_minutes']
-                }
-            })
+    # ========================================
+    # LAYOUT 2 COLONNES
+    # ========================================
+    col_jobs, col_calendar = st.columns([1, 2])
     
     # ========================================
+    # COLONNE 1 : JOBS À PLACER
     # ========================================
-    # CALENDRIER DRAG & DROP ✅
-    # ========================================
-    
-    import json
-    
-    # Préparer jobs non planifiés
-    jobs_data_for_fc = []
-    if not jobs_a_placer.empty:
-        jobs_non_plan = jobs_a_placer[~jobs_a_placer['id'].isin(jobs_planifies_ids)] if jobs_planifies_ids else jobs_a_placer
+    with col_jobs:
+        st.markdown("### 📦 Jobs à Placer")
+        st.caption(f"{len(jobs_non_planifies)} job(s) disponible(s)")
         
-        for _, job in jobs_non_plan.iterrows():
-            var = str(job.get('variete', 'INCONNUE'))
-            color = VARIETE_COLORS.get(var, '#757575')
-            duree_h = float(job['temps_estime_heures']) if pd.notna(job['temps_estime_heures']) else 1.0
-            h = int(duree_h)
-            m = int((duree_h - h) * 60)
-            q = int(job['quantite_pallox']) if pd.notna(job['quantite_pallox']) else 0
-            
-            jobs_data_for_fc.append({
-                'id': f"job_{int(job['id'])}",
-                'title': f"#{int(job['id'])} - {var}",
-                'subtitle': f"{q}p - {duree_h:.1f}h",
-                'duration': f"{h:02d}:{m:02d}",
-                'backgroundColor': color,
-                'borderColor': color,
-                'extendedProps': {
-                    'type': 'job',
-                    'job_id': int(job['id']),
-                    'variete': var,
-                    'quantite': q,
-                    'duree_heures': duree_h
-                }
-            })
-    
-    # Events existants
-    events_data_for_fc = []
-    if not planning_df.empty:
-        ligne_aff = st.session_state.selected_ligne
-        planning_ligne = planning_df[planning_df['ligne_lavage'] == ligne_aff]
-        
-        for _, elem in planning_ligne.iterrows():
-            if elem['type_element'] == 'JOB':
-                var = str(elem.get('variete', 'INCONNUE'))
-                color = VARIETE_COLORS.get(var, '#757575')
-                jid = int(elem['job_id']) if pd.notna(elem['job_id']) else 0
-                statut = elem.get('job_statut', 'PRÉVU')
-                emoji = "🟢" if statut == 'PRÉVU' else "⏱️" if statut == 'EN_COURS' else "✅"
+        if not jobs_non_planifies.empty:
+            for idx, job in jobs_non_planifies.iterrows():
+                variete = str(job['variete']) if pd.notna(job['variete']) else 'INCONNUE'
+                variete_color = VARIETE_COLORS.get(variete, '#757575')
                 
-                events_data_for_fc.append({
-                    'id': f"planning_{elem['id']}",
-                    'title': f"{emoji} #{jid} - {var}",
-                    'start': f"{elem['date_prevue']}T{elem['heure_debut'].strftime('%H:%M:%S')}",
-                    'end': f"{elem['date_prevue']}T{elem['heure_fin'].strftime('%H:%M:%S')}",
-                    'backgroundColor': color,
-                    'borderColor': color,
-                    'extendedProps': {
-                        'type': 'job',
-                        'job_id': jid,
-                        'planning_id': int(elem['id']),
-                        'statut': statut
-                    }
-                })
-    
-    # Afficher
-    calendar_html = render_fullcalendar_with_jobs(
-        jobs_data_for_fc,
-        events_data_for_fc,
-        week_start.isoformat(),
-        st.session_state.selected_ligne
-    )
-    
-    stc.html(calendar_html, height=750, scrolling=True)
-    
-    # ========================================
-    # DÉTECTER ACTIONS
-    # ========================================
-    
-    read_script = """
-    <script>
-        var action = localStorage.getItem('fc_action');
-        document.body.innerText = action || '';
-    </script>
-    """
-    
-    action_data = stc.html(read_script, height=0)
-    
-    if action_data:
-        try:
-            action = json.loads(action_data)
-            
-            if action['action'] == 'drop':
-                start_dt = datetime.fromisoformat(action['start'].replace('Z', '+00:00'))
-                date_debut = start_dt.date()
-                heure_debut = start_dt.time()
-                props = action['extendedProps']
-                
-                if props['type'] == 'job':
-                    job_id = int(props['job_id'])
-                    duree_h = float(props['duree_heures'])
-                    duree_min = int(duree_h * 60)
+                with st.expander(f"🟢 #{int(job['id'])} - {variete}", expanded=False):
+                    st.write(f"**Lot** : {job['code_lot_interne']}")
+                    st.write(f"**Quantité** : {int(job['quantite_pallox'])} pallox")
+                    st.write(f"**Durée** : {float(job['temps_estime_heures']):.1f}h")
                     
-                    chev = verifier_chevauchement(
-                        planning_df,
-                        date_debut,
-                        action['ligne'],
-                        heure_debut,
-                        duree_min
-                    )
+                    if st.button(f"📌 Placer Job #{int(job['id'])}", key=f"place_{int(job['id'])}", type="primary", use_container_width=True):
+                        st.session_state[f'placing_job_{int(job["id"])}'] = True
+                        st.rerun()
                     
-                    clear_script = "<script>localStorage.removeItem('fc_action');</script>"
-                    stc.html(clear_script, height=0)
-                    
-                    if chev:
-                        st.error(f"❌ {chev}")
-                    else:
-                        success, msg = ajouter_element_planning(
-                            'JOB',
-                            job_id,
-                            None,
-                            date_debut,
-                            action['ligne'],
-                            duree_min,
-                            annee,
-                            semaine,
-                            heure_debut
+                    # Modal placement
+                    if st.session_state.get(f'placing_job_{int(job["id"])}', False):
+                        st.markdown("---")
+                        st.markdown("##### 🎯 Choisir Date/Heure")
+                        
+                        # Date
+                        date_options = []
+                        for i in range(6):
+                            d = week_start + timedelta(days=i)
+                            date_options.append(d.date())
+                        
+                        date_placement = st.selectbox(
+                            "Date",
+                            options=date_options,
+                            format_func=lambda x: f"{x.strftime('%a %d/%m')}",
+                            key=f"date_{int(job['id'])}"
                         )
                         
-                        if success:
-                            st.success(f"✅ {msg}")
-                            st.balloons()
-                            time_module.sleep(0.5)
-                            st.rerun()
-                        else:
-                            st.error(f"❌ {msg}")
+                        # Heure
+                        heures = []
+                        h = 4
+                        while h < 22:
+                            for m in [0, 15, 30, 45]:
+                                heures.append(time(h, m))
+                            h += 1
+                        
+                        heure_placement = st.selectbox(
+                            "Heure",
+                            options=heures,
+                            format_func=lambda x: x.strftime('%H:%M'),
+                            key=f"heure_{int(job['id'])}"
+                        )
+                        
+                        col_save, col_cancel = st.columns(2)
+                        
+                        with col_save:
+                            if st.button("✅ OK", key=f"confirm_{int(job['id'])}", type="primary", use_container_width=True):
+                                duree_min = int(float(job['temps_estime_heures']) * 60)
+                                
+                                # Vérif chevauchement
+                                chev = verifier_chevauchement_planning(
+                                    planning_df,
+                                    date_placement,
+                                    st.session_state.selected_ligne,
+                                    heure_placement,
+                                    duree_min
+                                )
+                                
+                                if chev:
+                                    st.error(f"❌ {chev}")
+                                else:
+                                    success, msg = ajouter_element_planning(
+                                        'JOB',
+                                        int(job['id']),
+                                        None,
+                                        date_placement,
+                                        st.session_state.selected_ligne,
+                                        duree_min,
+                                        annee,
+                                        semaine,
+                                        heure_placement
+                                    )
+                                    
+                                    if success:
+                                        st.success(f"✅ {msg}")
+                                        st.balloons()
+                                        st.session_state.pop(f'placing_job_{int(job["id"])}')
+                                        time_module.sleep(0.3)
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {msg}")
+                        
+                        with col_cancel:
+                            if st.button("❌", key=f"cancel_{int(job['id'])}", use_container_width=True):
+                                st.session_state.pop(f'placing_job_{int(job["id"])}')
+                                st.rerun()
+        else:
+            st.info("✅ Tous les jobs sont planifiés")
+    
+    # ========================================
+    # COLONNE 2 : CALENDRIER READ-ONLY
+    # ========================================
+    with col_calendar:
+        st.markdown("### 📅 Planning")
         
-        except Exception as e:
-            st.error(f"❌ Erreur : {str(e)}")
-            stc.html("<script>localStorage.removeItem('fc_action');</script>", height=0)
+        # Préparer events FullCalendar
+        events_data = []
+        if not planning_df.empty:
+            planning_ligne = planning_df[planning_df['ligne_lavage'] == st.session_state.selected_ligne]
+            
+            for _, elem in planning_ligne.iterrows():
+                if elem['type_element'] == 'JOB':
+                    job_statut = elem.get('job_statut', 'PRÉVU')
+                    variete = str(elem['variete']) if pd.notna(elem['variete']) else 'INCONNUE'
+                    
+                    emoji = "🟢" if job_statut == 'PRÉVU' else "⏱️" if job_statut == 'EN_COURS' else "✅"
+                    color = get_statut_color(job_statut)
+                    
+                    events_data.append({
+                        'title': f"{emoji} #{int(elem['job_id'])} - {variete}",
+                        'start': f"{elem['date_prevue']}T{elem['heure_debut'].strftime('%H:%M:%S')}",
+                        'end': f"{elem['date_prevue']}T{elem['heure_fin'].strftime('%H:%M:%S')}",
+                        'backgroundColor': color,
+                        'borderColor': color
+                    })
+        
+        # Render calendrier
+        import json
+        events_json = json.dumps(events_data, ensure_ascii=False)
+        week_iso = week_start.isoformat()
+        
+        calendar_html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset='utf-8'>
+    <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/main.min.js'></script>
+    <link href='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/main.min.css' rel='stylesheet'>
+    <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/locales/fr.js'></script>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: -apple-system, sans-serif; background: white; }}
+        #calendar {{ padding: 10px; height: 600px; }}
+    </style>
+</head>
+<body>
+    <div id="calendar"></div>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {{
+            var calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{
+                plugins: ['timeGrid'],
+                defaultView: 'timeGridWeek',
+                locale: 'fr',
+                firstDay: 1,
+                slotMinTime: '04:00:00',
+                slotMaxTime: '22:00:00',
+                hiddenDays: [0],
+                slotDuration: '00:15:00',
+                height: 'auto',
+                allDaySlot: false,
+                nowIndicator: true,
+                header: {{
+                    left: '',
+                    center: 'title',
+                    right: ''
+                }},
+                buttonText: {{
+                    today: 'Aujourd\'hui'
+                }},
+                defaultDate: '{week_iso}',
+                events: {events_json},
+                editable: false
+            }});
+            calendar.render();
+        }});
+    </script>
+</body>
+</html>"""
+        
+        stc.html(calendar_html, height=650, scrolling=True)
 
 with tab2:
     st.subheader("📋 Historique des Jobs")
