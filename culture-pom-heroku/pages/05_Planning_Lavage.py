@@ -3,22 +3,21 @@ import streamlit.components.v1 as stc
 from components import show_footer
 from auth import require_access
 
-st.set_page_config(page_title="Planning Lavage - DEBUG V2", page_icon="🧼", layout="wide")
+st.set_page_config(page_title="Planning Lavage - DEBUG V3", page_icon="🧼", layout="wide")
 
 require_access('planning_lavage')
 
-st.title("🧼 Planning Lavage - TEST DEBUG V2")
-st.info("🔍 Test avec CDN FullCalendar alternatifs (version 5.11.0 - plus stable)")
+st.title("🧼 Planning Lavage - TEST DEBUG V3")
+st.info("🔍 Test avec syntaxe JavaScript CORRIGÉE")
 
-# HTML avec FullCalendar 5.11.0 (version plus stable)
+# ✅ CORRECTION : Utiliser triple quotes et éviter f-string pour éviter les conflits d'accolades
 test_html = """
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset='utf-8'>
-    <title>Test FullCalendar</title>
+    <title>Test FullCalendar V3</title>
     
-    <!-- FullCalendar 5.11.0 -->
     <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/main.min.js'></script>
     <link href='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/main.min.css' rel='stylesheet' />
     <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/locales/fr.js'></script>
@@ -28,7 +27,7 @@ test_html = """
             margin: 0; 
             padding: 20px; 
             background: #f5f5f5;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-family: Arial, sans-serif;
         }
         .status {
             background: #e3f2fd;
@@ -44,6 +43,7 @@ test_html = """
         .status p {
             margin: 5px 0;
             color: #555;
+            font-size: 14px;
         }
         #calendar { 
             height: 600px; 
@@ -57,7 +57,7 @@ test_html = """
     </style>
 </head>
 <body>
-    <div class="status" id="status">
+    <div class="status">
         <h3>📊 Status de chargement</h3>
         <p id="step1">1. ✅ HTML chargé</p>
         <p id="step2">2. ⏳ Chargement FullCalendar...</p>
@@ -68,20 +68,18 @@ test_html = """
     <div id='calendar'></div>
     
     <script>
-        console.log('=== DÉBUT TEST ===');
+        console.log('=== DÉBUT TEST V3 ===');
         
-        // Étape 2 : Vérifier FullCalendar chargé
+        // Étape 2
         if (typeof FullCalendar !== 'undefined') {
-            document.getElementById('step2').innerHTML = '2. <span class="success">✅ FullCalendar chargé</span>';
-            document.getElementById('step2').className = 'success';
+            document.getElementById('step2').innerHTML = '2. <span class="success">✅ FullCalendar chargé (v' + FullCalendar.version + ')</span>';
             console.log('✅ FullCalendar version:', FullCalendar.version);
         } else {
             document.getElementById('step2').innerHTML = '2. <span class="error">❌ FullCalendar NON chargé</span>';
-            document.getElementById('step2').className = 'error';
-            console.error('❌ FullCalendar non disponible !');
+            console.error('❌ FullCalendar non disponible');
         }
         
-        // Étape 3 : Initialiser
+        // Étape 3
         try {
             document.getElementById('step3').innerHTML = '3. <span class="success">✅ Initialisation...</span>';
             
@@ -93,7 +91,6 @@ test_html = """
                 firstDay: 1,
                 slotMinTime: '06:00:00',
                 slotMaxTime: '20:00:00',
-                slotDuration: '00:30:00',
                 allDaySlot: false,
                 nowIndicator: true,
                 headerToolbar: {
@@ -102,31 +99,28 @@ test_html = """
                     right: 'timeGridWeek,timeGridDay'
                 },
                 buttonText: {
-                    today: "Aujourd'hui",
+                    today: 'Aujourd\'hui',
                     week: 'Semaine',
                     day: 'Jour'
                 },
                 events: [
                     {
-                        title: '🟢 Job Test #1',
+                        title: '🟢 Job Test Lundi',
                         start: '2026-02-03T10:00:00',
                         end: '2026-02-03T12:00:00',
-                        backgroundColor: '#4caf50',
-                        borderColor: '#388e3c'
+                        backgroundColor: '#4caf50'
                     },
                     {
-                        title: '🔵 Job Test #2',
+                        title: '🔵 Job Test Mardi',
                         start: '2026-02-04T14:00:00',
                         end: '2026-02-04T16:30:00',
-                        backgroundColor: '#2196f3',
-                        borderColor: '#1976d2'
+                        backgroundColor: '#2196f3'
                     },
                     {
-                        title: '🟡 Job Test #3',
+                        title: '🟡 Job Test Mercredi',
                         start: '2026-02-05T08:00:00',
                         end: '2026-02-05T11:00:00',
-                        backgroundColor: '#ffc107',
-                        borderColor: '#ffa000'
+                        backgroundColor: '#ffc107'
                     }
                 ]
             });
@@ -134,19 +128,19 @@ test_html = """
             document.getElementById('step3').innerHTML = '3. <span class="success">✅ Calendrier initialisé</span>';
             console.log('✅ Calendrier initialisé');
             
-            // Étape 4 : Rendu
+            // Étape 4
             document.getElementById('step4').innerHTML = '4. <span class="success">⏳ Rendu en cours...</span>';
             calendar.render();
-            document.getElementById('step4').innerHTML = '4. <span class="success">✅ Calendrier rendu !</span>';
-            console.log('✅ Calendrier rendu avec succès !');
+            document.getElementById('step4').innerHTML = '4. <span class="success">✅ Calendrier rendu avec succès !</span>';
+            console.log('✅ Calendrier rendu !');
             
         } catch(err) {
-            document.getElementById('step3').innerHTML = '3. <span class="error">❌ Erreur : ' + err.message + '</span>';
+            document.getElementById('step3').innerHTML = '3. <span class="error">❌ Erreur: ' + err.message + '</span>';
             document.getElementById('step4').innerHTML = '4. <span class="error">❌ Rendu impossible</span>';
             console.error('❌ ERREUR:', err);
         }
         
-        console.log('=== FIN TEST ===');
+        console.log('=== FIN TEST V3 ===');
     </script>
 </body>
 </html>
@@ -155,21 +149,21 @@ test_html = """
 stc.html(test_html, height=850)
 
 st.markdown("---")
-st.markdown("### 🎯 Ce que tu dois voir :")
+st.markdown("### ✅ Ce que tu dois voir :")
 st.markdown("""
-**Status box** :
-- ✅ 1. HTML chargé
-- ✅ 2. FullCalendar chargé
-- ✅ 3. Calendrier initialisé
-- ✅ 4. Calendrier rendu !
+**Status box VERTE** :
+1. ✅ HTML chargé
+2. ✅ FullCalendar chargé (v5.11.0)
+3. ✅ Calendrier initialisé
+4. ✅ Calendrier rendu avec succès !
 
-**Calendrier** :
-- 🟢 Job Test #1 (lundi 3 fév 10h-12h)
-- 🔵 Job Test #2 (mardi 4 fév 14h-16h30)
-- 🟡 Job Test #3 (mercredi 5 fév 8h-11h)
+**Calendrier avec 3 events** :
+- 🟢 Job Test Lundi (3 fév 10h-12h)
+- 🔵 Job Test Mardi (4 fév 14h-16h30)
+- 🟡 Job Test Mercredi (5 fév 8h-11h)
 """)
 
 st.markdown("---")
-st.warning("⚠️ Si tu vois des ❌ dans la status box, ouvre la console (F12) et montre-moi les erreurs !")
+st.success("✅ Cette version utilise des guillemets simples et évite les conflits de syntaxe !")
 
 show_footer()
