@@ -2,6 +2,7 @@ import streamlit as st
 import streamlit.components.v1 as stc
 import pandas as pd
 from datetime import datetime, timedelta, time
+import time as time_module
 from database import get_connection
 from components import show_footer
 from auth import require_access
@@ -1750,9 +1751,16 @@ with tab1:
         # ACTION : DROP (glisser depuis liste externe)
         # ========================================
         if action == 'drop':
+            st.write("🔍 DEBUG: Action 'drop' reçue")
+            st.write(f"📦 calendar_event: {calendar_event}")
+            
             event_id = calendar_event.get('event_id', '')
             start_str = calendar_event.get('start')
             props = calendar_event.get('extendedProps', {})
+            
+            st.write(f"🆔 event_id: {event_id}")
+            st.write(f"⏰ start: {start_str}")
+            st.write(f"📋 props: {props}")
             
             if event_id and start_str:
                 try:
@@ -1760,22 +1768,32 @@ with tab1:
                     date_debut = start_dt.date()
                     heure_debut = start_dt.time()
                     
+                    st.write(f"📅 date_debut: {date_debut}")
+                    st.write(f"🕐 heure_debut: {heure_debut}")
+                    
                     # Déterminer type et ID
                     if event_id.startswith('job_'):
                         type_elem = 'JOB'
                         job_id = props.get('job_id')
                         custom_id = None
                         duree_h = props.get('duree_heures', 1.0)
+                        
+                        st.write(f"✅ Type: JOB, job_id: {job_id}, durée: {duree_h}h")
                     elif event_id.startswith('custom_'):
                         type_elem = 'CUSTOM'
                         job_id = None
                         custom_id = props.get('custom_id')
                         duree_h = props.get('duree_minutes', 30) / 60.0
+                        
+                        st.write(f"✅ Type: CUSTOM, custom_id: {custom_id}, durée: {duree_h}h")
                     else:
                         st.error("❌ Type inconnu")
                         st.stop()
                     
                     duree_min = int(duree_h * 60)
+                    
+                    st.write(f"⏱️ durée_min: {duree_min}")
+                    st.write(f"📍 ligne: {st.session_state.selected_ligne}")
                     
                     # Vérifier chevauchement
                     chevauchement = verifier_chevauchement(
@@ -1789,6 +1807,7 @@ with tab1:
                     if chevauchement:
                         st.error(f"❌ {chevauchement}")
                     else:
+                        st.write("🔄 Appel ajouter_element_planning...")
                         # Ajouter au planning
                         success, msg = ajouter_element_planning(
                             type_elem,
@@ -1802,14 +1821,22 @@ with tab1:
                             heure_debut
                         )
                         
+                        st.write(f"📊 Résultat: success={success}, msg={msg}")
+                        
                         if success:
                             st.success(f"✅ {msg}")
+                            st.balloons()
+                            time_module.sleep(1)
                             st.rerun()
                         else:
                             st.error(msg)
                 
                 except Exception as e:
                     st.error(f"❌ Erreur drop : {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
+            else:
+                st.warning(f"⚠️ event_id ou start manquant: event_id={event_id}, start={start_str}")
         
         # ========================================
         # ACTION : MOVE (déplacer dans calendrier)
