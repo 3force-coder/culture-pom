@@ -1473,7 +1473,7 @@ with tab1:
                 nowIndicator: true,
                 editable: true,
                 droppable: true,
-                initialDate: '{week_iso}'
+                initialDate: '{week_iso}',
                 
                 // Callback drop (job externe -> calendrier)
                 drop: function(info) {{
@@ -1533,7 +1533,7 @@ with tab1:
                         element_id: elementId,
                         new_end: info.event.end.toISOString()
                     }});
-                }}
+                }},
                 events: {events_json}
             }});
             
