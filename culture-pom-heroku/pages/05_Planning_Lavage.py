@@ -278,6 +278,75 @@ def get_kpis_lavage():
     except Exception as e:
         return None
 
+
+def place_job_in_calendar(job_id, date_prevue, ligne_lavage):
+    """Place un job dans le calendrier"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Récupérer le job
+        cursor.execute("""
+            SELECT poids_brut_kg, capacite_th 
+            FROM lavages_jobs 
+            WHERE id = %s
+        """, (job_id,))
+        row = cursor.fetchone()
+        
+        if not row:
+            return False, "❌ Job introuvable"
+        
+        poids_kg = float(row['poids_brut_kg'])
+        capacite = float(row['capacite_th']) if row['capacite_th'] else 13.0
+        temps_estime = (poids_kg / 1000) / capacite
+        
+        # UPDATE job
+        cursor.execute("""
+            UPDATE lavages_jobs
+            SET date_prevue = %s,
+                ligne_lavage = %s,
+                temps_estime_heures = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (date_prevue, ligne_lavage, temps_estime, job_id))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, f"✅ Job #{job_id} placé le {date_prevue.strftime('%d/%m')} sur {ligne_lavage}"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+def remove_job_from_calendar(job_id):
+    """Retire un job du calendrier"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            UPDATE lavages_jobs
+            SET date_prevue = NULL,
+                ligne_lavage = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (job_id,))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, "✅ Job retiré du planning"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+
 def get_jobs_a_placer():
     """Récupère les jobs PRÉVU prêts à être placés avec infos producteur"""
     try:
@@ -1538,25 +1607,6 @@ with tab1:
             }});
             
             calendar.render();
-            
-            // Fonction pour récupérer tous les events
-            window.getAllCalendarEvents = function() {
-                var events = calendar.getEvents();
-                var eventsData = [];
-                
-                events.forEach(function(event) {
-                    eventsData.push({
-                        id: event.id,
-                        title: event.title,
-                        start: event.start ? event.start.toISOString() : null,
-                        end: event.end ? event.end.toISOString() : null,
-                        extendedProps: event.extendedProps
-                    });
-                });
-                
-                return eventsData;
-            };
-
             console.log('Calendar rendered with drag & drop enabled!');
             
             // Initialiser draggables externe
@@ -1621,24 +1671,158 @@ with tab1:
         stc.html(calendar_html, height=650, scrolling=True)
 
         # ============================================================
-        # 💾 BOUTON SAUVEGARDER LE PLANNING
+        # 📍 PLACER LES JOBS DANS LE CALENDRIER
         # ============================================================
         
         st.markdown("---")
+        st.markdown("### 📍 Jobs à Placer dans le Planning")
         
-        col1, col2, col3 = st.columns([1, 1, 1])
+        # Récupérer jobs PRÉVU sans date
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT id, code_lot_interne, variete, quantite_pallox, poids_brut_kg,
+                       ligne_lavage, statut, created_by
+                FROM lavages_jobs
+                WHERE statut = 'PRÉVU' AND date_prevue IS NULL
+                ORDER BY created_at DESC
+            """)
+            
+            jobs_a_placer = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            
+            if jobs_a_placer:
+                st.info(f"📋 {len(jobs_a_placer)} job(s) à placer dans le calendrier")
+                
+                for job in jobs_a_placer:
+                    with st.expander(f"Job #{job['id']} - {job['code_lot_interne']} ({job['variete']}) - {job['quantite_pallox']} pallox"):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            date_placement = st.date_input(
+                                "Date prévue",
+                                value=datetime.now().date(),
+                                key=f"date_place_{job['id']}"
+                            )
+                        
+                        with col2:
+                            lignes = get_lignes_lavage()
+                            ligne_opts = [l['code'] for l in lignes]
+                            
+                            # Ligne par défaut du job ou première ligne
+                            default_idx = 0
+                            if job['ligne_lavage'] and job['ligne_lavage'] in ligne_opts:
+                                default_idx = ligne_opts.index(job['ligne_lavage'])
+                            
+                            ligne_sel = st.selectbox(
+                                "Ligne de lavage",
+                                ligne_opts,
+                                index=default_idx,
+                                key=f"ligne_place_{job['id']}"
+                            )
+                        
+                        if st.button(f"✅ Placer dans le calendrier", key=f"btn_place_{job['id']}", type="primary"):
+                            success, message = place_job_in_calendar(job['id'], date_placement, ligne_sel)
+                            
+                            if success:
+                                st.success(message)
+                                st.balloons()
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.error(message)
+            else:
+                st.success("✅ Tous les jobs PRÉVU sont placés dans le calendrier")
+                
+        except Exception as e:
+            st.error(f"❌ Erreur : {str(e)}")
         
-        with col2:
-            if st.button("💾 Sauvegarder le Planning", type="primary", use_container_width=True, key="btn_save_planning"):
-                # Note : La récupération JavaScript → Python nécessite un mécanisme
-                # Pour l'instant, on va utiliser une approche simplifiée
-                st.info("⚠️ Fonction de sauvegarde en cours d'implémentation")
-                st.caption("Les changements drag & drop seront sauvegardés prochainement")
+        # ============================================================
+        # ✏️ MODIFIER UN JOB DU PLANNING
+        # ============================================================
         
-        with col3:
-            if st.button("🔄 Rafraîchir", use_container_width=True, key="btn_refresh_calendar"):
-                st.rerun()
-
+        st.markdown("---")
+        st.markdown("### ✏️ Modifier un Job du Planning")
+        
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            
+            # Jobs de la semaine affichée
+            cursor.execute("""
+                SELECT id, code_lot_interne, variete, quantite_pallox, 
+                       date_prevue, ligne_lavage, temps_estime_heures
+                FROM lavages_jobs
+                WHERE statut = 'PRÉVU' 
+                  AND date_prevue >= %s 
+                  AND date_prevue < %s + INTERVAL '7 days'
+                ORDER BY date_prevue, ligne_lavage
+            """, (selected_week, selected_week))
+            
+            jobs_week = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            
+            if jobs_week:
+                st.info(f"📅 {len(jobs_week)} job(s) dans cette semaine")
+                
+                for job in jobs_week:
+                    job_display = f"#{job['id']} - {job['code_lot_interne']} - {job['date_prevue'].strftime('%a %d/%m')} sur {job['ligne_lavage']}"
+                    
+                    with st.expander(job_display):
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            new_date = st.date_input(
+                                "Nouvelle date",
+                                value=job['date_prevue'],
+                                key=f"newdate_{job['id']}"
+                            )
+                        
+                        with col2:
+                            lignes = get_lignes_lavage()
+                            ligne_codes = [l['code'] for l in lignes]
+                            current_idx = ligne_codes.index(job['ligne_lavage']) if job['ligne_lavage'] in ligne_codes else 0
+                            
+                            new_ligne = st.selectbox(
+                                "Nouvelle ligne",
+                                ligne_codes,
+                                index=current_idx,
+                                key=f"newligne_{job['id']}"
+                            )
+                        
+                        with col3:
+                            st.metric("Temps estimé", f"{job['temps_estime_heures']:.1f}h")
+                        
+                        col_save, col_remove = st.columns(2)
+                        
+                        with col_save:
+                            if st.button("💾 Modifier", key=f"btn_modify_{job['id']}", type="primary"):
+                                success, message = place_job_in_calendar(job['id'], new_date, new_ligne)
+                                if success:
+                                    st.success(message)
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error(message)
+                        
+                        with col_remove:
+                            if st.button("🗑️ Retirer du planning", key=f"btn_remove_{job['id']}"):
+                                success, message = remove_job_from_calendar(job['id'])
+                                if success:
+                                    st.success(message)
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error(message)
+            else:
+                st.info("📅 Aucun job PRÉVU dans cette semaine")
+                
+        except Exception as e:
+            st.error(f"❌ Erreur : {str(e)}")
 
 
 with tab2:
