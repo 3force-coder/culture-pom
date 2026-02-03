@@ -1701,7 +1701,8 @@ with tab1:
                 
                 calendar.render();
                 
-                setTimeout(function() {{
+                // Fonction pour initialiser les draggables
+                function initDraggables() {{
                     if (window.parent && window.parent.document) {{
                         var externalEvents = window.parent.document.querySelectorAll('[data-fc-event]');
                         externalEvents.forEach(function(el) {{
@@ -1711,7 +1712,27 @@ with tab1:
                             }}
                         }});
                     }}
-                }}, 500);
+                }}
+                
+                // Init initial après 500ms
+                setTimeout(initDraggables, 500);
+                
+                // Observer pour les nouveaux éléments (jobs créés après)
+                if (window.parent && window.parent.document) {{
+                    var observer = new MutationObserver(function(mutations) {{
+                        mutations.forEach(function(mutation) {{
+                            if (mutation.addedNodes.length) {{
+                                setTimeout(initDraggables, 100);
+                            }}
+                        }});
+                    }});
+                    
+                    // Observer le body parent pour détecter les nouveaux jobs
+                    observer.observe(window.parent.document.body, {{
+                        childList: true,
+                        subtree: true
+                    }});
+                }}
             </script>
         </body>
         </html>
