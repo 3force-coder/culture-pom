@@ -1473,11 +1473,9 @@ with tab1:
                     minutes = int((duree_h - heures) * 60)
                     
                     # Infos enrichies
-                    producteur = str(job['nom_producteur'])[:12] + "..." if pd.notna(job['nom_producteur']) and len(str(job['nom_producteur'])) > 12 else (str(job['nom_producteur']) if pd.notna(job['nom_producteur']) else "-")
-                    
-                    produit = "-"
-                    if pd.notna(job.get('produit_libelle')):
-                        produit = str(job['produit_libelle'])[:12] + "..." if len(str(job['produit_libelle'])) > 12 else str(job['produit_libelle'])
+                    # Textes complets sans troncature
+                    producteur_full = str(job['nom_producteur']) if pd.notna(job['nom_producteur']) else "-"
+                    produit_full = str(job['produit_libelle']) if pd.notna(job['produit_libelle']) else "-"
                     
                     date_prev = job['date_prevue'].strftime('%d/%m') if pd.notna(job['date_prevue']) else "-"
                     
@@ -1502,18 +1500,25 @@ with tab1:
                          draggable="true"
                          data-fc-event='{json.dumps(event_data)}'
                          style="cursor: move; user-select: none; 
-                                font-size: 0.7rem; 
-                                padding: 0.3rem 0.4rem; 
-                                margin-bottom: 0.3rem;
-                                border-left: 3px solid {get_variete_color(variete)};
+                                font-size: 0.85rem; 
+                                padding: 0.5rem 0.6rem; 
+                                margin-bottom: 0.4rem;
+                                border-left: 4px solid {get_variete_color(variete)};
                                 background: #f8f9fa;
-                                border-radius: 4px;">
-                        <strong style="font-size: 0.75rem;">🟢 #{int(job['id'])}</strong> {variete}<br>
-                        <small style="font-size: 0.65rem;">
-                        📅 {date_prev} • {int(job['quantite_pallox'])}p • {duree_h:.1f}h<br>
-                        👤 {producteur}<br>
-                        📦 {produit}
-                        </small>
+                                border-radius: 4px;
+                                line-height: 1.3;">
+                        <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 0.2rem;">
+                            🟢 #{int(job['id'])} - {variete}
+                        </div>
+                        <div style="font-size: 0.8rem; color: #555; margin-bottom: 0.2rem;">
+                            📅 {date_prev} | {int(job['quantite_pallox'])}p | ⏱️ {duree_h:.1f}h
+                        </div>
+                        <div style="font-size: 0.75rem; color: #666;">
+                            👤 {producteur_full}
+                        </div>
+                        <div style="font-size: 0.75rem; color: #666;">
+                            📦 {produit_full}
+                        </div>
                     </div>
                     """, unsafe_allow_html=True)
             else:
@@ -1585,10 +1590,11 @@ with tab1:
                     initialView: 'timeGridWeek',
                     locale: 'fr',
                     firstDay: 1,
-                    slotMinTime: '05:00:00',
-                    slotMaxTime: '20:00:00',
+                    slotMinTime: '04:00:00',
+                    slotMaxTime: '22:00:00',
+                    hiddenDays: [0],
                     slotDuration: '00:15:00',
-                    height: 600,
+                    height: 730,
                     allDaySlot: false,
                     nowIndicator: true,
                     editable: true,
@@ -1656,7 +1662,17 @@ with tab1:
                     }}
                 }});
                 calendar.render();
-                
+                // Reset drag si clic dehors
+                document.addEventListener('mouseup', function(e) {
+                    setTimeout(function() {
+                        if (window.parent && window.parent.document) {
+                            var dragging = window.parent.document.querySelectorAll('.fc-event-dragging');
+                            dragging.forEach(function(el) {
+                                el.classList.remove('fc-event-dragging');
+                            });
+                        }
+                    }, 100);
+                });             
                 setTimeout(function() {{
                     if (window.parent && window.parent.document) {{
                         var externalEvents = window.parent.document.querySelectorAll('[data-fc-event]');
@@ -1673,7 +1689,7 @@ with tab1:
         </html>
         """
         
-        calendar_event = stc.html(calendar_html, height=620)
+        calendar_event = stc.html(calendar_html, height=920)
     # ========================================
     # GÉRER LES ACTIONS DRAG & DROP
     # ========================================
@@ -1872,7 +1888,109 @@ with tab1:
                 
                 st.info(f"🔵 Job #{job_id} - {statut}")
                 st.caption("💡 Utilisez le panneau Actions ci-dessous")
+    # ========================================
+    # ACTIONS RAPIDES
+    # ========================================
     
+    st.markdown("---")
+    st.markdown("### ⚡ Actions Rapides")
+    
+    if not planning_df.empty:
+        ligne_aff = st.session_state.selected_ligne
+        jobs_planif = planning_df[
+            (planning_df['type_element'] == 'JOB') & 
+            (planning_df['ligne_lavage'] == ligne_aff)
+        ].sort_values('date_prevue')
+        
+        if not jobs_planif.empty:
+            maintenant = datetime.now()
+            job_en_cours = jobs_planif[jobs_planif['job_statut'] == 'EN_COURS']
+            
+            if not job_en_cours.empty:
+                idx_en_cours = job_en_cours.index[0]
+                idx_position = jobs_planif.index.get_loc(idx_en_cours)
+                job_avant = jobs_planif.iloc[idx_position - 1] if idx_position > 0 else None
+                job_actuel = job_en_cours.iloc[0]
+                job_apres = jobs_planif.iloc[idx_position + 1] if idx_position < len(jobs_planif) - 1 else None
+            else:
+                jobs_futurs = jobs_planif[jobs_planif['date_prevue'] >= maintenant.date()]
+                if not jobs_futurs.empty:
+                    idx_futur = jobs_futurs.index[0]
+                    idx_position = jobs_planif.index.get_loc(idx_futur)
+                    job_avant = jobs_planif.iloc[idx_position - 1] if idx_position > 0 else None
+                    job_actuel = jobs_planif.iloc[idx_position]
+                    job_apres = jobs_planif.iloc[idx_position + 1] if idx_position < len(jobs_planif) - 1 else None
+                else:
+                    job_avant = jobs_planif.iloc[-3] if len(jobs_planif) >= 3 else None
+                    job_actuel = jobs_planif.iloc[-2] if len(jobs_planif) >= 2 else jobs_planif.iloc[-1]
+                    job_apres = jobs_planif.iloc[-1] if len(jobs_planif) >= 2 else None
+            
+            col_avant, col_actuel, col_apres = st.columns(3)
+            
+            with col_avant:
+                if job_avant is not None:
+                    st.markdown("#### ⬅️ Précédent")
+                    statut = job_avant['job_statut']
+                    emoji = "🟢" if statut == 'PRÉVU' else "⏱️" if statut == 'EN_COURS' else "✅"
+                    st.info(f"""
+**{emoji} Job #{int(job_avant['job_id'])}**  
+🌱 {job_avant['variete']}  
+📅 {job_avant['date_prevue'].strftime('%d/%m')} {job_avant['heure_debut'].strftime('%H:%M')}  
+📊 {int(job_avant['quantite_pallox'])} pallox
+                    """)
+                    if statut == 'PRÉVU':
+                        if st.button("▶️ Démarrer", key=f"qa_{int(job_avant['job_id'])}", use_container_width=True):
+                            success, msg = demarrer_job(int(job_avant['job_id']))
+                            if success:
+                                st.success(msg)
+                                st.rerun()
+                else:
+                    st.caption("─")
+            
+            with col_actuel:
+                st.markdown("#### 🎯 Actuel")
+                statut = job_actuel['job_statut']
+                emoji = "🟢" if statut == 'PRÉVU' else "⏱️" if statut == 'EN_COURS' else "✅"
+                st.warning(f"""
+**{emoji} Job #{int(job_actuel['job_id'])}**  
+🌱 {job_actuel['variete']}  
+📅 {job_actuel['date_prevue'].strftime('%d/%m')} {job_actuel['heure_debut'].strftime('%H:%M')}  
+📊 {int(job_actuel['quantite_pallox'])} pallox
+                """)
+                if statut == 'PRÉVU':
+                    if st.button("▶️ Démarrer", key=f"qb_{int(job_actuel['job_id'])}", type="primary", use_container_width=True):
+                        success, msg = demarrer_job(int(job_actuel['job_id']))
+                        if success:
+                            st.success(msg)
+                            st.rerun()
+                elif statut == 'EN_COURS':
+                    if st.button("⏹️ Terminer", key=f"qc_{int(job_actuel['job_id'])}", type="primary", use_container_width=True):
+                        st.session_state[f'show_finish_{int(job_actuel["job_id"])}'] = True
+                        st.rerun()
+            
+            with col_apres:
+                if job_apres is not None:
+                    st.markdown("#### ➡️ Suivant")
+                    statut = job_apres['job_statut']
+                    emoji = "🟢" if statut == 'PRÉVU' else "⏱️" if statut == 'EN_COURS' else "✅"
+                    st.info(f"""
+**{emoji} Job #{int(job_apres['job_id'])}**  
+🌱 {job_apres['variete']}  
+📅 {job_apres['date_prevue'].strftime('%d/%m')} {job_apres['heure_debut'].strftime('%H:%M')}  
+📊 {int(job_apres['quantite_pallox'])} pallox
+                    """)
+                    if statut == 'PRÉVU':
+                        if st.button("▶️ Démarrer", key=f"qd_{int(job_apres['job_id'])}", use_container_width=True):
+                            success, msg = demarrer_job(int(job_apres['job_id']))
+                            if success:
+                                st.success(msg)
+                                st.rerun()
+                else:
+                    st.caption("─")
+        else:
+            st.info("Aucun job planifié")
+    else:
+        st.info("Aucun job planifié")
     # ========================================
     # PANNEAU ACTIONS
     # ========================================
