@@ -8,6 +8,27 @@ from auth import require_access
 from auth.roles import is_admin
 import io
 import math
+import json
+
+# ============================================================
+# COULEURS PAR VARIÉTÉ
+# ============================================================
+VARIETE_COLORS = {
+    'AGATA': '#FF6B6B',
+    'ALLIANS': '#4ECDC4',
+    'CHARLOTTE': '#45B7D1',
+    'FONTANE': '#96CEB4',
+    'MARKIES': '#FFEAA7',
+    'BINTJE': '#DFE6E9',
+    'GOURMANDINE': '#74B9FF',
+    'LADY CLAIRE': '#A29BFE',
+    'MONALISA': '#FD79A8',
+    'RUBIS': '#E84393',
+}
+
+def get_variete_color(variete):
+    """Retourne couleur pour une variété"""
+    return VARIETE_COLORS.get(str(variete).upper(), '#95A5A6')
 
 # ============================================================
 # CSS CUSTOM
@@ -1209,8 +1230,17 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📅 Planning Semaine", "📋 Lis
 # ONGLET 1 : PLANNING SEMAINE (fusionné de page 06)
 # ============================================================
 
+
+# ============================================================
+# ONGLET 1 : PLANNING SEMAINE AVEC FULLCALENDAR
+# ============================================================
+
 with tab1:
-    # Contrôles
+    st.subheader("📅 Planning Semaine")
+    
+    # ========================================
+    # CONTRÔLES SEMAINE + LIGNE
+    # ========================================
     col_ligne, col_nav_prev, col_semaine, col_nav_next, col_refresh = st.columns([2, 0.5, 2, 0.5, 1])
     
     lignes = get_lignes_lavage()
@@ -1218,7 +1248,7 @@ with tab1:
         if lignes:
             ligne_options = [f"{l['code']} ({l['capacite_th']} T/h)" for l in lignes]
             selected_idx = next((i for i, l in enumerate(lignes) if l['code'] == st.session_state.selected_ligne), 0)
-            selected = st.selectbox("🔵 Ligne", ligne_options, index=selected_idx, key="ligne_select")
+            selected = st.selectbox("🔵 Ligne", ligne_options, index=selected_idx, key="ligne_select_tab1")
             st.session_state.selected_ligne = lignes[ligne_options.index(selected)]['code']
     
     with col_nav_prev:
@@ -1239,177 +1269,116 @@ with tab1:
             st.rerun()
     
     with col_refresh:
-        if st.button("🔄", key="refresh", use_container_width=True):
+        if st.button("🔄 Actualiser", key="refresh_tab1", use_container_width=True):
             st.rerun()
     
     st.markdown("---")
     
-    # Chargement données
+    # ========================================
+    # CHARGEMENT DONNÉES
+    # ========================================
     jobs_a_placer = get_jobs_a_placer()
     temps_customs = get_temps_customs()
     horaires_config = get_config_horaires()
     planning_df = get_planning_semaine(annee, semaine)
-    lignes_dict = {l['code']: float(l['capacite_th']) for l in lignes} if lignes else {'LIGNE_1': 13.0, 'LIGNE_2': 6.0}
+    lignes_dict = {l['code']: float(l['capacite_th']) for l in lignes} if lignes else {}
     
-    # ============================================================
-    # ⭐ FORMULAIRE TERMINAISON EN PLEINE LARGEUR (avant calendrier)
-    # ============================================================
+    # ========================================
+    # FORMULAIRE TERMINAISON (si job en cours sélectionné)
+    # ========================================
+    jobs_en_cours = []
+    if not planning_df.empty:
+        mask_en_cours = (planning_df['type_element'] == 'JOB') & (planning_df['job_statut'] == 'EN_COURS')
+        if mask_en_cours.any():
+            jobs_en_cours = planning_df[mask_en_cours]['job_id'].dropna().astype(int).tolist()
     
-    # Chercher si un job EN_COURS a son formulaire ouvert
+    # Vérifier si formulaire de terminaison affiché
     job_en_terminaison = None
-    job_elem_data = None
+    for job_id in jobs_en_cours:
+        if st.session_state.get(f'show_finish_{job_id}', False):
+            job_en_terminaison = job_id
+            break
     
-    # Parcourir session_state pour trouver un show_finish actif
-    for key in list(st.session_state.keys()):
-        if key.startswith('show_finish_') and st.session_state.get(key, False):
-            job_id_to_finish = int(key.replace('show_finish_', ''))
-            # Chercher les données de ce job dans planning_df
-            if not planning_df.empty:
-                job_rows = planning_df[(planning_df['job_id'] == job_id_to_finish) & (planning_df['type_element'] == 'JOB')]
-                if not job_rows.empty:
-                    job_en_terminaison = job_id_to_finish
-                    job_elem_data = job_rows.iloc[0]
-                    break
-    
-    # Si un formulaire de terminaison est ouvert, l'afficher en pleine largeur
-    if job_en_terminaison and job_elem_data is not None:
-        elem = job_elem_data
-        
+    if job_en_terminaison:
         st.markdown("---")
-        st.markdown(f"## 📝 Saisie résultats lavage - Job #{job_en_terminaison}")
+        st.markdown(f"### ⏹️ Terminer Job #{job_en_terminaison}")
+        st.caption("*Saisir les tares réelles*")
         
-        # Info job
-        variete = elem['variete'] if pd.notna(elem.get('variete')) else '-'
-        code_lot = elem['code_lot_interne'] if pd.notna(elem.get('code_lot_interne')) else '-'
-        st.info(f"🌱 **{variete}** | 📦 Lot: {code_lot} | {int(elem['quantite_pallox'])} pallox")
+        # Récupérer infos job
+        job_row = planning_df[planning_df['job_id'] == job_en_terminaison].iloc[0]
+        poids_brut_total = float(job_row['poids_brut_kg']) if pd.notna(job_row.get('poids_brut_kg')) else 0
         
-        poids_brut = float(elem['poids_brut_kg']) if pd.notna(elem['poids_brut_kg']) else 0
+        st.info(f"📦 Poids brut total : **{poids_brut_total:,.0f} kg** ({poids_brut_total/1000:.1f} T)")
         
-        # ⭐ POIDS UNITAIRES CORRECTS
-        TYPES_COND = ["Pallox", "Petit Pallox", "Big Bag"]
-        POIDS_UNIT = {"Pallox": 1900, "Petit Pallox": 800, "Big Bag": 1600}
+        col1, col2 = st.columns(2)
         
-        st.markdown(f"### ⚖️ Poids brut en entrée : {poids_brut:,.0f} kg")
-        st.markdown("---")
-        
-        # ============ LAYOUT 2 COLONNES PRINCIPALES ============
-        col_lave, col_gren = st.columns(2)
-        
-        # ============ COLONNE LAVÉ ============
-        with col_lave:
-            st.markdown("### 🧼 Sortie LAVÉ")
-            
-            col_nb, col_type = st.columns([1, 2])
-            with col_nb:
-                nb_pallox_lave = st.number_input("Nb Pallox", min_value=0, value=max(1, int(poids_brut * 0.75 / 1900)), key=f"nb_lave_full_{job_en_terminaison}")
-            with col_type:
-                type_lave = st.selectbox("Type conditionnement", TYPES_COND, key=f"type_lave_full_{job_en_terminaison}")
-            
-            poids_lave_auto = nb_pallox_lave * POIDS_UNIT[type_lave]
-            st.metric("Poids calculé", f"{poids_lave_auto:,.0f} kg", help=f"{nb_pallox_lave} × {POIDS_UNIT[type_lave]} kg")
-            p_lave = st.number_input("Poids réel (kg)", 0.0, poids_brut*1.2, float(poids_lave_auto), step=100.0, key=f"p_lave_full_{job_en_terminaison}")
+        with col1:
+            st.markdown("#### 🧼 LAVÉ")
+            nb_pallox_lave = st.number_input("Nb pallox", 0, 1000, 0, key=f"nb_lave_{job_en_terminaison}")
+            type_lave = st.selectbox("Type", ["Pallox", "Petit Pallox", "Big Bag"], key=f"type_lave_{job_en_terminaison}")
+            p_lave = st.number_input("Poids total (kg)", 0.0, 100000.0, 0.0, 100.0, key=f"p_lave_{job_en_terminaison}")
             
             col_cal1, col_cal2 = st.columns(2)
-            with col_cal1:
-                cal_min_lave = st.number_input("Calibre min (mm)", 0, 100, 35, key=f"cal_min_lave_full_{job_en_terminaison}")
-            with col_cal2:
-                cal_max_lave = st.number_input("Calibre max (mm)", 0, 100, 75, key=f"cal_max_lave_full_{job_en_terminaison}")
+            cal_min_lave = col_cal1.number_input("Cal min", 0, 100, 0, key=f"cal_min_lave_{job_en_terminaison}")
+            cal_max_lave = col_cal2.number_input("Cal max", 0, 100, 0, key=f"cal_max_lave_{job_en_terminaison}")
         
-        # ============ COLONNE GRENAILLES ============
-        with col_gren:
-            st.markdown("### 🌾 Sortie GRENAILLES")
+        with col2:
+            st.markdown("#### 🌾 GRENAILLES")
+            nb_pallox_gren = st.number_input("Nb pallox", 0, 1000, 0, key=f"nb_gren_{job_en_terminaison}")
+            type_gren = st.selectbox("Type", ["Pallox", "Petit Pallox", "Big Bag"], key=f"type_gren_{job_en_terminaison}")
+            p_gren = st.number_input("Poids total (kg)", 0.0, 100000.0, 0.0, 100.0, key=f"p_gren_{job_en_terminaison}")
             
-            col_nb_g, col_type_g = st.columns([1, 2])
-            with col_nb_g:
-                nb_pallox_gren = st.number_input("Nb Pallox", min_value=0, value=0, key=f"nb_gren_full_{job_en_terminaison}")
-            with col_type_g:
-                type_gren = st.selectbox("Type conditionnement", TYPES_COND, key=f"type_gren_full_{job_en_terminaison}")
-            
-            poids_gren_auto = nb_pallox_gren * POIDS_UNIT[type_gren]
-            
-            if nb_pallox_gren > 0:
-                st.metric("Poids calculé", f"{poids_gren_auto:,.0f} kg", help=f"{nb_pallox_gren} × {POIDS_UNIT[type_gren]} kg")
-                p_gren = st.number_input("Poids réel (kg)", 0.0, poids_brut, float(poids_gren_auto), step=100.0, key=f"p_gren_full_{job_en_terminaison}")
-                
-                col_cal1_g, col_cal2_g = st.columns(2)
-                with col_cal1_g:
-                    cal_min_gren = st.number_input("Calibre min (mm)", 0, 100, 20, key=f"cal_min_gren_full_{job_en_terminaison}")
-                with col_cal2_g:
-                    cal_max_gren = st.number_input("Calibre max (mm)", 0, 100, 35, key=f"cal_max_gren_full_{job_en_terminaison}")
-            else:
-                p_gren = 0.0
-                cal_min_gren = 20
-                cal_max_gren = 35
-                st.caption("ℹ️ Pas de grenailles - mettez Nb Pallox > 0 si besoin")
+            col_cal3, col_cal4 = st.columns(2)
+            cal_min_gren = col_cal3.number_input("Cal min", 0, 100, 0, key=f"cal_min_gren_{job_en_terminaison}")
+            cal_max_gren = col_cal4.number_input("Cal max", 0, 100, 0, key=f"cal_max_gren_{job_en_terminaison}")
         
-        st.markdown("---")
+        st.markdown("#### 🗑️ DÉCHETS")
+        p_dech = st.number_input("Poids déchets (kg)", 0.0, 100000.0, 0.0, 100.0, key=f"p_dech_{job_en_terminaison}")
         
-        # ============ DÉCHETS + RÉCAP ============
-        col_dech, col_recap = st.columns([1, 2])
+        # Calculs automatiques
+        p_terre = poids_brut_total - p_lave - p_gren - p_dech
+        tare_pct = ((p_dech + p_terre) / poids_brut_total * 100) if poids_brut_total > 0 else 0
+        rend_pct = ((p_lave + p_gren) / poids_brut_total * 100) if poids_brut_total > 0 else 0
         
-        with col_dech:
-            st.markdown("### 🗑️ Déchets")
-            p_dech = st.number_input("Poids déchets (kg)", 0.0, poids_brut, poids_brut*0.05, step=50.0, key=f"p_dech_full_{job_en_terminaison}")
-            
-            p_terre = poids_brut - p_lave - p_gren - p_dech
-            
-            if p_terre < 0:
-                st.error(f"❌ Terre : {p_terre:,.0f} kg (NÉGATIF !)")
-                terre_ok = False
-            else:
-                st.success(f"✅ Terre : **{p_terre:,.0f} kg**")
-                terre_ok = True
+        col_calc1, col_calc2, col_calc3 = st.columns(3)
+        col_calc1.metric("Terre calculée", f"{p_terre:,.0f} kg")
+        col_calc2.metric("Tare réelle", f"{tare_pct:.1f}%")
+        col_calc3.metric("Rendement", f"{rend_pct:.1f}%")
         
-        with col_recap:
-            st.markdown("### 📊 Récapitulatif")
-            col_r1, col_r2, col_r3, col_r4 = st.columns(4)
-            with col_r1:
-                st.metric("Brut entrée", f"{poids_brut:,.0f} kg")
-            with col_r2:
-                st.metric("Lavé sortie", f"{p_lave:,.0f} kg")
-            with col_r3:
-                st.metric("Grenailles", f"{p_gren:,.0f} kg")
-            with col_r4:
-                st.metric("Déch+Terre", f"{p_dech + max(0, p_terre):,.0f} kg")
-            
-            if poids_brut > 0:
-                rendement = ((p_lave + p_gren) / poids_brut) * 100
-                st.info(f"📈 **Rendement : {rendement:.1f}%**")
+        # Validation cohérence
+        ecart = abs(poids_brut_total - (p_lave + p_gren + p_dech + p_terre))
+        if ecart > 1:
+            st.error(f"⚠️ Incohérence : Brut={poids_brut_total:.0f} kg vs Total={p_lave+p_gren+p_dech+p_terre:.0f} kg (écart {ecart:.0f} kg)")
         
-        # Validation calibres
-        calibres_ok = (cal_min_lave < cal_max_lave) and (nb_pallox_gren == 0 or cal_min_gren < cal_max_gren)
-        if not calibres_ok:
-            st.error("❌ Calibre min doit être < calibre max")
+        # Emplacement destination
+        emplacements = get_emplacements_saint_flavy()
+        empl = st.selectbox("📍 Emplacement destination *", [""] + [e[0] for e in emplacements], key=f"empl_{job_en_terminaison}")
         
-        st.markdown("---")
+        # Boutons
+        col_save, col_cancel = st.columns(2)
         
-        # ============ DESTINATION + BOUTONS ============
-        col_dest, col_btns = st.columns([2, 1])
-        
-        with col_dest:
-            st.markdown("### 📍 Destination")
-            empls = get_emplacements_saint_flavy()
-            empl = st.selectbox("Emplacement stockage SAINT_FLAVY", [""] + [e[0] for e in empls], key=f"empl_full_{job_en_terminaison}")
-        
-        with col_btns:
-            st.markdown("### ✅ Actions")
-            can_validate = terre_ok and calibres_ok and empl != ""
-            
-            if st.button("✅ Valider terminaison", key=f"val_finish_full_{job_en_terminaison}", type="primary", disabled=not can_validate, use_container_width=True):
-                success, msg = terminer_job(
-                    job_en_terminaison,
-                    nb_pallox_lave, type_lave, p_lave, cal_min_lave, cal_max_lave,
-                    nb_pallox_gren, type_gren, p_gren, cal_min_gren, cal_max_gren,
-                    p_dech,
-                    "SAINT_FLAVY", empl
-                )
-                if success:
-                    st.success(msg)
-                    st.session_state.pop(f'show_finish_{job_en_terminaison}', None)
-                    st.rerun()
+        with col_save:
+            if st.button("💾 Valider Terminaison", key=f"save_full_{job_en_terminaison}", type="primary", use_container_width=True):
+                if not empl:
+                    st.error("❌ Emplacement obligatoire")
+                elif ecart > 1:
+                    st.error("❌ Les poids doivent être cohérents")
                 else:
-                    st.error(msg)
-            
+                    success, msg = terminer_job(
+                        job_en_terminaison,
+                        nb_pallox_lave, type_lave, p_lave, cal_min_lave, cal_max_lave,
+                        nb_pallox_gren, type_gren, p_gren, cal_min_gren, cal_max_gren,
+                        p_dech,
+                        "SAINT_FLAVY", empl
+                    )
+                    if success:
+                        st.success(msg)
+                        st.session_state.pop(f'show_finish_{job_en_terminaison}', None)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+        
+        with col_cancel:
             if st.button("❌ Annuler", key=f"cancel_full_{job_en_terminaison}", use_container_width=True):
                 st.session_state.pop(f'show_finish_{job_en_terminaison}', None)
                 st.rerun()
@@ -1417,223 +1386,447 @@ with tab1:
         st.markdown("---")
         st.markdown("---")
     
-    # ============================================================
-    # Layout principal calendrier
-    # ============================================================
-    col_left, col_right = st.columns([1, 4])
+    # ========================================
+    # PRÉPARER DONNÉES FULLCALENDAR
+    # ========================================
     
-    # COLONNE GAUCHE
-    with col_left:
-        st.markdown("### 📦 Jobs à placer")
+    # Jobs non planifiés (pour liste de gauche)
+    jobs_planifies_ids = planning_df[planning_df['type_element'] == 'JOB']['job_id'].dropna().astype(int).tolist() if not planning_df.empty else []
+    jobs_non_planifies = jobs_a_placer[~jobs_a_placer['id'].isin(jobs_planifies_ids)] if not jobs_a_placer.empty else pd.DataFrame()
+    
+    # Events pour FullCalendar
+    fc_events = []
+    if not planning_df.empty:
+        ligne_aff = st.session_state.selected_ligne
+        planning_ligne = planning_df[planning_df['ligne_lavage'] == ligne_aff]
         
-        jobs_planifies_ids = planning_df[planning_df['type_element'] == 'JOB']['job_id'].dropna().astype(int).tolist() if not planning_df.empty else []
-        jobs_non_planifies = jobs_a_placer[~jobs_a_placer['id'].isin(jobs_planifies_ids)] if not jobs_a_placer.empty else pd.DataFrame()
+        for _, elem in planning_ligne.iterrows():
+            event = {
+                'id': f"planning_{elem['id']}",
+                'start': f"{elem['date_prevue']}T{elem['heure_debut'].strftime('%H:%M:%S')}",
+                'end': f"{elem['date_prevue']}T{elem['heure_fin'].strftime('%H:%M:%S')}",
+            }
+            
+            if elem['type_element'] == 'JOB':
+                job_statut = elem.get('job_statut', 'PRÉVU')
+                variete = str(elem['variete']) if pd.notna(elem['variete']) else 'INCONNUE'
+                
+                emoji = "🟢" if job_statut == 'PRÉVU' else "⏱️" if job_statut == 'EN_COURS' else "✅"
+                
+                event.update({
+                    'title': f"{emoji} Job #{int(elem['job_id'])} - {variete}",
+                    'backgroundColor': get_variete_color(variete),
+                    'borderColor': get_variete_color(variete),
+                    'className': f"statut-{job_statut.lower().replace('é','e').replace('î','i')}",
+                    'extendedProps': {
+                        'type': 'job',
+                        'job_id': int(elem['job_id']),
+                        'element_id': int(elem['id']),
+                        'variete': variete,
+                        'statut': job_statut,
+                        'quantite_pallox': int(elem['quantite_pallox']) if pd.notna(elem['quantite_pallox']) else 0
+                    }
+                })
+            else:  # CUSTOM
+                event.update({
+                    'title': f"{elem.get('custom_emoji', '🔧')} {elem.get('custom_libelle', 'Temps custom')}",
+                    'className': 'type-custom',
+                    'backgroundColor': '#7b1fa2',
+                    'borderColor': '#7b1fa2',
+                    'extendedProps': {
+                        'type': 'custom',
+                        'custom_id': int(elem['temps_custom_id']) if pd.notna(elem['temps_custom_id']) else 0,
+                        'element_id': int(elem['id'])
+                    }
+                })
+            
+            fc_events.append(event)
+    
+    # ========================================
+    # LAYOUT : LISTE + CALENDRIER
+    # ========================================
+    
+    col_liste, col_calendrier = st.columns([1, 3])
+    
+    # ========================================
+    # COLONNE GAUCHE : Jobs & Customs à placer
+    # ========================================
+    
+    with col_liste:
+        st.markdown("### 📦 Jobs à placer")
+        st.caption("*Sélectionner puis utiliser boutons*")
         
         if jobs_non_planifies.empty:
-            st.info("✅ Tous les jobs planifiés")
+            st.info("✅ Tous planifiés")
         else:
+            job_options_to_place = []
             for _, job in jobs_non_planifies.iterrows():
-                st.markdown(f"""<div class="job-card"><strong>Job #{int(job['id'])}</strong><br>
-                🌱 {job['variete']}<br>📦 {int(job['quantite_pallox'])}p - ⏱️ {job['temps_estime_heures']:.1f}h</div>""", unsafe_allow_html=True)
+                variete = str(job['variete']) if pd.notna(job['variete']) else 'INCONNUE'
+                duree_h = float(job['temps_estime_heures']) if pd.notna(job['temps_estime_heures']) else 1.0
+                job_options_to_place.append(f"Job #{int(job['id'])} - {variete} ({int(job['quantite_pallox'])}p, {duree_h:.1f}h)")
+            
+            selected_job_to_place = st.selectbox("Sélectionner", [""] + job_options_to_place, key="select_job_to_place")
+            
+            if selected_job_to_place:
+                # Extraire job_id
+                job_id_place = int(selected_job_to_place.split('#')[1].split(' ')[0])
+                job_data = jobs_non_planifies[jobs_non_planifies['id'] == job_id_place].iloc[0]
                 
-                jours_options = ["Sélectionner..."] + [f"{['Lun','Mar','Mer','Jeu','Ven','Sam'][i]} {(week_start + timedelta(days=i)).strftime('%d/%m')}" for i in range(6)]
-                jour_choisi = st.selectbox("Jour", jours_options, key=f"jour_job_{job['id']}", label_visibility="collapsed")
+                st.success(f"✅ Job #{job_id_place} sélectionné")
                 
-                if jour_choisi != "Sélectionner...":
-                    jour_idx = jours_options.index(jour_choisi) - 1
-                    date_cible = week_start + timedelta(days=jour_idx)
-                    h_debut_jour = horaires_config.get(jour_idx, {}).get('debut', time(5, 0))
-                    heure_debut = st.time_input("Heure", value=h_debut_jour, step=900, key=f"heure_job_{job['id']}", label_visibility="collapsed")
-                    duree_min = int(job['temps_estime_heures'] * 60)
+                # Formulaire placement rapide
+                col_d1, col_d2 = st.columns(2)
+                date_place = col_d1.date_input("Date", value=week_start, key=f"date_place_{job_id_place}")
+                heure_place = col_d2.time_input("Heure", value=time(8, 0), key=f"heure_place_{job_id_place}")
+                
+                if st.button("➕ Placer ce job", key=f"btn_place_{job_id_place}", type="primary", use_container_width=True):
+                    duree_min = int(float(job_data['temps_estime_heures']) * 60)
                     
-                    ok, msg_ch, _ = verifier_chevauchement(planning_df, date_cible, st.session_state.selected_ligne, heure_debut, duree_min)
-                    if not ok:
-                        st.error(msg_ch)
+                    # Vérifier chevauchement
+                    chevauchement = verifier_chevauchement(
+                        planning_df,
+                        date_place,
+                        st.session_state.selected_ligne,
+                        heure_place,
+                        duree_min
+                    )
+                    
+                    if chevauchement:
+                        st.error(f"❌ Chevauchement : {chevauchement}")
                     else:
-                        h_fin_jour = get_horaire_fin_jour(jour_idx, horaires_config)
-                        fin_minutes = heure_debut.hour * 60 + heure_debut.minute + duree_min
-                        if fin_minutes > h_fin_jour.hour * 60 + h_fin_jour.minute:
-                            st.error(f"⚠️ Dépasse fin journée")
-                        elif st.button("✅ Placer", key=f"confirm_job_{job['id']}", type="primary", use_container_width=True):
-                            success, msg = ajouter_element_planning('JOB', int(job['id']), None, date_cible, st.session_state.selected_ligne, duree_min, annee, semaine, heure_debut)
-                            if success:
-                                st.success(msg)
-                                st.rerun()
-                            else:
-                                st.error(msg)
-                st.markdown("<hr style='margin:0.3rem 0;border:none;border-top:1px solid #eee;'>", unsafe_allow_html=True)
+                        success, msg = ajouter_element_planning(
+                            'JOB',
+                            job_id_place,
+                            None,
+                            date_place,
+                            st.session_state.selected_ligne,
+                            duree_min,
+                            annee,
+                            semaine,
+                            heure_place
+                        )
+                        
+                        if success:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
         
         st.markdown("---")
         st.markdown("### 🔧 Temps customs")
         
-        for tc in temps_customs:
-            col_tc, col_del = st.columns([5, 1])
-            with col_tc:
-                st.markdown(f"""<div class="custom-card">{tc['emoji']} {tc['libelle']} ({tc['duree_minutes']}min)</div>""", unsafe_allow_html=True)
-            with col_del:
-                if is_admin() and st.button("🗑️", key=f"del_tc_{tc['id']}"):
-                    supprimer_temps_custom(tc['id'])
-                    st.rerun()
+        if not temps_customs:
+            st.info("Aucun temps custom")
+        else:
+            tc_options = []
+            for tc in temps_customs:
+                tc_options.append(f"{tc['emoji']} {tc['libelle']} ({tc['duree_minutes']}min)")
             
-            jours_tc = ["Sélectionner..."] + [f"{['Lun','Mar','Mer','Jeu','Ven','Sam'][i]} {(week_start + timedelta(days=i)).strftime('%d/%m')}" for i in range(6)]
-            jour_tc = st.selectbox("Jour", jours_tc, key=f"jour_tc_{tc['id']}", label_visibility="collapsed")
-            if jour_tc != "Sélectionner...":
-                jour_idx = jours_tc.index(jour_tc) - 1
-                date_cible = week_start + timedelta(days=jour_idx)
-                h_debut = horaires_config.get(jour_idx, {}).get('debut', time(5, 0))
-                heure_tc = st.time_input("Heure", value=h_debut, step=900, key=f"heure_tc_{tc['id']}", label_visibility="collapsed")
-                ok, msg_ch, _ = verifier_chevauchement(planning_df, date_cible, st.session_state.selected_ligne, heure_tc, tc['duree_minutes'])
-                if not ok:
-                    st.error(msg_ch)
-                elif st.button("✅", key=f"confirm_tc_{tc['id']}", use_container_width=True):
-                    success, msg = ajouter_element_planning('CUSTOM', None, int(tc['id']), date_cible, st.session_state.selected_ligne, tc['duree_minutes'], annee, semaine, heure_tc)
-                    if success:
-                        st.rerun()
-        
-        with st.expander("➕ Créer temps"):
-            new_lib = st.text_input("Libellé", key="new_tc_lib")
-            new_dur = st.number_input("Durée (min)", 5, 480, 20, key="new_tc_dur")
-            new_emo = st.selectbox("Emoji", ["⚙️", "☕", "🔧", "🍽️", "⏸️"], key="new_tc_emo")
-            if st.button("Créer", key="btn_create_tc") and new_lib:
-                creer_temps_custom(new_lib.upper().replace(" ", "_")[:20], new_lib, new_emo, new_dur)
-                st.rerun()
-    
-    # COLONNE DROITE : CALENDRIER
-    with col_right:
-        jour_cols = st.columns(6)
-        jours_noms = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam']
-        
-        for i, col_jour in enumerate(jour_cols):
-            jour_date = week_start + timedelta(days=i)
-            jour_str = str(jour_date)
+            selected_tc = st.selectbox("Sélectionner", [""] + tc_options, key="select_tc_to_place")
             
-            with col_jour:
-                st.markdown(f"""<div class="day-header">{jours_noms[i]} {jour_date.strftime('%d/%m')}</div>""", unsafe_allow_html=True)
+            if selected_tc:
+                tc_idx = tc_options.index(selected_tc)
+                tc_data = temps_customs[tc_idx]
                 
-                # Capacités
-                cap_html = ""
-                for lc in sorted(lignes_dict.keys()):
-                    cap_tot = get_capacite_jour(lc, lignes_dict[lc], i, horaires_config)
-                    temps_ut = calculer_temps_utilise(planning_df, jour_str, lc)
-                    temps_di = max(0, cap_tot - temps_ut)
-                    charge = (temps_ut / cap_tot * 100) if cap_tot > 0 else 0
-                    emoji = "🟢" if charge < 50 else "🟡" if charge < 80 else "🔴"
-                    cap_html += f"<div><strong>{lc.replace('LIGNE_','L')}</strong>: {temps_di:.1f}h {emoji}</div>"
-                st.markdown(f"""<div class="capacity-box">{cap_html}</div>""", unsafe_allow_html=True)
+                st.success(f"✅ {tc_data['libelle']} sélectionné")
                 
-                # Éléments planifiés
-                ligne_aff = st.session_state.selected_ligne
-                if not planning_df.empty:
-                    mask = (planning_df['date_prevue'].astype(str) == jour_str) & (planning_df['ligne_lavage'] == ligne_aff)
-                    elements = planning_df[mask].sort_values('heure_debut')
+                col_dt1, col_dt2 = st.columns(2)
+                date_tc = col_dt1.date_input("Date", value=week_start, key=f"date_tc_{tc_data['id']}")
+                heure_tc = col_dt2.time_input("Heure", value=time(12, 0), key=f"heure_tc_{tc_data['id']}")
+                
+                if st.button("➕ Placer ce temps", key=f"btn_place_tc_{tc_data['id']}", type="primary", use_container_width=True):
+                    duree_min_tc = int(tc_data['duree_minutes'])
                     
-                    if elements.empty:
-                        st.caption("_Vide_")
+                    chevauchement = verifier_chevauchement(
+                        planning_df,
+                        date_tc,
+                        st.session_state.selected_ligne,
+                        heure_tc,
+                        duree_min_tc
+                    )
+                    
+                    if chevauchement:
+                        st.error(f"❌ Chevauchement : {chevauchement}")
                     else:
-                        for _, elem in elements.iterrows():
-                            h_deb = elem['heure_debut'].strftime('%H:%M') if pd.notna(elem['heure_debut']) else '--:--'
-                            h_fin = elem['heure_fin'].strftime('%H:%M') if pd.notna(elem['heure_fin']) else '--:--'
+                        success, msg = ajouter_element_planning(
+                            'CUSTOM',
+                            None,
+                            tc_data['id'],
+                            date_tc,
+                            st.session_state.selected_ligne,
+                            duree_min_tc,
+                            annee,
+                            semaine,
+                            heure_tc
+                        )
+                        
+                        if success:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+        
+        # Bouton créer temps custom (admin)
+        if is_admin():
+            st.markdown("---")
+            with st.expander("➕ Créer temps custom"):
+                new_lib = st.text_input("Libellé", key="new_tc_lib")
+                new_dur = st.number_input("Durée (min)", 5, 480, 30, key="new_tc_dur")
+                new_emo = st.selectbox("Emoji", ["⚙️", "☕", "🔧", "🍽️", "⏸️"], key="new_tc_emo")
+                if st.button("Créer", key="btn_create_tc") and new_lib:
+                    success, msg = creer_temps_custom(new_lib.upper().replace(" ", "_")[:20], new_lib, new_emo, new_dur)
+                    if success:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+    
+    # ========================================
+    # COLONNE DROITE : FULLCALENDAR
+    # ========================================
+    
+    with col_calendrier:
+        st.markdown("### 📅 Planning Visuel")
+        
+        # HTML FullCalendar
+        fullcalendar_html = f'''
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/locales-all.global.min.js"></script>
+    <style>
+        body {{ margin: 0; padding: 5px; font-family: sans-serif; overflow: hidden; }}
+        #calendar {{ height: 680px; }}
+        
+        .fc-timegrid-slot {{ height: 2.5em !important; }}
+        
+        .fc-event.statut-prevu {{
+            background: linear-gradient(135deg, #c8e6c9 0%, #a5d6a7 100%) !important;
+            border: 2px solid #388e3c !important;
+            color: #1b5e20 !important;
+            font-weight: 600;
+        }}
+        
+        .fc-event.statut-encours {{
+            background: linear-gradient(135deg, #fff3e0 0%, #ffcc80 100%) !important;
+            border: 2px solid #f57c00 !important;
+            color: #e65100 !important;
+            font-weight: 600;
+            animation: pulse 2s infinite;
+        }}
+        
+        .fc-event.statut-termine {{
+            background: linear-gradient(135deg, #f5f5f5 0%, #e0e0e0 100%) !important;
+            border: 2px solid #757575 !important;
+            color: #424242 !important;
+            font-weight: 600;
+        }}
+        
+        .fc-event.type-custom {{
+            background: linear-gradient(135deg, #e1bee7 0%, #ce93d8 100%) !important;
+            border: 2px solid #7b1fa2 !important;
+            color: #4a148c !important;
+            font-weight: 600;
+        }}
+        
+        @keyframes pulse {{
+            0%, 100% {{ opacity: 1; transform: scale(1); }}
+            50% {{ opacity: 0.85; transform: scale(0.98); }}
+        }}
+        
+        .fc-timegrid-now-indicator-line {{
+            border-color: #f44336 !important;
+            border-width: 2px !important;
+        }}
+        
+        .fc-event-title {{
+            font-size: 0.85rem;
+            padding: 3px;
+        }}
+        
+        .fc-timegrid-event {{
+            border-radius: 4px;
+        }}
+        
+        .fc-timegrid-axis {{
+            font-weight: bold;
+        }}
+        
+        .fc-col-header-cell {{
+            background: #f5f5f5;
+            font-weight: bold;
+            border-bottom: 2px solid #1976d2;
+        }}
+        
+        .fc-daygrid-day.fc-day-today {{
+            background: #fff9c4 !important;
+        }}
+    </style>
+</head>
+<body>
+    <div id="calendar"></div>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {{
+            var calendarEl = document.getElementById('calendar');
+            
+            var calendar = new FullCalendar.Calendar(calendarEl, {{
+                initialView: 'timeGridWeek',
+                headerToolbar: false,
+                locale: 'fr',
+                firstDay: 1,
+                slotMinTime: '05:00:00',
+                slotMaxTime: '20:00:00',
+                slotDuration: '00:15:00',
+                slotLabelInterval: '01:00',
+                height: 680,
+                allDaySlot: false,
+                nowIndicator: true,
+                editable: false,
+                droppable: false,
+                
+                initialDate: '{week_start.isoformat()}',
+                validRange: {{
+                    start: '{week_start.isoformat()}',
+                    end: '{(week_end + timedelta(days=1)).isoformat()}'
+                }},
+                
+                events: {json.dumps(fc_events)},
+                
+                eventClick: function(info) {{
+                    var props = info.event.extendedProps;
+                    
+                    if (props.type === 'job') {{
+                        var msg = 'Job #' + props.job_id + '\\n' +
+                                 'Variété: ' + props.variete + '\\n' +
+                                 'Statut: ' + props.statut + '\\n' +
+                                 'Quantité: ' + props.quantite_pallox + ' pallox';
+                        
+                        alert(msg + '\\n\\nUtilisez le panneau "Actions" sous le calendrier pour démarrer/terminer ce job.');
+                    }} else if (props.type === 'custom') {{
+                        alert('Temps custom\\n\\nUtilisez le panneau "Actions" pour retirer cet élément.');
+                    }}
+                }},
+                
+                eventDidMount: function(info) {{
+                    // Tooltip au survol
+                    info.el.title = info.event.title;
+                }}
+            }});
+            
+            calendar.render();
+        }});
+    </script>
+</body>
+</html>
+'''
+        
+        stc.html(fullcalendar_html, height=720, scrolling=False)
+        
+        # ========================================
+        # PANNEAU ACTIONS (selon statut job sélectionné)
+        # ========================================
+        
+        st.markdown("---")
+        st.markdown("### ⚙️ Actions Planning")
+        
+        if not planning_df.empty:
+            ligne_aff = st.session_state.selected_ligne
+            elements_planif = planning_df[planning_df['ligne_lavage'] == ligne_aff].sort_values('date_prevue')
+            
+            if elements_planif.empty:
+                st.info("Aucun élément planifié sur cette ligne")
+            else:
+                # Séparer jobs et customs
+                jobs_planif = elements_planif[elements_planif['type_element'] == 'JOB']
+                customs_planif = elements_planif[elements_planif['type_element'] == 'CUSTOM']
+                
+                tab_jobs, tab_customs = st.tabs(["🟢 Jobs", "🔧 Temps customs"])
+                
+                with tab_jobs:
+                    if jobs_planif.empty:
+                        st.info("Aucun job planifié")
+                    else:
+                        job_options = []
+                        for _, j in jobs_planif.iterrows():
+                            statut_emoji = "🟢" if j['job_statut'] == 'PRÉVU' else "⏱️" if j['job_statut'] == 'EN_COURS' else "✅"
+                            job_options.append(f"{statut_emoji} Job #{int(j['job_id'])} - {j['variete']} - {j['date_prevue'].strftime('%d/%m')} {j['heure_debut'].strftime('%H:%M')}")
+                        
+                        selected_job_str = st.selectbox("Sélectionner un job", [""] + job_options, key="select_job_actions")
+                        
+                        if selected_job_str:
+                            job_id_selected = int(selected_job_str.split('#')[1].split(' ')[0])
+                            job_selected = jobs_planif[jobs_planif['job_id'] == job_id_selected].iloc[0]
+                            element_id = int(job_selected['id'])
+                            statut = job_selected['job_statut']
                             
-                            if elem['type_element'] == 'JOB':
-                                job_statut = elem.get('job_statut', 'PRÉVU')
+                            st.info(f"**Job #{job_id_selected}** - {job_selected['variete']} - Statut: {statut}")
+                            
+                            col_act1, col_act2, col_act3 = st.columns(3)
+                            
+                            if statut == 'PRÉVU':
+                                with col_act1:
+                                    if st.button("▶️ Démarrer", key=f"start_action_{job_id_selected}", type="primary", use_container_width=True):
+                                        success, msg = demarrer_job(job_id_selected)
+                                        if success:
+                                            st.success(msg)
+                                            st.rerun()
+                                        else:
+                                            st.error(msg)
                                 
-                                # Couleur selon statut
-                                if job_statut == 'EN_COURS':
-                                    css_class = "planned-encours"
-                                    statut_emoji = "⏱️"
-                                elif job_statut == 'TERMINÉ':
-                                    css_class = "planned-termine"
-                                    statut_emoji = "✅"
-                                else:
-                                    css_class = "planned-prevu"
-                                    statut_emoji = "🟢"
+                                with col_act2:
+                                    if st.button("❌ Retirer", key=f"remove_action_{element_id}", use_container_width=True):
+                                        retirer_element_planning(element_id)
+                                        st.success("✅ Retiré du planning")
+                                        st.rerun()
+                            
+                            elif statut == 'EN_COURS':
+                                with col_act1:
+                                    if st.button("⏹️ Terminer", key=f"finish_action_{job_id_selected}", type="primary", use_container_width=True):
+                                        st.session_state[f'show_finish_{job_id_selected}'] = True
+                                        st.rerun()
                                 
-                                st.markdown(f"""<div class="{css_class}">
-                                    <strong>{h_deb}</strong> {statut_emoji}<br>
-                                    Job #{int(elem['job_id'])}<br>
-                                    🌱 {elem['variete']}<br>
-                                    📦 {int(elem['quantite_pallox']) if pd.notna(elem['quantite_pallox']) else '?'}p<br>
-                                    <small>→{h_fin}</small>
-                                </div>""", unsafe_allow_html=True)
+                                with col_act2:
+                                    if st.button("↩️ Remettre PRÉVU", key=f"cancel_action_{job_id_selected}", use_container_width=True):
+                                        success, msg = annuler_job_en_cours(job_id_selected)
+                                        if success:
+                                            st.success(msg)
+                                            st.rerun()
+                                        else:
+                                            st.error(msg)
+                            
+                            elif statut == 'TERMINÉ':
+                                with col_act1:
+                                    st.success("✅ Job terminé")
                                 
-                                # Boutons action selon statut
-                                if job_statut == 'PRÉVU':
-                                    col_start, col_del = st.columns(2)
-                                    with col_start:
-                                        if st.button("▶️", key=f"start_{elem['id']}", help="Démarrer"):
-                                            success, msg = demarrer_job(int(elem['job_id']))
+                                with col_act2:
+                                    if st.button("↩️ Annuler terminaison", key=f"cancel_term_{job_id_selected}", use_container_width=True):
+                                        if st.checkbox("Confirmer annulation", key=f"confirm_cancel_{job_id_selected}"):
+                                            success, msg = annuler_job_termine(job_id_selected)
                                             if success:
                                                 st.success(msg)
                                                 st.rerun()
                                             else:
                                                 st.error(msg)
-                                    with col_del:
-                                        if st.button("❌", key=f"del_{elem['id']}", help="Retirer"):
-                                            retirer_element_planning(int(elem['id']))
-                                            st.rerun()
-                                
-                                elif job_statut == 'EN_COURS':
-                                    # Afficher temps écoulé
-                                    if pd.notna(elem.get('date_activation')):
-                                        delta = datetime.now() - elem['date_activation']
-                                        minutes_ecoulees = int(delta.total_seconds() / 60)
-                                        st.caption(f"⏱️ {minutes_ecoulees // 60}h{minutes_ecoulees % 60:02d} écoulées")
-                                    
-                                    if st.button("⏹️ Terminer", key=f"finish_{elem['id']}", type="primary", use_container_width=True):
-                                        st.session_state[f'show_finish_{elem["job_id"]}'] = True
-                                        st.rerun()
-                                    
-                                    # Note: Le formulaire de terminaison s'affiche en pleine largeur au-dessus du calendrier
-                                
-                                elif job_statut == 'TERMINÉ':
-                                    # Afficher stats temps
-                                    if pd.notna(elem.get('temps_estime_heures')) and pd.notna(elem.get('date_activation')) and pd.notna(elem.get('date_terminaison')):
-                                        temps_prevu = float(elem['temps_estime_heures']) * 60
-                                        delta = elem['date_terminaison'] - elem['date_activation']
-                                        temps_reel = delta.total_seconds() / 60
-                                        ecart = temps_reel - temps_prevu
-                                        color = "temps-ok" if ecart <= 0 else "temps-warning" if ecart < 15 else "temps-bad"
-                                        st.markdown(f"<small class='{color}'>Prévu: {temps_prevu:.0f}' | Réel: {temps_reel:.0f}'</small>", unsafe_allow_html=True)
-                            else:
-                                # Temps custom
-                                st.markdown(f"""<div class="planned-custom">
-                                    <strong>{h_deb}</strong><br>
-                                    {elem['custom_emoji']} {elem['custom_libelle']}<br>
-                                    <small>→{h_fin}</small>
-                                </div>""", unsafe_allow_html=True)
-                                if st.button("❌", key=f"del_{elem['id']}"):
-                                    retirer_element_planning(int(elem['id']))
+                
+                with tab_customs:
+                    if customs_planif.empty:
+                        st.info("Aucun temps custom planifié")
+                    else:
+                        for _, custom in customs_planif.iterrows():
+                            col_c1, col_c2 = st.columns([3, 1])
+                            
+                            with col_c1:
+                                st.write(f"{custom.get('custom_emoji', '🔧')} {custom.get('custom_libelle', 'Temps custom')} - {custom['date_prevue'].strftime('%d/%m')} {custom['heure_debut'].strftime('%H:%M')}")
+                            
+                            with col_c2:
+                                if st.button("❌", key=f"remove_custom_{custom['id']}", use_container_width=True):
+                                    retirer_element_planning(int(custom['id']))
+                                    st.success("✅ Retiré")
                                     st.rerun()
-                else:
-                    st.caption("_Vide_")
-    
-    # Footer planning
-    st.markdown("---")
-    col_f1, col_f2, col_f3, col_f4 = st.columns([1, 1, 1, 2])
-    with col_f1:
-        if st.button("🗑️ Réinit. semaine", use_container_width=True):
-            conn = get_connection()
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM lavages_planning_elements WHERE annee = %s AND semaine = %s", (annee, semaine))
-            conn.commit()
-            st.rerun()
-    with col_f2:
-        jours_print = [f"{jours_noms[i]} {(week_start + timedelta(days=i)).strftime('%d/%m')}" for i in range(6)]
-        jour_print = st.selectbox("Jour", jours_print, key="jour_print", label_visibility="collapsed")
-    with col_f3:
-        jour_idx = jours_print.index(jour_print)
-        date_print = week_start + timedelta(days=jour_idx)
-        html_content = generer_html_jour(planning_df, date_print, st.session_state.selected_ligne, lignes_dict)
-        st.download_button("🖨️ Imprimer", html_content, f"planning_{date_print.strftime('%Y%m%d')}.html", "text/html", use_container_width=True)
-    with col_f4:
-        if not planning_df.empty:
-            total_l1 = planning_df[planning_df['ligne_lavage'] == 'LIGNE_1']['duree_minutes'].sum() / 60
-            total_l2 = planning_df[planning_df['ligne_lavage'] == 'LIGNE_2']['duree_minutes'].sum() / 60
-            st.markdown(f"**📊** L1={total_l1:.1f}h | L2={total_l2:.1f}h")
-
-# ============================================================
-# ONGLET 2 : LISTE JOBS
-# ============================================================
 
 with tab2:
     st.subheader("📋 Historique des Jobs")
