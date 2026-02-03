@@ -1359,7 +1359,7 @@ with tab1:
                         date_options = []
                         for i in range(6):
                             d = week_start + timedelta(days=i)
-                            date_options.append(d.date())
+                            date_options.append(d)  # d est déjà un date
                         
                         date_placement = st.selectbox(
                             "Date",
