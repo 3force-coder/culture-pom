@@ -1347,20 +1347,20 @@ with tab1:
                 
                 emoji = "🟢" if job_statut == 'PRÉVU' else "⏱️" if job_statut == 'EN_COURS' else "✅"
                 
-               event.update({
-                    'title': f"{emoji} Job #{int(elem['job_id'])} - {variete}",
-                    'backgroundColor': get_statut_color(job_statut),    # ← Modifié
-                    'borderColor': get_statut_color(job_statut),        # ← Modifié
-                    'className': f"statut-{job_statut.lower().replace('é','e').replace('î','i')}",
-                    'extendedProps': {
-                        'type': 'job',
-                        'job_id': int(elem['job_id']),
-                        'element_id': int(elem['id']),
-                        'variete': variete,
-                        'statut': job_statut,
-                        'quantite_pallox': int(elem['quantite_pallox']) if pd.notna(elem['quantite_pallox']) else 0
-                    }
-                })
+               event.update({ 
+                        'title': f"{emoji} Job #{int(elem['job_id'])} - {variete}",
+                        'backgroundColor': get_statut_color(job_statut),    # ← Modifié
+                        'borderColor': get_statut_color(job_statut),        # ← Modifié
+                        'className': f"statut-{job_statut.lower().replace('é','e').replace('î','i')}",
+                        'extendedProps': {
+                            'type': 'job',
+                            'job_id': int(elem['job_id']),
+                            'element_id': int(elem['id']),
+                            'variete': variete,
+                            'statut': job_statut,
+                            'quantite_pallox': int(elem['quantite_pallox']) if pd.notna(elem['quantite_pallox']) else 0
+                        }
+                    })
             else:  # CUSTOM
                 event.update({
                     'title': f"{elem.get('custom_emoji', '🔧')} {elem.get('custom_libelle', 'Temps custom')}",
@@ -2151,37 +2151,53 @@ with tab1:
             cal_max_lave = col_cal2.number_input("Cal max", 0, 100, 0, key=f"cal_max_lave_{job_en_terminaison}")
         
         with col2:
-    lignes = get_lignes_lavage()
-    ligne_opts = [f"{l['code']} ({l['capacite_th']} T/h)" for l in lignes]
-    ligne_sel = st.selectbox("Ligne de lavage", ligne_opts, key="ligne_besoins_create")
-    
-    # Récupérer la capacité de la ligne sélectionnée
-    ligne_idx = ligne_opts.index(ligne_sel)
-    capacite_defaut = float(lignes[ligne_idx]['capacite_th'])
-    
-    # Option modifier capacité
-    modifier_capacite = st.checkbox("✏️ Modifier la capacité de la ligne", value=False)
-    
-    if modifier_capacite:
-        capacite_utilisee = st.number_input(
-            "Capacité (T/h) *",
-            min_value=1.0,
-            max_value=20.0,
-            value=capacite_defaut,
-            step=0.5,
-            help="Capacité réelle pour ce job"
-        )
-    else:
-        capacite_utilisee = capacite_defaut
-    
-    # Calcul avec capacité choisie
-    poids_brut = quantite * poids_unit
-    poids_net_estime = poids_brut * rendement
-    temps_estime = (poids_brut / 1000) / capacite_utilisee
-    
-    st.metric("Poids BRUT", f"{poids_brut:,.0f} kg ({poids_brut/1000:.1f} T)")
-    st.metric("NET estimé (~78%)", f"{poids_net_estime:,.0f} kg ({poids_net_estime/1000:.1f} T)")
-    st.metric("Temps estimé", f"{temps_estime:.1f} h")
+            lignes = get_lignes_lavage()
+            ligne_opts = [f"{l['code']} ({l['capacite_th']} T/h)" for l in lignes]
+            ligne_sel = st.selectbox("Ligne de lavage", ligne_opts, key="ligne_besoins_create")
+            
+            # Récupérer la capacité de la ligne sélectionnée
+            ligne_idx = ligne_opts.index(ligne_sel)
+            capacite_defaut = float(lignes[ligne_idx]['capacite_th'])
+            
+            # Option modifier capacité
+            modifier_capacite = st.checkbox("✏️ Modifier la capacité de la ligne", value=False)
+            
+            if modifier_capacite:
+                capacite_utilisee = st.number_input(
+                    "Capacité (T/h) *",
+                    min_value=1.0,
+                    max_value=20.0,
+                    value=capacite_defaut,
+                    step=0.5,
+                    help="Capacité réelle pour ce job"
+                )
+            else:
+                capacite_utilisee = capacite_defaut
+            
+            # Calcul avec capacité choisie
+            poids_brut = quantite * poids_unit
+            poids_net_estime = poids_brut * rendement
+            temps_estime = (poids_brut / 1000) / capacite_utilisee
+            
+            st.metric("Poids BRUT", f"{poids_brut:,.0f} kg ({poids_brut/1000:.1f} T)")
+            st.metric("NET estimé (~78%)", f"{poids_net_estime:,.0f} kg ({poids_net_estime/1000:.1f} T)")
+            st.metric("Temps estimé", f"{temps_estime:.1f} h")
+        
+        notes = st.text_input("Notes (optionnel)", key="notes_besoins_create")
+        
+        if st.button("✅ Créer Job de Lavage", type="primary", use_container_width=True, key="btn_create_besoins"):
+            ligne_code = lignes[ligne_idx]['code']
+            success, message = create_job_lavage(
+                lot_id_besoin, empl_id, quantite, poids_brut,
+                date_prevue, ligne_code, capacite_utilisee,
+                notes
+            )
+            if success:
+                st.success(message)
+                st.balloons()
+                st.rerun()
+            else:
+                st.error(message)
 
 notes = st.text_input("Notes (optionnel)", key="notes_besoins_create")
 
