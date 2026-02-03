@@ -1466,27 +1466,39 @@ with tab1:
         if events_data:
             st.json(events_data)
         
-        calendar_html = f"""<!DOCTYPE html>
+        calendar_html = f"""
+<!DOCTYPE html>
 <html>
 <head>
     <meta charset='utf-8'>
     <link href='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css' rel='stylesheet'>
     <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js'></script>
     <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ font-family: -apple-system, sans-serif; background: white; }}
-        #calendar {{ padding: 10px; height: 600px; }}
+        body {{ margin: 0; padding: 5px; }}
+        #calendar {{ 
+            height: 600px; 
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        .fc {{
+            border-radius: 8px;
+        }}
+        .fc-toolbar {{
+            border-radius: 8px 8px 0 0;
+        }}
     </style>
 </head>
 <body>
-    <div id="calendar"></div>
+    <div id='calendar'></div>
     <script>
         document.addEventListener('DOMContentLoaded', function() {{
-            console.log('=== CALENDAR DEBUG ===');
-            console.log('Events data:', {events_json});
-            console.log('Week start:', '{week_iso}');
+            console.log('=== CALENDAR INIT ===');
+            console.log('Events:', {events_json});
+            console.log('Week:', '{week_iso}');
             
-            var calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{
+            var calendarEl = document.getElementById('calendar');
+            var calendar = new FullCalendar.Calendar(calendarEl, {{
                 initialView: 'timeGridWeek',
                 locale: 'fr',
                 firstDay: 1,
@@ -1497,19 +1509,13 @@ with tab1:
                 height: 730,
                 allDaySlot: false,
                 nowIndicator: true,
-                header: {{
-                    left: '',
-                    center: 'title',
-                    right: ''
-                }},
-                buttonText: {{
-                    today: 'Aujourd\'hui'
-                }},
-                defaultDate: '{week_iso}',
-                events: {events_json},
-                editable: false
+                editable: false,
+                initialDate: '{week_iso}',
+                events: {events_json}
             }});
+            
             calendar.render();
+            console.log('Calendar rendered!');
         }});
     </script>
 </body>
