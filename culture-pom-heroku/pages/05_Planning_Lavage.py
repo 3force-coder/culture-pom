@@ -1498,19 +1498,8 @@ with tab1:
                     duree_h = float(job['temps_estime_heures']) if pd.notna(job['temps_estime_heures']) else 1.0
                     heures = int(duree_h)
                     minutes = int((duree_h - heures) * 60)
-
-                    # Limite affichage
-                    LIMITE_AFFICHAGE = 5
-                    total_jobs = len(jobs_df)
-                    
-                    if total_jobs > LIMITE_AFFICHAGE:
-                        jobs_affichage = jobs_df.head(LIMITE_AFFICHAGE)
-                        st.info(f"📊 {LIMITE_AFFICHAGE}/{total_jobs} jobs affichés (tri par date)")
-                    else:
-                        jobs_affichage = jobs_df
                     
                     # Infos enrichies
-                    # Textes complets sans troncature
                     producteur_full = str(job['nom_producteur']) if pd.notna(job['nom_producteur']) and str(job['nom_producteur']).strip() not in ['', '-'] else None
                     produit_full = str(job['produit_libelle']) if pd.notna(job['produit_libelle']) and str(job['produit_libelle']).strip() not in ['', '-'] else None
                     
