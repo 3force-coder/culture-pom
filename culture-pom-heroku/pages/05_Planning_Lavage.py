@@ -54,22 +54,21 @@ def get_variete_color(variete):
 
 
 # ============================================================
-# FONCTION RENDER FULLCALENDAR - SYNTAXE CORRIGÉE
+# FONCTION RENDER FULLCALENDAR - ACCOLADES ÉCHAPPÉES ✅
 # ============================================================
 
 def render_fullcalendar_with_jobs(jobs_data, events_data, week_start, selected_ligne):
     """
     Rend FullCalendar avec drag & drop
-    ✅ Syntaxe JavaScript corrigée (pas de f-string)
+    ✅ Accolades JavaScript/CSS doublées pour .format()
     """
     import json
     
     jobs_json = json.dumps(jobs_data, ensure_ascii=False)
     events_json = json.dumps(events_data, ensure_ascii=False)
     
-    # ✅ Utiliser .format() au lieu de f-string pour éviter conflits accolades
-    html = """
-<!DOCTYPE html>
+    # Toutes les accolades {{ }} sont doublées pour .format()
+    html = """<!DOCTYPE html>
 <html>
 <head>
     <meta charset='utf-8'>
@@ -78,15 +77,15 @@ def render_fullcalendar_with_jobs(jobs_data, events_data, week_start, selected_l
     <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/locales/fr.js'></script>
     <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/interaction/main.min.js'></script>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             display: flex;
             height: 100vh;
             overflow: hidden;
             background: #f8f9fa;
-        }
-        #sidebar {
+        }}
+        #sidebar {{
             width: 340px;
             background: white;
             border-right: 2px solid #e0e0e0;
@@ -94,8 +93,8 @@ def render_fullcalendar_with_jobs(jobs_data, events_data, week_start, selected_l
             display: flex;
             flex-direction: column;
             box-shadow: 2px 0 8px rgba(0,0,0,0.05);
-        }
-        .sidebar-header {
+        }}
+        .sidebar-header {{
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             padding: 16px 20px;
@@ -106,12 +105,12 @@ def render_fullcalendar_with_jobs(jobs_data, events_data, week_start, selected_l
             z-index: 10;
             display: flex;
             justify-content: space-between;
-        }
-        #external-events {
+        }}
+        #external-events {{
             padding: 12px;
             flex: 1;
-        }
-        .fc-event {
+        }}
+        .fc-event {{
             cursor: move !important;
             margin-bottom: 10px;
             padding: 12px;
@@ -120,33 +119,33 @@ def render_fullcalendar_with_jobs(jobs_data, events_data, week_start, selected_l
             background: white;
             box-shadow: 0 2px 4px rgba(0,0,0,0.08);
             transition: all 0.2s;
-        }
-        .fc-event:hover {
+        }}
+        .fc-event:hover {{
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
             transform: translateY(-2px);
-        }
-        .fc-event:active {
+        }}
+        .fc-event:active {{
             cursor: grabbing !important;
             opacity: 0.7;
-        }
-        .job-title {
+        }}
+        .job-title {{
             font-weight: 600;
             font-size: 0.95rem;
             margin-bottom: 6px;
-        }
-        .job-info {
+        }}
+        .job-info {{
             font-size: 0.8rem;
             color: #7f8c8d;
-        }
-        #calendar-container {
+        }}
+        #calendar-container {{
             flex: 1;
             padding: 15px;
             background: white;
-        }
-        #calendar {
+        }}
+        #calendar {{
             height: calc(100vh - 50px);
-        }
-        .toast {
+        }}
+        .toast {{
             position: fixed;
             top: 20px;
             right: 20px;
@@ -157,13 +156,13 @@ def render_fullcalendar_with_jobs(jobs_data, events_data, week_start, selected_l
             box-shadow: 0 4px 12px rgba(16,185,129,0.4);
             z-index: 99999;
             display: none;
-        }
-        .toast.show { display: block; }
-        .empty-state {
+        }}
+        .toast.show {{ display: block; }}
+        .empty-state {{
             text-align: center;
             padding: 60px 20px;
             color: #aaa;
-        }
+        }}
     </style>
 </head>
 <body>
@@ -303,8 +302,7 @@ def render_fullcalendar_with_jobs(jobs_data, events_data, week_start, selected_l
         }}
     </script>
 </body>
-</html>
-    """.format(
+</html>""".format(
         jobs_json=jobs_json,
         events_json=events_json,
         week_start=week_start,
@@ -1691,7 +1689,7 @@ with tab1:
     
     # ========================================
     # ========================================
-    # CALENDRIER DRAG & DROP - SYNTAXE CORRIGÉE ✅
+    # CALENDRIER DRAG & DROP ✅
     # ========================================
     
     import json
