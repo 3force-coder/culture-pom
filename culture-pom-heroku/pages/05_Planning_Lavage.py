@@ -1541,67 +1541,24 @@ with tab1:
                 allDaySlot: false,
                 nowIndicator: true,
                 editable: true,
-                droppable: true,
+                droppable: false,
                 initialDate: '{week_iso}',
                 
-                // Callback drop (job externe -> calendrier)
+                // Drag & drop externe désactivé (utiliser les menus Python pour placer)
                 drop: function(info) {{
-                    console.log('Drop event:', info);
-                    var eventData = info.draggedEl.getAttribute('data-fc-event');
-                    if (eventData) {{
-                        var data = JSON.parse(eventData);
-                        
-                        // Ajouter event au calendrier
-                        var duration = data.duration || '01:00';
-                        var parts = duration.split(':');
-                        var endDate = new Date(info.date);
-                        endDate.setHours(endDate.getHours() + parseInt(parts[0]));
-                        endDate.setMinutes(endDate.getMinutes() + parseInt(parts[1]));
-                        
-                        calendar.addEvent({{
-                            id: 'temp_' + data.id,
-                            title: data.title,
-                            start: info.date,
-                            end: endDate,
-                            backgroundColor: data.backgroundColor,
-                            borderColor: data.borderColor,
-                            extendedProps: data.extendedProps
-                        }});
-                        
-                        // Enregistrer le changement
-                        recordChange('place_job', {{
-                            job_id: data.extendedProps.job_id,
-                            start: info.date.toISOString(),
-                            end: endDate.toISOString()
-                        }});
-                        
-                        // Cacher le job de la liste
-                        if (info.draggedEl) {{
-                            info.draggedEl.style.opacity = '0.3';
-                            info.draggedEl.style.pointerEvents = 'none';
-                        }}
-                    }}
+                    console.log('⚠️ Drag externe désactivé - Utiliser le menu Placer');
                 }},
                 
-                // Callback déplacement event
+                // Drag interne (visuel uniquement)
                 eventDrop: function(info) {{
-                    console.log('Event dropped:', info);
-                    var elementId = info.event.id.replace('element_', '');
-                    recordChange('move_element', {{
-                        element_id: elementId,
-                        new_start: info.event.start.toISOString(),
-                        new_end: info.event.end ? info.event.end.toISOString() : null
-                    }});
+                    console.log('📍 Event déplacé (visuel):', info.event.id);
+                    console.log('⚠️ Pour sauvegarder : utiliser le menu Modifier');
                 }},
                 
-                // Callback resize event
+                // Resize (visuel uniquement)
                 eventResize: function(info) {{
-                    console.log('Event resized:', info);
-                    var elementId = info.event.id.replace('element_', '');
-                    recordChange('resize_element', {{
-                        element_id: elementId,
-                        new_end: info.event.end.toISOString()
-                    }});
+                    console.log('📏 Event redimensionné (visuel):', info.event.id);
+                    console.log('⚠️ Pour sauvegarder : utiliser le menu Modifier');
                 }},
                 events: {events_json}
             }});
@@ -1686,7 +1643,8 @@ with tab1:
                 SELECT id, code_lot_interne, variete, quantite_pallox, poids_brut_kg,
                        ligne_lavage, statut, created_by
                 FROM lavages_jobs
-                WHERE statut = 'PRÉVU' AND date_prevue IS NULL
+                WHERE statut = 'PRÉVU' 
+                  AND (date_prevue IS NULL OR ligne_lavage IS NULL)
                 ORDER BY created_at DESC
             """)
             
@@ -1760,7 +1718,7 @@ with tab1:
                   AND date_prevue >= %s 
                   AND date_prevue < %s + INTERVAL '7 days'
                 ORDER BY date_prevue, ligne_lavage
-            """, (selected_week, selected_week))
+            """, (week_start, week_start))
             
             jobs_week = cursor.fetchall()
             cursor.close()
