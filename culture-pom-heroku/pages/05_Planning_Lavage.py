@@ -1663,16 +1663,7 @@ with tab1:
                 }});
                 calendar.render();
                 // Reset drag si clic dehors
-                document.addEventListener('mouseup', function(e) {
-                    setTimeout(function() {
-                        if (window.parent && window.parent.document) {
-                            var dragging = window.parent.document.querySelectorAll('.fc-event-dragging');
-                            dragging.forEach(function(el) {
-                                el.classList.remove('fc-event-dragging');
-                            });
-                        }
-                    }, 100);
-                });             
+                document.addEventListener('mouseup', function(e) {          
                 setTimeout(function() {{
                     if (window.parent && window.parent.document) {{
                         var externalEvents = window.parent.document.querySelectorAll('[data-fc-event]');
