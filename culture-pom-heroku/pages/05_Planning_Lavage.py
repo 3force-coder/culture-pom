@@ -10,7 +10,12 @@ import io
 import math
 
 # ✅ IMPORT DU CUSTOM COMPONENT AVEC DRAG & DROP
-from streamlit_fullcalendar import fullcalendar
+try:
+    from streamlit_fullcalendar import fullcalendar
+    st.success("✅ Component chargé !")
+except Exception as e:
+    st.error(f"❌ Erreur import : {e}")
+    fullcalendar = None
 
 # ============================================================
 # COULEURS PAR VARIÉTÉ
