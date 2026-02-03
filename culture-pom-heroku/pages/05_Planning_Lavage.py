@@ -1434,7 +1434,7 @@ with tab1:
     </html>
     """
     
-    st.components.html(calendar_html, height=700)
+    stc.html(calendar_html, height=700)
     calendar_event = None
     # ========================================
     # GÉRER LES ACTIONS DRAG & DROP
