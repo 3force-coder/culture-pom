@@ -27,9 +27,27 @@ VARIETE_COLORS = {
     'RUBIS': '#E84393',
 }
 
+def get_statut_color(statut):
+    """Retourne couleur selon statut job"""
+    colors = {
+        'PRÉVU': '#4caf50',      # Vert
+        'EN_COURS': '#ff9800',   # Orange
+        'TERMINÉ': '#9e9e9e'     # Gris
+    }
+    return colors.get(statut, '#757575')
+
 def get_variete_color(variete):
-    """Retourne couleur hex pour une variété"""
-    return VARIETE_COLORS.get(str(variete).upper(), '#95A5A6')
+    """OBSOLÈTE - Gardé pour compatibilité cards"""
+    colors = {
+        'AGATA': '#4caf50',
+        'HARRY': '#2196f3',
+        'FONTANE': '#ff9800',
+        'COLOMBA': '#9c27b0',
+        'CHARLOTTE': '#f44336',
+        'MONALISA': '#00bcd4',
+        'MELODY': '#ff5722'
+    }
+    return colors.get(variete, '#757575')
 
 
 # ============================================================
@@ -260,26 +278,37 @@ def get_kpis_lavage():
         return None
 
 def get_jobs_a_placer():
-    """Récupère les jobs PRÉVU avec producteur et produit commercial"""
+    """Récupère les jobs PRÉVU prêts à être placés avec infos producteur et produit"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        
         cursor.execute("""
             SELECT 
-                lj.id, lj.lot_id, lj.code_lot_interne, lj.variete,
-                lj.quantite_pallox, lj.poids_brut_kg, lj.temps_estime_heures,
-                lj.date_prevue, lj.ligne_lavage as ligne_origine, lj.statut,
+                lj.id,
+                lj.code_lot_interne,
+                lj.variete,
+                lj.quantite_pallox,
+                lj.poids_brut_kg,
+                lj.temps_estime_heures,
+                lj.date_prevue,
+                lj.ligne_lavage,
+                lj.capacite_th,
                 lb.code_producteur,
-                COALESCE(p.nom, lb.code_producteur) as nom_producteur,
+                p.nom as nom_producteur,
                 pa.code_produit_commercial,
-                COALESCE(pc.libelle, pa.code_produit_commercial) as produit_libelle
+                pc.libelle as produit_libelle
             FROM lavages_jobs lj
             LEFT JOIN lots_bruts lb ON lj.lot_id = lb.id
             LEFT JOIN ref_producteurs p ON lb.code_producteur = p.code_producteur
             LEFT JOIN previsions_affectations pa ON lb.id = pa.lot_id AND pa.is_active = TRUE
             LEFT JOIN ref_produits_commerciaux pc ON pa.code_produit_commercial = pc.code_produit
-            WHERE lj.statut = 'PRÉVU'
-            ORDER BY lj.date_prevue, lj.id
+            WHERE lj.id NOT IN (
+                SELECT job_id FROM lavages_planning_elements 
+                WHERE job_id IS NOT NULL
+            )
+            AND lj.statut = 'PRÉVU'
+            ORDER BY lj.date_prevue, lj.created_at
         """)
         rows = cursor.fetchall()
         cursor.close()
@@ -1320,8 +1349,8 @@ with tab1:
                 
                 event.update({
                     'title': f"{emoji} Job #{int(elem['job_id'])} - {variete}",
-                    'backgroundColor': get_variete_color(variete),
-                    'borderColor': get_variete_color(variete),
+                    'backgroundColor': get_variete_color(statut),
+                    'borderColor': get_variete_color(statut),
                     'className': f"statut-{job_statut.lower().replace('é','e').replace('î','i')}",
                     'extendedProps': {
                         'type': 'job',
@@ -1367,8 +1396,8 @@ with tab1:
                 'title': f"Job #{int(job['id'])} - {variete}",
                 'subtitle': f"{int(job['quantite_pallox'])}p - {duree_h:.1f}h",
                 'duration': duration_str,
-                'backgroundColor': get_variete_color(variete),
-                'borderColor': get_variete_color(variete),
+                'backgroundColor': get_variete_color(statut),
+                'borderColor': get_variete_color(statut),
                 'extendedProps': {
                     'type': 'job',
                     'job_id': int(job['id']),
@@ -1578,9 +1607,20 @@ with tab1:
             <link href='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css' rel='stylesheet'>
             <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js'></script>
             <script src='https://cdn.jsdelivr.net/npm/@fullcalendar/interaction@6.1.15/index.global.min.js'></script>
-            <style>
+           <style>
                 body {{ margin: 0; padding: 5px; }}
-                #calendar {{ height: 600px; }}
+                #calendar {{ 
+                    height: 600px; 
+                    border-radius: 8px;
+                    overflow: hidden;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                }}
+                .fc {{
+                    border-radius: 8px;
+                }}
+                .fc-toolbar {{
+                    border-radius: 8px 8px 0 0;
+                }}
             </style>
         </head>
         <body>
@@ -1895,26 +1935,43 @@ with tab1:
         
         if not jobs_planif.empty:
             maintenant = datetime.now()
+            
+            # Créer datetime pour chaque job
+            jobs_planif['datetime_job'] = jobs_planif.apply(
+                lambda x: datetime.combine(x['date_prevue'], x['heure_debut']) 
+                if pd.notna(x['heure_debut']) else datetime.combine(x['date_prevue'], datetime.min.time()),
+                axis=1
+            )
+            
+            # Priorité 1 : Job EN_COURS
             job_en_cours = jobs_planif[jobs_planif['job_statut'] == 'EN_COURS']
             
             if not job_en_cours.empty:
+                # Job EN_COURS trouvé
                 idx_en_cours = job_en_cours.index[0]
                 idx_position = jobs_planif.index.get_loc(idx_en_cours)
                 job_avant = jobs_planif.iloc[idx_position - 1] if idx_position > 0 else None
                 job_actuel = job_en_cours.iloc[0]
                 job_apres = jobs_planif.iloc[idx_position + 1] if idx_position < len(jobs_planif) - 1 else None
             else:
-                jobs_futurs = jobs_planif[jobs_planif['date_prevue'] >= maintenant.date()]
+                # Pas de job EN_COURS : chercher le plus proche de MAINTENANT
+                jobs_planif_sorted = jobs_planif.sort_values('datetime_job')
+                
+                # Jobs futurs (>= maintenant)
+                jobs_futurs = jobs_planif_sorted[jobs_planif_sorted['datetime_job'] >= maintenant]
+                
                 if not jobs_futurs.empty:
+                    # Prendre le job futur le plus proche
                     idx_futur = jobs_futurs.index[0]
-                    idx_position = jobs_planif.index.get_loc(idx_futur)
-                    job_avant = jobs_planif.iloc[idx_position - 1] if idx_position > 0 else None
-                    job_actuel = jobs_planif.iloc[idx_position]
-                    job_apres = jobs_planif.iloc[idx_position + 1] if idx_position < len(jobs_planif) - 1 else None
+                    idx_position = jobs_planif_sorted.index.get_loc(idx_futur)
+                    job_avant = jobs_planif_sorted.iloc[idx_position - 1] if idx_position > 0 else None
+                    job_actuel = jobs_planif_sorted.iloc[idx_position]
+                    job_apres = jobs_planif_sorted.iloc[idx_position + 1] if idx_position < len(jobs_planif_sorted) - 1 else None
                 else:
-                    job_avant = jobs_planif.iloc[-3] if len(jobs_planif) >= 3 else None
-                    job_actuel = jobs_planif.iloc[-2] if len(jobs_planif) >= 2 else jobs_planif.iloc[-1]
-                    job_apres = jobs_planif.iloc[-1] if len(jobs_planif) >= 2 else None
+                    # Tous les jobs sont passés : afficher les 3 derniers
+                    job_avant = jobs_planif_sorted.iloc[-3] if len(jobs_planif_sorted) >= 3 else None
+                    job_actuel = jobs_planif_sorted.iloc[-2] if len(jobs_planif_sorted) >= 2 else jobs_planif_sorted.iloc[-1]
+                    job_apres = jobs_planif_sorted.iloc[-1] if len(jobs_planif_sorted) >= 2 else None
             
             col_avant, col_actuel, col_apres = st.columns(3)
             
