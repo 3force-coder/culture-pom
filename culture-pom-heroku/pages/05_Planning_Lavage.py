@@ -1531,13 +1531,13 @@ with tab1:
                 initialView: 'timeGridWeek',
                 locale: 'fr',
                 firstDay: 1,
-                dayHeaderFormat: { weekday: 'short', day: '2-digit', month: '2-digit' },
-                buttonText: {
+                dayHeaderFormat: {{ weekday: 'short', day: '2-digit', month: '2-digit' }},
+                buttonText: {{
                     today: "Aujourd'hui",
                     month: 'Mois',
                     week: 'Semaine',
                     day: 'Jour'
-                },
+                }},
                 slotMinTime: '04:00:00',
                 slotMaxTime: '22:00:00',
                 hiddenDays: [0],
