@@ -181,9 +181,9 @@ def get_planning_semaine(ligne_code, week_start):
         SELECT 
             pe.id, pe.type_element, pe.date_prevue, pe.ligne_lavage,
             pe.heure_debut, pe.heure_fin, pe.duree_minutes, pe.ordre_jour,
-            pe.job_id, pe.temps_custom_id,
+            pe.job_id, pe.temps_custom_id, pe.producteur as pe_producteur,
             j.code_lot_interne, j.variete, j.quantite_pallox, j.statut as job_statut,
-            j.temps_estime_heures, j.date_activation, j.date_terminaison,
+            j.temps_estime_heures, j.date_activation, j.date_terminaison, j.producteur,
             tc.libelle as custom_libelle, tc.emoji as custom_emoji
         FROM lavages_planning_elements pe
         LEFT JOIN lavages_jobs j ON pe.job_id = j.id
@@ -217,7 +217,7 @@ def get_jobs_a_placer(ligne_code):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT id, code_lot_interne, variete, quantite_pallox, poids_brut_kg,
-                   temps_estime_heures, date_prevue
+                   temps_estime_heures, date_prevue, producteur
             FROM lavages_jobs
             WHERE statut = 'PRÉVU' AND ligne_lavage = %s
             ORDER BY date_prevue, id
@@ -239,10 +239,18 @@ def get_jobs_a_placer(ligne_code):
 
 def ajouter_element_planning(type_element, job_id, temps_custom_id, date_prevue, ligne_lavage,
                              duree_minutes, annee, semaine, heure_debut_choisie, parent_job_id=None):
-    """Ajoute un élément au planning"""
+    """Ajoute un élément au planning avec dénormalisation producteur"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        
+        # Récupérer producteur si c'est un JOB (dénormalisation pour performance)
+        producteur = None
+        if type_element == 'JOB' and job_id:
+            cursor.execute("SELECT producteur FROM lavages_jobs WHERE id = %s", (job_id,))
+            result = cursor.fetchone()
+            if result:
+                producteur = result.get('producteur')
         
         cursor.execute("""
             SELECT COALESCE(MAX(ordre_jour), 0) as max_ordre
@@ -261,11 +269,11 @@ def ajouter_element_planning(type_element, job_id, temps_custom_id, date_prevue,
         
         cursor.execute("""
             INSERT INTO lavages_planning_elements 
-            (type_element, job_id, temps_custom_id, parent_job_id, annee, semaine, date_prevue,
+            (type_element, job_id, temps_custom_id, parent_job_id, producteur, annee, semaine, date_prevue,
              ligne_lavage, ordre_jour, heure_debut, heure_fin, duree_minutes, created_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
-        """, (type_element, job_id, temps_custom_id, parent_job_id, annee, semaine, date_prevue,
+        """, (type_element, job_id, temps_custom_id, parent_job_id, producteur, annee, semaine, date_prevue,
               ligne_lavage, next_ordre, heure_debut, heure_fin, duree_minutes, created_by))
         
         conn.commit()
@@ -673,7 +681,7 @@ if 'selected_ligne' not in st.session_state:
 # HEADER + KPIs
 # ============================================================
 
-st.title("🧼 Planning Lavage V8 - Phase 1")
+st.title("🧼 Planning Lavage V8 - Phase 2")
 st.caption("*Gestion jobs lavage - Architecture pause intercalée + Admin*")
 
 kpis = get_kpis_lavage()
@@ -690,7 +698,7 @@ st.markdown("---")
 # ONGLETS PRINCIPAUX
 # ============================================================
 
-tab1, tab2, tab3, tab4 = st.tabs(["📅 Planning Semaine", "📋 Jobs à Placer", "⚙️ Admin", "ℹ️ Phase 1"])
+tab1, tab2, tab3, tab4 = st.tabs(["📅 Planning Semaine", "📋 Jobs à Placer", "⚙️ Admin", "ℹ️ Phase 2"])
 
 # ============================================================
 # ONGLET 1 : PLANNING SEMAINE
@@ -745,8 +753,9 @@ with tab1:
             st.info("✅ Tous les jobs planifiés")
         else:
             for _, job in jobs_non_planifies.iterrows():
+                producteur_info = f" - 👤 {job['producteur']}" if pd.notna(job.get('producteur')) and job['producteur'] else ""
                 st.markdown(f"""<div class="job-card"><strong>Job #{int(job['id'])}</strong><br>
-                🌱 {job['variete']}<br>📦 {int(job['quantite_pallox'])}p - ⏱️ {job['temps_estime_heures']:.1f}h</div>""", unsafe_allow_html=True)
+                🌱 {job['variete']}{producteur_info}<br>📦 {int(job['quantite_pallox'])}p - ⏱️ {job['temps_estime_heures']:.1f}h</div>""", unsafe_allow_html=True)
                 
                 jours_options = ["Sélectionner..."] + [f"{['Lun','Mar','Mer','Jeu','Ven'][i]} {(week_start + timedelta(days=i)).strftime('%d/%m')}" for i in range(5)]
                 jour_choisi = st.selectbox("Jour", jours_options, key=f"jour_job_{job['id']}", label_visibility="collapsed")
@@ -831,10 +840,14 @@ with tab1:
                                 css_class = "planned-prevu" if job_statut == 'PRÉVU' else "planned-encours" if job_statut == 'EN_COURS' else "planned-termine"
                                 statut_emoji = "🟢" if job_statut == 'PRÉVU' else "⏱️" if job_statut == 'EN_COURS' else "✅"
                                 
+                                # Déterminer producteur (pe_producteur en priorité, sinon j.producteur)
+                                producteur = elem.get('pe_producteur') or elem.get('producteur') or ''
+                                producteur_ligne = f"<br>👤 {producteur}" if producteur else ""
+                                
                                 st.markdown(f"""<div class="{css_class}">
                                     <strong>{h_deb}</strong> {statut_emoji}<br>
                                     Job #{int(elem['job_id'])}<br>
-                                    🌱 {elem['variete']}<br>
+                                    🌱 {elem['variete']}{producteur_ligne}<br>
                                     📦 {int(elem['quantite_pallox']) if pd.notna(elem['quantite_pallox']) else '?'}p<br>
                                     <small>→{h_fin}</small>
                                 </div>""", unsafe_allow_html=True)
@@ -886,6 +899,8 @@ with tab2:
                     st.write(f"**Lot** : {job['code_lot_interne']}")
                     st.write(f"**Variété** : {job['variete']}")
                     st.write(f"**Quantité** : {int(job['quantite_pallox'])} pallox")
+                    if pd.notna(job.get('producteur')) and job['producteur']:
+                        st.write(f"**Producteur** : 👤 {job['producteur']}")
                 
                 with col2:
                     st.write(f"**Poids** : {job['poids_brut_kg']:.0f} kg")
@@ -1102,44 +1117,49 @@ with tab3:
                 st.error(f"Erreur : {str(e)}")
 
 # ============================================================
-# ONGLET 4 : INFO PHASE 1
+# ONGLET 4 : INFO PHASE 2
 # ============================================================
 
 with tab4:
-    st.subheader("ℹ️ Phase 1 - Admin & Validation Stock")
+    st.subheader("ℹ️ Phase 2 - Producteur & Performance")
     
     st.markdown("""
-    ### ✅ Nouveautés Phase 1
+    ### ✅ Nouveautés Phase 2
     
-    **1. Onglet Admin complet** ⚙️
-    - **Gestion Jobs** :
-      - Supprimer job PRÉVU (DELETE complet)
-      - Annuler job EN_COURS → PRÉVU
-      - Annuler job TERMINÉ → Restaure stock BRUT
-    - **Temps Customs** : CRUD complet
-    - **Statistiques** : Stats globales + par variété
+    **1. Affichage producteur partout** 👤
+    - **Calendrier** : Producteur dans cards jobs (👤 BOSSELER)
+    - **Liste Jobs PRÉVU** : Colonne producteur
+    - **Jobs à placer** : Info producteur visible
     
-    **2. Architecture pause intercalée** ⏸️
-    - Temps customs avec `parent_job_id`
-    - Recalcul automatique heure_fin du job
-    - Pause intercalée rallonge job principal
+    **2. Dénormalisation producteur** ⚡
+    - Copie producteur dans `planning_elements` lors placement
+    - Performance : Pas de JOIN supplémentaire
+    - Affichage instantané
+    
+    **3. Auto-repositionnement** 🎯
+    - Détecte créneaux occupés automatiquement
+    - Propose prochain créneau libre
+    - Plus d'erreur de chevauchement !
+    
+    ### ✅ Acquis Phase 1
+    
+    - Onglet Admin complet (supprimer, annuler, restaurer)
+    - CRUD temps customs
+    - Statistiques globales + par variété
+    - Architecture pause intercalée
+    - Validation stock par emplacement
     
     ### 📋 Prochaines Phases
     
-    **Phase 2** : Statut source + Producteur
+    **Phase 3** : Statut source + Workflow grenailles
     - Gestion BRUT vs GRENAILLES_BRUTES
-    - Affichage producteur dans cards
-    - Dénormalisation producteur
+    - Workflow lavage grenailles → LAVÉ
+    - Traçabilité complète
     
-    **Phase 3** : Créer Job + Liste complète
+    **Phase 4** : Créer Job + Stats avancées
     - Onglet dédié "Créer Job"
-    - Section besoins affectations
-    - Liste tous statuts (PRÉVU/EN_COURS/TERMINÉ)
-    
-    **Phase 4** : Stats + Imprimer
-    - Onglet Stats & Recap
-    - Onglet Imprimer (PDF)
-    - Arrondi quart d'heure
+    - Stats enrichies & graphiques
+    - Export PDF planning
     """)
 
 show_footer()
