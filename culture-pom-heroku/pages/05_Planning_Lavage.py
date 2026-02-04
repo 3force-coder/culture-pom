@@ -298,32 +298,86 @@ def retirer_element_planning(element_id):
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
-def verifier_chevauchement(planning_df, date_cible, ligne, heure_debut, duree_min):
-    """Vérifie qu'il n'y a pas de chevauchement"""
+def trouver_prochain_creneau_libre(planning_df, date_cible, ligne, heure_souhaitee, duree_min):
+    """
+    Trouve le prochain créneau disponible pour placer un élément.
+    Si l'heure souhaitée est libre, la retourne.
+    Sinon, trouve automatiquement le prochain créneau libre après les chevauchements.
+    """
     if planning_df.empty:
-        return True, "", None
+        return heure_souhaitee, True, ""
     
     date_str = str(date_cible)
     mask = (planning_df['date_prevue'].astype(str) == date_str) & (planning_df['ligne_lavage'] == ligne)
     elements = planning_df[mask]
     
     if elements.empty:
-        return True, "", None
+        return heure_souhaitee, True, ""
     
-    debut_min = heure_debut.hour * 60 + heure_debut.minute
-    fin_min = debut_min + duree_min
+    # Convertir heure souhaitée en minutes
+    debut_souhaite = heure_souhaitee.hour * 60 + heure_souhaitee.minute
     
+    # Collecter tous les créneaux occupés
+    creneaux_occupes = []
     for _, elem in elements.iterrows():
         if pd.isna(elem['heure_debut']) or pd.isna(elem['heure_fin']):
             continue
-        
         elem_debut = elem['heure_debut'].hour * 60 + elem['heure_debut'].minute
         elem_fin = elem['heure_fin'].hour * 60 + elem['heure_fin'].minute
         
-        if not (fin_min <= elem_debut or debut_min >= elem_fin):
-            return False, f"❌ Chevauchement avec {elem.get('variete', 'élément')} ({elem['heure_debut'].strftime('%H:%M')}-{elem['heure_fin'].strftime('%H:%M')})", int(elem['id'])
+        # Récupérer le libellé pour affichage
+        if pd.notna(elem.get('custom_libelle')):
+            libelle = f"🔧 {elem['custom_libelle']}"
+        elif pd.notna(elem.get('variete')):
+            libelle = f"🌱 {elem['variete']}"
+        else:
+            libelle = "élément"
+        
+        creneaux_occupes.append({
+            'debut': elem_debut,
+            'fin': elem_fin,
+            'libelle': libelle,
+            'heure_debut_str': elem['heure_debut'].strftime('%H:%M'),
+            'heure_fin_str': elem['heure_fin'].strftime('%H:%M')
+        })
     
-    return True, "", None
+    # Trier par heure de début
+    creneaux_occupes.sort(key=lambda x: x['debut'])
+    
+    # Vérifier si l'heure souhaitée est libre
+    fin_souhaitee = debut_souhaite + duree_min
+    conflit = False
+    dernier_fin = debut_souhaite
+    
+    for creneau in creneaux_occupes:
+        # Chevauchement ?
+        if not (fin_souhaitee <= creneau['debut'] or debut_souhaite >= creneau['fin']):
+            conflit = True
+            dernier_fin = max(dernier_fin, creneau['fin'])
+    
+    # Si pas de conflit, retourner l'heure souhaitée
+    if not conflit:
+        return heure_souhaitee, True, ""
+    
+    # Sinon, trouver le prochain créneau libre après tous les conflits
+    # Chercher à partir de la fin du dernier élément en conflit
+    prochain_debut = dernier_fin
+    
+    # Vérifier que ce nouveau créneau ne chevauche pas d'autres éléments
+    prochain_fin = prochain_debut + duree_min
+    for creneau in creneaux_occupes:
+        if creneau['debut'] < prochain_fin and creneau['fin'] > prochain_debut:
+            # Conflit avec un autre élément, décaler encore
+            prochain_debut = creneau['fin']
+            prochain_fin = prochain_debut + duree_min
+    
+    # Convertir minutes en time
+    heure_proposee = time(prochain_debut // 60, prochain_debut % 60)
+    
+    # Message informatif
+    message = f"ℹ️ Repositionné à {heure_proposee.strftime('%H:%M')} (créneau {heure_souhaitee.strftime('%H:%M')} occupé)"
+    
+    return heure_proposee, True, message
 
 def recalculer_heures_fin_job(job_planning_id):
     """Recalcule heure_fin du job en incluant les temps customs intercalés"""
@@ -700,14 +754,17 @@ with tab1:
                 if jour_choisi != "Sélectionner...":
                     jour_idx = jours_options.index(jour_choisi) - 1
                     date_cible = week_start + timedelta(days=jour_idx)
-                    heure_debut = st.time_input("Heure", value=time(4, 0), step=900, key=f"heure_job_{job['id']}", label_visibility="collapsed")
+                    heure_saisie = st.time_input("Heure", value=time(4, 0), step=900, key=f"heure_job_{job['id']}", label_visibility="collapsed")
                     duree_min = int(job['temps_estime_heures'] * 60)
                     
-                    ok, msg_ch, _ = verifier_chevauchement(planning_df, date_cible, st.session_state.selected_ligne, heure_debut, duree_min)
-                    if not ok:
-                        st.error(msg_ch)
-                    elif st.button("✅ Placer", key=f"confirm_job_{job['id']}", type="primary", use_container_width=True):
-                        success, msg = ajouter_element_planning('JOB', int(job['id']), None, date_cible, st.session_state.selected_ligne, duree_min, annee, semaine, heure_debut)
+                    # Trouver le prochain créneau libre (auto-repositionnement)
+                    heure_optimale, ok, msg_info = trouver_prochain_creneau_libre(planning_df, date_cible, st.session_state.selected_ligne, heure_saisie, duree_min)
+                    
+                    if msg_info:
+                        st.info(msg_info)
+                    
+                    if st.button("✅ Placer", key=f"confirm_job_{job['id']}", type="primary", use_container_width=True):
+                        success, msg = ajouter_element_planning('JOB', int(job['id']), None, date_cible, st.session_state.selected_ligne, duree_min, annee, semaine, heure_optimale)
                         if success:
                             st.success(msg)
                             st.rerun()
@@ -732,12 +789,16 @@ with tab1:
             if jour_tc != "Sélectionner...":
                 jour_idx = jours_tc.index(jour_tc) - 1
                 date_cible = week_start + timedelta(days=jour_idx)
-                heure_tc = st.time_input("Heure", value=time(4, 0), step=900, key=f"heure_tc_{tc['id']}", label_visibility="collapsed")
-                ok, msg_ch, _ = verifier_chevauchement(planning_df, date_cible, st.session_state.selected_ligne, heure_tc, tc['duree_minutes'])
-                if not ok:
-                    st.error(msg_ch)
-                elif st.button("✅", key=f"confirm_tc_{tc['id']}", use_container_width=True):
-                    success, msg = ajouter_element_planning('CUSTOM', None, int(tc['id']), date_cible, st.session_state.selected_ligne, tc['duree_minutes'], annee, semaine, heure_tc)
+                heure_saisie_tc = st.time_input("Heure", value=time(4, 0), step=900, key=f"heure_tc_{tc['id']}", label_visibility="collapsed")
+                
+                # Trouver le prochain créneau libre (auto-repositionnement)
+                heure_optimale_tc, ok, msg_info_tc = trouver_prochain_creneau_libre(planning_df, date_cible, st.session_state.selected_ligne, heure_saisie_tc, tc['duree_minutes'])
+                
+                if msg_info_tc:
+                    st.info(msg_info_tc)
+                
+                if st.button("✅", key=f"confirm_tc_{tc['id']}", use_container_width=True):
+                    success, msg = ajouter_element_planning('CUSTOM', None, int(tc['id']), date_cible, st.session_state.selected_ligne, tc['duree_minutes'], annee, semaine, heure_optimale_tc)
                     if success:
                         st.rerun()
     
