@@ -183,7 +183,7 @@ def get_planning_semaine(ligne_code, week_start):
             pe.heure_debut, pe.heure_fin, pe.duree_minutes, pe.ordre_jour,
             pe.job_id, pe.temps_custom_id,
             j.code_lot_interne, j.variete, j.quantite_pallox, j.statut as job_statut,
-            j.temps_estime_heures, j.date_activation, j.date_terminaison, j.producteur,
+            j.temps_estime_heures, j.date_activation, j.date_terminaison,
             tc.libelle as custom_libelle, tc.emoji as custom_emoji
         FROM lavages_planning_elements pe
         LEFT JOIN lavages_jobs j ON pe.job_id = j.id
@@ -217,7 +217,7 @@ def get_jobs_a_placer(ligne_code):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT id, code_lot_interne, variete, quantite_pallox, poids_brut_kg,
-                   temps_estime_heures, date_prevue, producteur
+                   temps_estime_heures, date_prevue
             FROM lavages_jobs
             WHERE statut = 'PRÉVU' AND ligne_lavage = %s
             ORDER BY date_prevue, id
