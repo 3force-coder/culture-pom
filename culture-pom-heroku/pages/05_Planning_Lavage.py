@@ -184,6 +184,7 @@ def get_planning_semaine(ligne_code, week_start):
             pe.job_id, pe.temps_custom_id, pe.producteur as pe_producteur,
             j.code_lot_interne, j.variete, j.quantite_pallox, j.statut as job_statut,
             j.temps_estime_heures, j.date_activation, j.date_terminaison, j.producteur,
+            j.statut_source,
             tc.libelle as custom_libelle, tc.emoji as custom_emoji
         FROM lavages_planning_elements pe
         LEFT JOIN lavages_jobs j ON pe.job_id = j.id
@@ -217,7 +218,7 @@ def get_jobs_a_placer(ligne_code):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT id, code_lot_interne, variete, quantite_pallox, poids_brut_kg,
-                   temps_estime_heures, date_prevue, producteur
+                   temps_estime_heures, date_prevue, producteur, statut_source
             FROM lavages_jobs
             WHERE statut = 'PRÉVU' AND ligne_lavage = %s
             ORDER BY date_prevue, id
@@ -681,7 +682,7 @@ if 'selected_ligne' not in st.session_state:
 # HEADER + KPIs
 # ============================================================
 
-st.title("🧼 Planning Lavage V8 - Phase 2")
+st.title("🧼 Planning Lavage V8 - Phase 3")
 st.caption("*Gestion jobs lavage - Architecture pause intercalée + Admin*")
 
 kpis = get_kpis_lavage()
@@ -698,7 +699,7 @@ st.markdown("---")
 # ONGLETS PRINCIPAUX
 # ============================================================
 
-tab1, tab2, tab3, tab4 = st.tabs(["📅 Planning Semaine", "📋 Jobs à Placer", "⚙️ Admin", "ℹ️ Phase 2"])
+tab1, tab2, tab3, tab4 = st.tabs(["📅 Planning Semaine", "📋 Jobs à Placer", "⚙️ Admin", "ℹ️ Phase 3"])
 
 # ============================================================
 # ONGLET 1 : PLANNING SEMAINE
@@ -754,7 +755,9 @@ with tab1:
         else:
             for _, job in jobs_non_planifies.iterrows():
                 producteur_info = f" - 👤 {job['producteur']}" if pd.notna(job.get('producteur')) and job['producteur'] else ""
-                st.markdown(f"""<div class="job-card"><strong>Job #{int(job['id'])}</strong><br>
+                statut_source = job.get('statut_source', 'BRUT')
+                badge_source = "🔄" if statut_source == 'GRENAILLES_BRUTES' else "🥔"
+                st.markdown(f"""<div class="job-card"><strong>Job #{int(job['id'])} {badge_source}</strong><br>
                 🌱 {job['variete']}{producteur_info}<br>📦 {int(job['quantite_pallox'])}p - ⏱️ {job['temps_estime_heures']:.1f}h</div>""", unsafe_allow_html=True)
                 
                 jours_options = ["Sélectionner..."] + [f"{['Lun','Mar','Mer','Jeu','Ven'][i]} {(week_start + timedelta(days=i)).strftime('%d/%m')}" for i in range(5)]
@@ -844,9 +847,13 @@ with tab1:
                                 producteur = elem.get('pe_producteur') or elem.get('producteur') or ''
                                 producteur_ligne = f"<br>👤 {producteur}" if producteur else ""
                                 
+                                # Badge statut_source
+                                statut_source = elem.get('statut_source', 'BRUT')
+                                badge_source = " 🔄" if statut_source == 'GRENAILLES_BRUTES' else " 🥔"
+                                
                                 st.markdown(f"""<div class="{css_class}">
                                     <strong>{h_deb}</strong> {statut_emoji}<br>
-                                    Job #{int(elem['job_id'])}<br>
+                                    Job #{int(elem['job_id'])}{badge_source}<br>
                                     🌱 {elem['variete']}{producteur_ligne}<br>
                                     📦 {int(elem['quantite_pallox']) if pd.notna(elem['quantite_pallox']) else '?'}p<br>
                                     <small>→{h_fin}</small>
@@ -892,7 +899,9 @@ with tab2:
     
     if not jobs_prevus.empty:
         for _, job in jobs_prevus.iterrows():
-            with st.expander(f"Job #{int(job['id'])} - {job['code_lot_interne']} - {job['variete']}"):
+            statut_source = job.get('statut_source', 'BRUT')
+            badge_source = "🔄 GRENAILLES" if statut_source == 'GRENAILLES_BRUTES' else "🥔 BRUT"
+            with st.expander(f"Job #{int(job['id'])} - {job['code_lot_interne']} - {job['variete']} ({badge_source})"):
                 col1, col2 = st.columns(2)
                 
                 with col1:
@@ -1117,49 +1126,59 @@ with tab3:
                 st.error(f"Erreur : {str(e)}")
 
 # ============================================================
-# ONGLET 4 : INFO PHASE 2
+# ONGLET 4 : INFO PHASE 3
 # ============================================================
 
 with tab4:
-    st.subheader("ℹ️ Phase 2 - Producteur & Performance")
+    st.subheader("ℹ️ Phase 3 - Statut Source & Badges")
     
     st.markdown("""
-    ### ✅ Nouveautés Phase 2
+    ### ✅ Nouveautés Phase 3
     
-    **1. Affichage producteur partout** 👤
-    - **Calendrier** : Producteur dans cards jobs (👤 BOSSELER)
-    - **Liste Jobs PRÉVU** : Colonne producteur
-    - **Jobs à placer** : Info producteur visible
+    **1. Gestion statut_source** 🥔🔄
+    - **BRUT** : Pommes de terre brutes (lot d'origine) → 🥔
+    - **GRENAILLES_BRUTES** : Grenailles à relaver → 🔄
+    - Badge visuel partout (calendrier, listes, cards)
     
-    **2. Dénormalisation producteur** ⚡
-    - Copie producteur dans `planning_elements` lors placement
-    - Performance : Pas de JOIN supplémentaire
-    - Affichage instantané
+    **2. Affichage différencié** 🎨
+    - **Calendrier** : "Job #123 🥔" ou "Job #456 🔄"
+    - **Jobs à placer** : Badge dans titre card
+    - **Liste Jobs PRÉVU** : Badge dans expander
     
-    **3. Auto-repositionnement** 🎯
-    - Détecte créneaux occupés automatiquement
-    - Propose prochain créneau libre
-    - Plus d'erreur de chevauchement !
+    **3. Workflow grenailles** (prochaine phase)
+    - Créer job GRENAILLES_BRUTES depuis stock grenailles
+    - Laver grenailles → Stock GRENAILLES_LAVÉES
+    - Traçabilité complète
     
-    ### ✅ Acquis Phase 1
+    ### ✅ Acquis Phases 1 & 2
     
+    **Phase 1** :
     - Onglet Admin complet (supprimer, annuler, restaurer)
     - CRUD temps customs
     - Statistiques globales + par variété
     - Architecture pause intercalée
     - Validation stock par emplacement
+    - Auto-repositionnement intelligent
     
-    ### 📋 Prochaines Phases
+    **Phase 2** :
+    - Affichage producteur partout (👤)
+    - Dénormalisation producteur
+    - Performance optimale
     
-    **Phase 3** : Statut source + Workflow grenailles
-    - Gestion BRUT vs GRENAILLES_BRUTES
-    - Workflow lavage grenailles → LAVÉ
-    - Traçabilité complète
+    ### 📋 Prochaine Phase
     
     **Phase 4** : Créer Job + Stats avancées
-    - Onglet dédié "Créer Job"
+    - Onglet dédié "Créer Job" avec sélection lot
+    - Choix statut_source (BRUT ou GRENAILLES_BRUTES)
     - Stats enrichies & graphiques
     - Export PDF planning
+    
+    ### 🎯 Badges statut_source
+    
+    - **🥔 BRUT** : Lot d'origine (pommes de terre brutes)
+    - **🔄 GRENAILLES** : Grenailles brutes à relaver
+    
+    Ce système permet de différencier visuellement les sources et gérer le workflow complet.
     """)
 
 show_footer()
