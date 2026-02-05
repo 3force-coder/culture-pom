@@ -110,6 +110,150 @@ require_access("PRODUCTION")
 # FONCTIONS UTILITAIRES
 # ============================================================
 
+def get_lots_bruts_disponibles():
+    """Récupère les lots BRUT disponibles pour lavage"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                se.id as emplacement_id,
+                l.id as lot_id,
+                l.code_lot_interne,
+                l.nom_usage,
+                COALESCE(v.nom_variete, l.code_variete) as variete,
+                l.calibre_min,
+                l.calibre_max,
+                se.site_stockage,
+                se.emplacement_stockage,
+                se.nombre_unites,
+                se.type_conditionnement,
+                se.poids_total_kg,
+                COALESCE(p.nom, l.code_producteur) as producteur
+            FROM stock_emplacements se
+            JOIN lots_bruts l ON se.lot_id = l.id
+            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+            LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
+            WHERE se.is_active = TRUE 
+              AND se.statut_lavage = 'BRUT'
+              AND se.nombre_unites > 0
+            ORDER BY l.code_lot_interne
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if rows:
+            df = pd.DataFrame(rows)
+            numeric_cols = ['nombre_unites', 'poids_total_kg', 'calibre_min', 'calibre_max']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            return df
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"❌ Erreur : {str(e)}")
+        return pd.DataFrame()
+
+def get_lots_grenailles_disponibles():
+    """Récupère les lots GRENAILLES_BRUTES disponibles pour lavage"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                se.id as emplacement_id,
+                l.id as lot_id,
+                l.code_lot_interne,
+                l.nom_usage,
+                COALESCE(v.nom_variete, l.code_variete) as variete,
+                l.calibre_min,
+                l.calibre_max,
+                se.site_stockage,
+                se.emplacement_stockage,
+                se.nombre_unites,
+                se.type_conditionnement,
+                se.poids_total_kg,
+                COALESCE(p.nom, l.code_producteur) as producteur
+            FROM stock_emplacements se
+            JOIN lots_bruts l ON se.lot_id = l.id
+            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+            LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
+            WHERE se.is_active = TRUE 
+              AND se.statut_lavage = 'GRENAILLES'
+              AND se.nombre_unites > 0
+            ORDER BY l.code_lot_interne
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if rows:
+            df = pd.DataFrame(rows)
+            numeric_cols = ['nombre_unites', 'poids_total_kg', 'calibre_min', 'calibre_max']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            return df
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"❌ Erreur : {str(e)}")
+        return pd.DataFrame()
+
+def create_job_lavage(lot_id, emplacement_id, ligne_lavage, quantite_pallox, poids_brut_kg,
+                      date_prevue, capacite_th, statut_source, producteur="", notes=""):
+    """Crée un nouveau job de lavage (BRUT ou GRENAILLES_BRUTES)"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Convertir types
+        lot_id = int(lot_id)
+        emplacement_id = int(emplacement_id)
+        quantite_pallox = int(quantite_pallox)
+        poids_brut_kg = float(poids_brut_kg)
+        capacite_th = float(capacite_th)
+        
+        # Récupérer infos lot
+        cursor.execute("""
+            SELECT l.code_lot_interne, COALESCE(v.nom_variete, l.code_variete) as variete
+            FROM lots_bruts l
+            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+            WHERE l.id = %s
+        """, (lot_id,))
+        lot_info = cursor.fetchone()
+        
+        # Calculer temps estimé
+        temps_estime = (poids_brut_kg / 1000) / capacite_th
+        
+        # Insérer job
+        created_by = st.session_state.get('username', 'system')
+        
+        cursor.execute("""
+            INSERT INTO lavages_jobs (
+                lot_id, code_lot_interne, variete, quantite_pallox, poids_brut_kg,
+                date_prevue, ligne_lavage, capacite_th, temps_estime_heures,
+                statut, statut_source, producteur, created_by, notes
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'PRÉVU', %s, %s, %s, %s)
+            RETURNING id
+        """, (
+            lot_id, lot_info['code_lot_interne'], lot_info['variete'],
+            quantite_pallox, poids_brut_kg, date_prevue, ligne_lavage,
+            capacite_th, temps_estime, statut_source, producteur, created_by, notes
+        ))
+        
+        job_id = cursor.fetchone()['id']
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, f"✅ Job #{job_id} créé ({statut_source})"
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
 def get_lignes_lavage():
     """Récupère les lignes de lavage actives"""
     try:
@@ -682,7 +826,7 @@ if 'selected_ligne' not in st.session_state:
 # HEADER + KPIs
 # ============================================================
 
-st.title("🧼 Planning Lavage V8 - Phase 3")
+st.title("🧼 Planning Lavage V8 - Phase 4")
 st.caption("*Gestion jobs lavage - Architecture pause intercalée + Admin*")
 
 kpis = get_kpis_lavage()
@@ -699,7 +843,7 @@ st.markdown("---")
 # ONGLETS PRINCIPAUX
 # ============================================================
 
-tab1, tab2, tab3, tab4 = st.tabs(["📅 Planning Semaine", "📋 Jobs à Placer", "⚙️ Admin", "ℹ️ Phase 3"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📅 Planning Semaine", "📋 Jobs à Placer", "⚙️ Admin", "➕ Créer Job", "ℹ️ Info"])
 
 # ============================================================
 # ONGLET 1 : PLANNING SEMAINE
@@ -1126,14 +1270,259 @@ with tab3:
                 st.error(f"Erreur : {str(e)}")
 
 # ============================================================
-# ONGLET 4 : INFO PHASE 3
+# ONGLET 4 : CRÉER JOB ✅ PHASE 4
 # ============================================================
 
 with tab4:
-    st.subheader("ℹ️ Phase 3 - Statut Source & Badges")
+    st.subheader("➕ Créer un Job de Lavage")
+    
+    # Choix type source
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        type_source = st.radio(
+            "Type de source",
+            options=["BRUT 🥔", "GRENAILLES 🔄"],
+            horizontal=True,
+            key="type_source_create"
+        )
+    
+    statut_source = "BRUT" if "BRUT" in type_source else "GRENAILLES_BRUTES"
+    
+    st.markdown("---")
+    
+    # Charger lots selon type
+    if statut_source == "BRUT":
+        lots_dispo = get_lots_bruts_disponibles()
+        st.info("📦 Sélection de **pommes de terre brutes** (BRUT) pour lavage primaire")
+    else:
+        lots_dispo = get_lots_grenailles_disponibles()
+        st.info("🔄 Sélection de **grenailles brutes** (GRENAILLES_BRUTES) pour lavage secondaire")
+    
+    if not lots_dispo.empty:
+        # Filtres
+        col_f1, col_f2 = st.columns(2)
+        
+        with col_f1:
+            varietes = ["Tous"] + sorted(lots_dispo['variete'].dropna().unique().tolist())
+            filtre_var = st.selectbox("Filtrer par variété", varietes, key="fvar_create")
+        
+        with col_f2:
+            sites = ["Tous"] + sorted(lots_dispo['site_stockage'].dropna().unique().tolist())
+            filtre_site = st.selectbox("Filtrer par site", sites, key="fsite_create")
+        
+        # Appliquer filtres
+        lots_filtres = lots_dispo.copy()
+        if filtre_var != "Tous":
+            lots_filtres = lots_filtres[lots_filtres['variete'] == filtre_var]
+        if filtre_site != "Tous":
+            lots_filtres = lots_filtres[lots_filtres['site_stockage'] == filtre_site]
+        
+        if not lots_filtres.empty:
+            st.markdown(f"**{len(lots_filtres)} emplacement(s) disponible(s)**")
+            
+            # Tableau sélection
+            df_display = lots_filtres[[
+                'emplacement_id', 'lot_id', 'code_lot_interne', 'nom_usage',
+                'variete', 'calibre_min', 'calibre_max', 'producteur',
+                'site_stockage', 'emplacement_stockage',
+                'nombre_unites', 'poids_total_kg', 'type_conditionnement'
+            ]].copy()
+            
+            df_display = df_display.reset_index(drop=False).rename(columns={'index': '_idx'})
+            
+            df_display = df_display.rename(columns={
+                'code_lot_interne': 'Code Lot',
+                'nom_usage': 'Nom Lot',
+                'variete': 'Variété',
+                'calibre_min': 'Cal Min',
+                'calibre_max': 'Cal Max',
+                'producteur': 'Producteur',
+                'site_stockage': 'Site',
+                'emplacement_stockage': 'Empl',
+                'nombre_unites': 'Unités',
+                'poids_total_kg': 'Poids (kg)',
+                'type_conditionnement': 'Type'
+            })
+            
+            column_config = {
+                "_idx": None,
+                "emplacement_id": None,
+                "lot_id": None,
+                "Code Lot": st.column_config.TextColumn("Code Lot", width="medium"),
+                "Nom Lot": st.column_config.TextColumn("Nom Lot", width="medium"),
+                "Variété": st.column_config.TextColumn("Variété", width="medium"),
+                "Cal Min": st.column_config.NumberColumn("Cal Min", format="%d"),
+                "Cal Max": st.column_config.NumberColumn("Cal Max", format="%d"),
+                "Producteur": st.column_config.TextColumn("Producteur", width="medium"),
+                "Site": st.column_config.TextColumn("Site", width="small"),
+                "Empl": st.column_config.TextColumn("Empl", width="small"),
+                "Unités": st.column_config.NumberColumn("Unités", format="%d"),
+                "Poids (kg)": st.column_config.NumberColumn("Poids (kg)", format="%.0f"),
+                "Type": st.column_config.TextColumn("Type", width="small")
+            }
+            
+            event = st.dataframe(
+                df_display,
+                column_config=column_config,
+                use_container_width=True,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="lots_create_table"
+            )
+            
+            selected_rows = event.selection.rows if hasattr(event, 'selection') else []
+            
+            st.markdown("---")
+            
+            if len(selected_rows) > 0:
+                selected_idx = selected_rows[0]
+                selected_row = df_display.iloc[selected_idx]
+                
+                badge = "🥔" if statut_source == "BRUT" else "🔄"
+                st.success(f"✅ Sélectionné : **{selected_row['Code Lot']}** - {selected_row['Variété']} ({int(selected_row['Unités'])} unités) {badge}")
+                
+                if st.button("➕ Créer Job de Lavage", type="primary", use_container_width=True, key="btn_show_form_create"):
+                    st.session_state['selected_empl_idx_create'] = selected_row['_idx']
+                    st.session_state['show_create_form_job'] = True
+                    st.rerun()
+            else:
+                st.info("👆 Sélectionnez un emplacement dans le tableau")
+                st.button("➕ Créer Job de Lavage", type="primary", use_container_width=True, disabled=True, key="btn_create_disabled")
+            
+            # Formulaire création
+            if st.session_state.get('show_create_form_job', False) and 'selected_empl_idx_create' in st.session_state:
+                st.markdown("---")
+                st.markdown("### 📋 Paramètres du Job")
+                
+                original_idx = st.session_state['selected_empl_idx_create']
+                empl_data = lots_filtres.loc[original_idx]
+                
+                badge = "🥔 BRUT" if statut_source == "BRUT" else "🔄 GRENAILLES"
+                st.info(f"**Source** : {badge}  \n**Lot** : {empl_data['code_lot_interne']} - {empl_data['variete']}  \n**Emplacement** : {empl_data['site_stockage']}/{empl_data['emplacement_stockage']}")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    quantite = st.slider(
+                        "Quantité à laver *",
+                        min_value=1,
+                        max_value=int(empl_data['nombre_unites']),
+                        value=min(5, int(empl_data['nombre_unites'])),
+                        key="qte_create"
+                    )
+                    
+                    date_prevue = st.date_input(
+                        "Date prévue *",
+                        value=datetime.now().date(),
+                        key="date_create"
+                    )
+                
+                with col2:
+                    lignes = get_lignes_lavage()
+                    if lignes:
+                        ligne_opts = [f"{l['code']} ({l['capacite_th']} T/h)" for l in lignes]
+                        sel_ligne = st.selectbox("Ligne de lavage *", ligne_opts, key="ligne_create")
+                        
+                        # Calcul poids
+                        type_cond = empl_data['type_conditionnement']
+                        if type_cond == 'Pallox':
+                            poids_unit = 1900
+                        elif type_cond == 'Petit Pallox':
+                            poids_unit = 1200
+                        elif type_cond == 'Big Bag':
+                            poids_unit = 1600
+                        else:
+                            poids_unit = 1900
+                        
+                        poids_brut = quantite * poids_unit
+                        
+                        ligne_idx = ligne_opts.index(sel_ligne)
+                        capacite = float(lignes[ligne_idx]['capacite_th'])
+                        temps_est = (poids_brut / 1000) / capacite
+                        ligne_code = lignes[ligne_idx]['code']
+                        
+                        st.metric("Poids brut", f"{poids_brut:,.0f} kg ({poids_brut/1000:.1f} T)")
+                        st.metric("Temps estimé", f"{temps_est:.1f} heures")
+                    else:
+                        st.error("❌ Aucune ligne disponible")
+                
+                notes = st.text_area("Notes (optionnel)", key="notes_create_job")
+                
+                col_save, col_cancel = st.columns(2)
+                
+                with col_save:
+                    if st.button("✅ Créer le Job", type="primary", use_container_width=True, key="btn_save_create"):
+                        if lignes:
+                            producteur = empl_data.get('producteur', '')
+                            
+                            success, message = create_job_lavage(
+                                empl_data['lot_id'],
+                                empl_data['emplacement_id'],
+                                ligne_code,
+                                quantite,
+                                poids_brut,
+                                date_prevue,
+                                capacite,
+                                statut_source,
+                                producteur,
+                                notes
+                            )
+                            
+                            if success:
+                                st.success(message)
+                                st.balloons()
+                                st.session_state.pop('show_create_form_job', None)
+                                st.session_state.pop('selected_empl_idx_create', None)
+                                st.rerun()
+                            else:
+                                st.error(message)
+                        else:
+                            st.error("❌ Impossible : aucune ligne")
+                
+                with col_cancel:
+                    if st.button("❌ Annuler", use_container_width=True, key="btn_cancel_create"):
+                        st.session_state.pop('show_create_form_job', None)
+                        st.session_state.pop('selected_empl_idx_create', None)
+                        st.rerun()
+        else:
+            st.warning(f"⚠️ Aucun emplacement avec filtres : {filtre_var} / {filtre_site}")
+    else:
+        if statut_source == "BRUT":
+            st.warning("⚠️ Aucun lot BRUT disponible")
+        else:
+            st.warning("⚠️ Aucun lot GRENAILLES disponible")
+
+# ============================================================
+# ONGLET 5 : INFO PHASES 3-4
+# ============================================================
+
+with tab5:
+    st.subheader("ℹ️ Planning Lavage V8 - Phases 1 à 4")
     
     st.markdown("""
-    ### ✅ Nouveautés Phase 3
+    ### ✅ Phase 4 (ACTUELLE) - Créer Job
+    
+    **1. Onglet dédié "Créer Job"** ➕
+    - Interface complète création jobs
+    - Choix type source : BRUT 🥔 ou GRENAILLES 🔄
+    - Affichage emplacements disponibles selon type
+    - Filtres variété + site
+    
+    **2. Sélection intelligente** 🎯
+    - BRUT : Emplacements statut_lavage = 'BRUT'
+    - GRENAILLES : Emplacements statut_lavage = 'GRENAILLES'
+    - Tableau avec sélection unique
+    - Validation stock disponible
+    
+    **3. Création job avec statut_source** 📝
+    - Formulaire paramètres (quantité, date, ligne)
+    - Calcul auto poids et temps
+    - Job créé avec bon statut_source
+    - Producteur copié automatiquement
+    
+    ### ✅ Phase 3 - Badges Statut Source
     
     **1. Gestion statut_source** 🥔🔄
     - **BRUT** : Pommes de terre brutes (lot d'origine) → 🥔
@@ -1143,42 +1532,59 @@ with tab4:
     **2. Affichage différencié** 🎨
     - **Calendrier** : "Job #123 🥔" ou "Job #456 🔄"
     - **Jobs à placer** : Badge dans titre card
-    - **Liste Jobs PRÉVU** : Badge dans expander
+    - **Liste Jobs PRÉVU** : Badge dans expander "(🥔 BRUT)"
     
-    **3. Workflow grenailles** (prochaine phase)
-    - Créer job GRENAILLES_BRUTES depuis stock grenailles
-    - Laver grenailles → Stock GRENAILLES_LAVÉES
-    - Traçabilité complète
+    ### ✅ Phase 2 - Producteur
     
-    ### ✅ Acquis Phases 1 & 2
+    **1. Affichage producteur** 👤
+    - Partout : calendrier, listes, jobs à placer
+    - Dénormalisation dans planning_elements
+    - Performance optimale (pas de JOIN)
     
-    **Phase 1** :
-    - Onglet Admin complet (supprimer, annuler, restaurer)
+    **2. Auto-repositionnement** 🎯
+    - Détecte créneaux occupés
+    - Propose prochain créneau libre
+    - Plus d'erreur chevauchement
+    
+    ### ✅ Phase 1 - Admin & Validation
+    
+    **1. Onglet Admin complet** ⚙️
+    - Supprimer, annuler, restaurer jobs
     - CRUD temps customs
     - Statistiques globales + par variété
-    - Architecture pause intercalée
+    
+    **2. Architecture planning** 📅
+    - Pause intercalée automatique
     - Validation stock par emplacement
-    - Auto-repositionnement intelligent
+    - Recalcul heures fin automatique
     
-    **Phase 2** :
-    - Affichage producteur partout (👤)
-    - Dénormalisation producteur
-    - Performance optimale
+    ### 📋 Prochaines Évolutions
     
-    ### 📋 Prochaine Phase
+    **Phase 5** : Workflow Grenailles Complet
+    - Terminer job GRENAILLES_BRUTES
+    - Créer stock GRENAILLES_LAVÉES
+    - Traçabilité totale parent→enfant
     
-    **Phase 4** : Créer Job + Stats avancées
-    - Onglet dédié "Créer Job" avec sélection lot
-    - Choix statut_source (BRUT ou GRENAILLES_BRUTES)
-    - Stats enrichies & graphiques
-    - Export PDF planning
+    **Phase 6** : Stats Avancées & Export
+    - Répartition BRUT/GRENAILLES graphique
+    - Taux transformation grenailles
+    - Export PDF planning complet
     
-    ### 🎯 Badges statut_source
+    ### 🎯 Workflow Complet
     
-    - **🥔 BRUT** : Lot d'origine (pommes de terre brutes)
-    - **🔄 GRENAILLES** : Grenailles brutes à relaver
+    **Lavage BRUT** 🥔
+    1. Créer Job source BRUT
+    2. Placer dans planning
+    3. Démarrer job
+    4. Terminer → Stock LAVÉ + GRENAILLES
     
-    Ce système permet de différencier visuellement les sources et gérer le workflow complet.
+    **Lavage GRENAILLES** 🔄 (Phase 5)
+    1. Créer Job source GRENAILLES_BRUTES
+    2. Placer dans planning
+    3. Démarrer job
+    4. Terminer → Stock GRENAILLES_LAVÉES
+    
+    Ce système gère le cycle complet de transformation des pommes de terre !
     """)
 
 show_footer()
