@@ -606,6 +606,184 @@ def demarrer_job(job_id):
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
+def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
+                site_dest, emplacement_dest, notes=""):
+    """Termine un job EN_COURS → TERMINÉ
+    
+    Gère automatiquement selon statut_source :
+    - BRUT : crée stock LAVÉ + GRENAILLES_BRUTES
+    - GRENAILLES_BRUTES : crée stock GRENAILLES_LAVÉES
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Récupérer infos job
+        cursor.execute("""
+            SELECT lot_id, quantite_pallox, poids_brut_kg, code_lot_interne,
+                   emplacement_id, statut, statut_source, variete, producteur
+            FROM lavages_jobs
+            WHERE id = %s
+        """, (job_id,))
+        
+        job = cursor.fetchone()
+        if not job:
+            return False, "❌ Job introuvable"
+        if job['statut'] != 'EN_COURS':
+            return False, f"❌ Ce job est {job['statut']}, pas EN_COURS"
+        
+        # Convertir types
+        poids_lave = float(poids_lave)
+        poids_grenailles = float(poids_grenailles)
+        poids_dechets = float(poids_dechets)
+        poids_brut = float(job['poids_brut_kg'])
+        quantite_pallox = int(job['quantite_pallox'])
+        lot_id = int(job['lot_id'])
+        emplacement_id = job['emplacement_id']
+        statut_source = job['statut_source'] or 'BRUT'
+        
+        # Calculs
+        poids_terre = poids_brut - poids_lave - poids_grenailles - poids_dechets
+        tare_reelle = ((poids_dechets + poids_terre) / poids_brut) * 100 if poids_brut > 0 else 0
+        rendement = ((poids_lave + poids_grenailles) / poids_brut) * 100 if poids_brut > 0 else 0
+        
+        # Validation cohérence
+        if abs(poids_terre) > 100:
+            return False, f"❌ Incohérent : Terre = {poids_terre:.0f} kg (vérifier saisie)"
+        
+        # Mettre à jour le job
+        terminated_by = st.session_state.get('username', 'system')
+        cursor.execute("""
+            UPDATE lavages_jobs
+            SET statut = 'TERMINÉ',
+                date_terminaison = CURRENT_TIMESTAMP,
+                poids_lave_net_kg = %s,
+                poids_grenailles_kg = %s,
+                poids_dechets_kg = %s,
+                poids_terre_calcule_kg = %s,
+                tare_reelle_pct = %s,
+                rendement_pct = %s,
+                site_destination = %s,
+                emplacement_destination = %s,
+                terminated_by = %s,
+                notes = %s
+            WHERE id = %s
+        """, (poids_lave, poids_grenailles, poids_dechets, poids_terre,
+              tare_reelle, rendement, site_dest, emplacement_dest,
+              terminated_by, notes, job_id))
+        
+        # ============================================================
+        # WORKFLOW DIFFÉRENCIÉ SELON STATUT_SOURCE
+        # ============================================================
+        
+        if statut_source == 'BRUT':
+            # ========== CAS 1 : SOURCE BRUT → LAVÉ + GRENAILLES_BRUTES ==========
+            
+            # Créer stock LAVÉ
+            if poids_lave > 0:
+                nb_unites_lave = int(poids_lave / 1900)  # Estimation pallox lavés
+                cursor.execute("""
+                    INSERT INTO stock_emplacements (
+                        lot_id, site_stockage, emplacement_stockage,
+                        nombre_unites, type_conditionnement, poids_total_kg,
+                        statut_lavage, lavage_job_id, is_active
+                    ) VALUES (%s, %s, %s, %s, 'Pallox', %s, 'LAVÉ', %s, TRUE)
+                """, (lot_id, site_dest, emplacement_dest, nb_unites_lave, poids_lave, job_id))
+                
+                # Mouvement LAVÉ
+                cursor.execute("""
+                    INSERT INTO stock_mouvements (
+                        lot_id, type_mouvement, site_destination, emplacement_destination,
+                        quantite, type_conditionnement, poids_kg, user_action, notes
+                    ) VALUES (%s, 'LAVAGE_CREE_LAVE', %s, %s, %s, 'Pallox', %s, %s, %s)
+                """, (lot_id, site_dest, emplacement_dest, nb_unites_lave, poids_lave,
+                      terminated_by, f"Job #{job_id} - BRUT → LAVÉ"))
+            
+            # Créer stock GRENAILLES_BRUTES (pas GRENAILLES)
+            if poids_grenailles > 0:
+                nb_unites_gren = int(poids_grenailles / 1200)  # Estimation petit pallox grenailles
+                cursor.execute("""
+                    INSERT INTO stock_emplacements (
+                        lot_id, site_stockage, emplacement_stockage,
+                        nombre_unites, type_conditionnement, poids_total_kg,
+                        statut_lavage, lavage_job_id, is_active
+                    ) VALUES (%s, %s, %s, %s, 'Petit Pallox', %s, 'GRENAILLES', %s, TRUE)
+                """, (lot_id, site_dest, emplacement_dest, nb_unites_gren, poids_grenailles, job_id))
+                
+                # Mouvement GRENAILLES
+                cursor.execute("""
+                    INSERT INTO stock_mouvements (
+                        lot_id, type_mouvement, site_destination, emplacement_destination,
+                        quantite, type_conditionnement, poids_kg, user_action, notes
+                    ) VALUES (%s, 'LAVAGE_CREE_GRENAILLES', %s, %s, %s, 'Petit Pallox', %s, %s, %s)
+                """, (lot_id, site_dest, emplacement_dest, nb_unites_gren, poids_grenailles,
+                      terminated_by, f"Job #{job_id} - BRUT → GRENAILLES"))
+        
+        else:
+            # ========== CAS 2 : SOURCE GRENAILLES_BRUTES → GRENAILLES_LAVÉES ==========
+            
+            # Créer stock GRENAILLES_LAVÉES (statut spécifique)
+            if poids_lave > 0:
+                nb_unites_gren_lavees = int(poids_lave / 1200)
+                cursor.execute("""
+                    INSERT INTO stock_emplacements (
+                        lot_id, site_stockage, emplacement_stockage,
+                        nombre_unites, type_conditionnement, poids_total_kg,
+                        statut_lavage, lavage_job_id, is_active
+                    ) VALUES (%s, %s, %s, %s, 'Petit Pallox', %s, 'GRENAILLES_LAVÉES', %s, TRUE)
+                """, (lot_id, site_dest, emplacement_dest, nb_unites_gren_lavees, poids_lave, job_id))
+                
+                # Mouvement GRENAILLES_LAVÉES
+                cursor.execute("""
+                    INSERT INTO stock_mouvements (
+                        lot_id, type_mouvement, site_destination, emplacement_destination,
+                        quantite, type_conditionnement, poids_kg, user_action, notes
+                    ) VALUES (%s, 'LAVAGE_GRENAILLES_CREE_LAVEES', %s, %s, %s, 'Petit Pallox', %s, %s, %s)
+                """, (lot_id, site_dest, emplacement_dest, nb_unites_gren_lavees, poids_lave,
+                      terminated_by, f"Job #{job_id} - GRENAILLES → LAVÉES"))
+            
+            # Note : Pas de grenailles secondaires (déchets uniquement)
+        
+        # ============================================================
+        # DÉDUIRE DU STOCK SOURCE (commun aux 2 cas)
+        # ============================================================
+        
+        if emplacement_id:
+            # Déduire quantité du stock source
+            cursor.execute("""
+                UPDATE stock_emplacements
+                SET nombre_unites = nombre_unites - %s,
+                    poids_total_kg = poids_total_kg - %s
+                WHERE id = %s
+            """, (quantite_pallox, poids_brut, emplacement_id))
+            
+            # Vérifier si stock épuisé
+            cursor.execute("SELECT nombre_unites FROM stock_emplacements WHERE id = %s", (emplacement_id,))
+            result = cursor.fetchone()
+            if result and result['nombre_unites'] <= 0:
+                cursor.execute("UPDATE stock_emplacements SET is_active = FALSE WHERE id = %s", (emplacement_id,))
+            
+            # Mouvement déduction
+            cursor.execute("""
+                INSERT INTO stock_mouvements (
+                    lot_id, type_mouvement, quantite, type_conditionnement, poids_kg,
+                    user_action, notes
+                ) VALUES (%s, 'LAVAGE_DEDUIT_SOURCE', %s, 'Pallox', %s, %s, %s)
+            """, (lot_id, quantite_pallox, poids_brut, terminated_by,
+                  f"Job #{job_id} - Déduit stock {statut_source}"))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        type_resultat = "LAVÉ + GRENAILLES" if statut_source == 'BRUT' else "GRENAILLES_LAVÉES"
+        return True, f"✅ Job terminé - {type_resultat} créés (Rdt: {rendement:.1f}%)"
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
 # ============================================================
 # ✅ PHASE 1 : FONCTIONS ADMIN
 # ============================================================
@@ -826,7 +1004,7 @@ if 'selected_ligne' not in st.session_state:
 # HEADER + KPIs
 # ============================================================
 
-st.title("🧼 Planning Lavage V8 - Phase 4")
+st.title("🧼 Planning Lavage V8 - Phase 5")
 st.caption("*Gestion jobs lavage - Architecture pause intercalée + Admin*")
 
 kpis = get_kpis_lavage()
@@ -1017,6 +1195,98 @@ with tab1:
                                         if st.button("❌", key=f"del_{elem['id']}", help="Retirer"):
                                             retirer_element_planning(int(elem['id']))
                                             st.rerun()
+                                
+                                elif job_statut == 'EN_COURS':
+                                    # ✅ PHASE 5 : Bouton Terminer
+                                    if st.button("✅ Terminer", key=f"finish_{elem['id']}", help="Terminer le job", use_container_width=True):
+                                        st.session_state[f'show_finish_form_{elem["id"]}'] = True
+                                        st.rerun()
+                                    
+                                    # Formulaire terminaison
+                                    if st.session_state.get(f'show_finish_form_{elem["id"]}', False):
+                                        st.markdown("---")
+                                        st.markdown("**📋 Saisir les tares**")
+                                        
+                                        job_id = int(elem['job_id'])
+                                        poids_brut = float(elem['poids_brut_kg']) if pd.notna(elem['poids_brut_kg']) else 0
+                                        source_type = elem.get('statut_source', 'BRUT')
+                                        
+                                        if source_type == 'BRUT':
+                                            st.caption("🥔 Source BRUT → Stock LAVÉ + GRENAILLES_BRUTES")
+                                        else:
+                                            st.caption("🔄 Source GRENAILLES → Stock GRENAILLES_LAVÉES")
+                                        
+                                        col1, col2 = st.columns(2)
+                                        
+                                        with col1:
+                                            poids_lave = st.number_input(
+                                                "Poids lavé (kg) *",
+                                                min_value=0.0,
+                                                value=poids_brut * 0.75,
+                                                step=10.0,
+                                                key=f"lave_{elem['id']}"
+                                            )
+                                            
+                                            poids_grenailles = st.number_input(
+                                                "Poids grenailles (kg) *",
+                                                min_value=0.0,
+                                                value=poids_brut * 0.05 if source_type == 'BRUT' else 0.0,
+                                                step=10.0,
+                                                key=f"gren_{elem['id']}",
+                                                disabled=(source_type != 'BRUT')
+                                            )
+                                        
+                                        with col2:
+                                            poids_dechets = st.number_input(
+                                                "Poids déchets (kg) *",
+                                                min_value=0.0,
+                                                value=poids_brut * 0.05,
+                                                step=10.0,
+                                                key=f"dech_{elem['id']}"
+                                            )
+                                            
+                                            poids_terre_calc = poids_brut - poids_lave - poids_grenailles - poids_dechets
+                                            st.metric("Terre calculée", f"{poids_terre_calc:.0f} kg")
+                                        
+                                        st.markdown("---")
+                                        
+                                        emplacements = [
+                                            ("A-01", "Saint Flavy - Zone A-01"),
+                                            ("A-02", "Saint Flavy - Zone A-02"),
+                                            ("B-01", "Saint Flavy - Zone B-01")
+                                        ]
+                                        emplacement_dest = st.selectbox(
+                                            "Emplacement destination *",
+                                            options=[""] + [e[0] for e in emplacements],
+                                            format_func=lambda x: dict(emplacements).get(x, "Sélectionner...") if x else "Sélectionner...",
+                                            key=f"empl_{elem['id']}"
+                                        )
+                                        
+                                        notes_fin = st.text_area("Notes", key=f"notes_{elem['id']}")
+                                        
+                                        col_save, col_cancel = st.columns(2)
+                                        
+                                        with col_save:
+                                            if st.button("💾 Valider", key=f"save_{elem['id']}", type="primary"):
+                                                if not emplacement_dest:
+                                                    st.error("❌ Emplacement obligatoire")
+                                                else:
+                                                    success, message = terminer_job(
+                                                        job_id, poids_lave, poids_grenailles, poids_dechets,
+                                                        "SAINT_FLAVY", emplacement_dest, notes_fin
+                                                    )
+                                                    if success:
+                                                        st.success(message)
+                                                        st.balloons()
+                                                        st.session_state.pop(f'show_finish_form_{elem["id"]}')
+                                                        st.rerun()
+                                                    else:
+                                                        st.error(message)
+                                        
+                                        with col_cancel:
+                                            if st.button("❌ Annuler", key=f"cancel_{elem['id']}"):
+                                                st.session_state.pop(f'show_finish_form_{elem["id"]}')
+                                                st.rerun()
                             else:
                                 # Temps custom
                                 st.markdown(f"""<div class="planned-custom">
@@ -1499,10 +1769,36 @@ with tab4:
 # ============================================================
 
 with tab5:
-    st.subheader("ℹ️ Planning Lavage V8 - Phases 1 à 4")
+    st.subheader("ℹ️ Planning Lavage V8 - Phases 1 à 5")
     
     st.markdown("""
-    ### ✅ Phase 4 (ACTUELLE) - Créer Job
+    ### ✅ Phase 5 (ACTUELLE) - Workflow Grenailles
+    
+    **1. Terminaison différenciée** 🔄
+    - Détection automatique statut_source
+    - BRUT → Crée LAVÉ + GRENAILLES_BRUTES
+    - GRENAILLES_BRUTES → Crée GRENAILLES_LAVÉES
+    
+    **2. Interface terminaison** ✅
+    - Bouton "Terminer" sur jobs EN_COURS
+    - Formulaire saisie tares
+    - Calcul automatique terre
+    - Validation emplacement destination
+    
+    **3. Stocks créés selon source** 📦
+    - **Source BRUT** 🥔:
+      - Stock LAVÉ (statut_lavage = 'LAVÉ')
+      - Stock GRENAILLES_BRUTES (statut_lavage = 'GRENAILLES')
+    - **Source GRENAILLES** 🔄:
+      - Stock GRENAILLES_LAVÉES (statut_lavage = 'GRENAILLES_LAVÉES')
+      - Pas de grenailles secondaires
+    
+    **4. Traçabilité complète** 🔗
+    - lavage_job_id dans stock_emplacements
+    - Mouvements stocks différenciés
+    - Déduction stock source automatique
+    
+    ### ✅ Phase 4 - Créer Job
     
     **1. Onglet dédié "Créer Job"** ➕
     - Interface complète création jobs
@@ -1558,31 +1854,47 @@ with tab5:
     - Validation stock par emplacement
     - Recalcul heures fin automatique
     
-    ### 📋 Prochaines Évolutions
-    
-    **Phase 5** : Workflow Grenailles Complet
-    - Terminer job GRENAILLES_BRUTES
-    - Créer stock GRENAILLES_LAVÉES
-    - Traçabilité totale parent→enfant
-    
-    **Phase 6** : Stats Avancées & Export
-    - Répartition BRUT/GRENAILLES graphique
-    - Taux transformation grenailles
-    - Export PDF planning complet
-    
-    ### 🎯 Workflow Complet
+    ### 🎯 Workflow Complet (Phases 1-5)
     
     **Lavage BRUT** 🥔
-    1. Créer Job source BRUT
-    2. Placer dans planning
-    3. Démarrer job
-    4. Terminer → Stock LAVÉ + GRENAILLES
+    1. Créer Job source BRUT (Phase 4) ✅
+    2. Badge 🥔 visible partout (Phase 3) ✅
+    3. Placer dans planning (Phase 1) ✅
+    4. Démarrer job → EN_COURS (Phase 1) ✅
+    5. Terminer job → TERMINÉ (Phase 5) ✅
+       - Stock LAVÉ créé
+       - Stock GRENAILLES_BRUTES créé
+       - Stock BRUT déduit
     
-    **Lavage GRENAILLES** 🔄 (Phase 5)
-    1. Créer Job source GRENAILLES_BRUTES
-    2. Placer dans planning
-    3. Démarrer job
-    4. Terminer → Stock GRENAILLES_LAVÉES
+    **Lavage GRENAILLES** 🔄
+    1. Créer Job source GRENAILLES (Phase 4) ✅
+    2. Badge 🔄 visible partout (Phase 3) ✅
+    3. Placer dans planning (Phase 1) ✅
+    4. Démarrer job → EN_COURS (Phase 1) ✅
+    5. Terminer job → TERMINÉ (Phase 5) ✅
+       - Stock GRENAILLES_LAVÉES créé
+       - Stock GRENAILLES déduit
+    
+    ### 📊 Types de Stock (5 statuts)
+    
+    | Statut | Description | Provenance |
+    |--------|-------------|------------|
+    | BRUT | Pommes de terre brutes | Achat/Récolte |
+    | LAVÉ | Pommes de terre lavées commercialisables | Job BRUT |
+    | GRENAILLES | Grenailles brutes (petit calibre) | Job BRUT |
+    | GRENAILLES_LAVÉES | Grenailles lavées commercialisables | Job GRENAILLES |
+    | TERMINÉ | Épuisé | Vente/Utilisation |
+    
+    ### 🔄 Cycle Complet Grenailles
+    
+    ```
+    BRUT (10T)
+      ↓ [Job #1 BRUT]
+      ├→ LAVÉ (7.5T)
+      └→ GRENAILLES (0.5T)
+           ↓ [Job #2 GRENAILLES]
+           └→ GRENAILLES_LAVÉES (0.4T)
+    ```
     
     Ce système gère le cycle complet de transformation des pommes de terre !
     """)
