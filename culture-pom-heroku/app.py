@@ -94,6 +94,7 @@ pages = {
     ],
     "🏭 Production": [
         st.Page("pages/05_Planning_Lavage.py", title="Planning Lavage", icon="🧼"),
+        st.Page("pages/05b_Planning_Lavage_Bis.py", title="Lavage Bis", icon="🧼"),
         st.Page("pages/08_Planning_Production.py", title="Planning Production", icon="🏭"),
     ],
     "📈 Commercial": [
