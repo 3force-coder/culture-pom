@@ -166,7 +166,7 @@ def fullcalendar_component(events, editable=False, droppable=False, height=650, 
         editing_mode_class=editing_mode_class,
     )
     
-      component_value = components.html(
+    component_value = components.html(
         component_html,
         height=height,
         scrolling=False,
@@ -174,4 +174,3 @@ def fullcalendar_component(events, editable=False, droppable=False, height=650, 
     )
     
     return component_value
-
