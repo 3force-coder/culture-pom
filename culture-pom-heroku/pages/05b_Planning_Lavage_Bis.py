@@ -384,7 +384,7 @@ with col_jobs:
 
         draggable_html += """
         </div>
-        
+
         <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js'></script>
         <script src='https://cdn.jsdelivr.net/npm/@fullcalendar/interaction@6.1.10/index.global.min.js'></script>
         <script>
@@ -433,7 +433,7 @@ with col_calendar:
         key=f"calendar_lavage_bis_{selected_line}"
     )
 
-    if calendar_event:
+    if isinstance(calendar_event, dict):
         event_type = calendar_event.get("type")
 
         if event_type == "external_drop":
