@@ -650,7 +650,7 @@ with tab3:
         
         st.markdown("---")
         
-        # --- Produit ---
+        # --- Produit et Sur-emballage ---
         st.markdown("##### Produit et conditionnement")
         c1, c2, c3 = st.columns(3)
         
@@ -660,98 +660,153 @@ with tab3:
                                    format_func=lambda i: prod_labels[i], key="s_prod")
             produit = produits[prod_idx]
             code_produit = produit['code_produit']
-            poids_uvc_kg = normaliser_poids_kg(produit['poids_unitaire'], produit['unite_poids'])
+            # Poids unitaire du référentiel (converti en KG)
+            poids_ref_kg = normaliser_poids_kg(produit['poids_unitaire'], produit['unite_poids'])
+            # Afficher l'unité d'origine pour info
+            unite_origine = (produit['unite_poids'] or 'KG').upper().strip()
+            poids_origine = float(produit['poids_unitaire']) if produit['poids_unitaire'] else 0
         
         with c2:
             se_labels = [f"{se['libelle']} ({int(se['nb_uvc'])} UVC)" for se in sur_emballages]
             se_idx = st.selectbox("Sur-emballage *", range(len(se_labels)),
                                  format_func=lambda i: se_labels[i], key="s_se")
             sur_emb = sur_emballages[se_idx]
-            nb_uvc_par_se = int(sur_emb['nb_uvc'])
+            nb_uvc_ref = int(sur_emb['nb_uvc'])
             se_id = int(sur_emb['id'])
         
         with c3:
             nb_se = st.number_input("Nombre de sur-emballages *",
                                     min_value=1, max_value=9999, value=1, step=1, key="s_nb")
         
-        # --- Calcul automatique ---
-        if poids_uvc_kg <= 0:
-            st.error(f"⚠️ Le produit **{code_produit}** n'a pas de poids unitaire renseigné ! "
-                    f"Complétez-le dans Sources > Produits Commerciaux avant de continuer.")
+        # --- Paramètres ajustables (pré-remplis depuis référentiel) ---
+        st.markdown("---")
+        st.markdown("##### ⚙️ Paramètres de calcul *(modifiables si besoin)*")
+        
+        if poids_ref_kg > 0:
+            st.caption(f"Pré-rempli depuis le référentiel : {poids_origine} {unite_origine}/UVC, "
+                      f"{nb_uvc_ref} UVC/{sur_emb['libelle']}")
         else:
-            total_uvc = nb_se * nb_uvc_par_se
-            total_kg = total_uvc * poids_uvc_kg
-            total_tonnes = total_kg / 1000
+            st.warning(f"⚠️ Poids unitaire non renseigné pour **{code_produit}** — "
+                      f"saisissez-le ci-dessous pour continuer")
+        
+        pc1, pc2, pc3 = st.columns(3)
+        
+        with pc1:
+            # Poids unitaire modifiable — en KG avec conversion si G
+            poids_uvc_kg = st.number_input(
+                "Poids unitaire UVC (kg) *",
+                min_value=0.001,
+                max_value=500.0,
+                value=max(poids_ref_kg, 0.001),
+                step=0.1,
+                format="%.3f",
+                key="s_poids_uvc",
+                help="Poids d'une UVC en kilogrammes. Ex: filet 2,5kg → 2.500"
+            )
+        
+        with pc2:
+            # Nb UVC par sur-emballage modifiable
+            nb_uvc_par_se = st.number_input(
+                f"UVC par {sur_emb['libelle']} *",
+                min_value=1,
+                max_value=9999,
+                value=nb_uvc_ref,
+                step=1,
+                key="s_nb_uvc",
+                help=f"Nombre d'UVC dans un(e) {sur_emb['libelle']}. Référentiel : {nb_uvc_ref}"
+            )
+        
+        with pc3:
+            # Afficher si le poids a été modifié par rapport au référentiel
+            if poids_uvc_kg != poids_ref_kg:
+                st.info(f"⚡ Poids modifié : {poids_ref_kg:.3f} → {poids_uvc_kg:.3f} kg")
+            if nb_uvc_par_se != nb_uvc_ref:
+                st.info(f"⚡ UVC modifié : {nb_uvc_ref} → {nb_uvc_par_se}")
+            if poids_uvc_kg == poids_ref_kg and nb_uvc_par_se == nb_uvc_ref:
+                st.success("✅ Valeurs référentiel")
+        
+        # --- Calcul automatique ---
+        total_uvc = nb_se * nb_uvc_par_se
+        total_kg = total_uvc * poids_uvc_kg
+        total_tonnes = total_kg / 1000
+        
+        st.markdown("---")
+        st.markdown("##### 🧮 Calcul automatique")
+        calc_c1, calc_c2, calc_c3, calc_c4 = st.columns(4)
+        with calc_c1:
+            st.metric("📦 Sur-emballages", f"{nb_se}")
+        with calc_c2:
+            st.metric("🏷️ UVC totales", f"{total_uvc:,}".replace(',', ' '))
+        with calc_c3:
+            st.metric("⚖️ Poids total", f"{total_kg:,.0f} kg".replace(',', ' '))
+        with calc_c4:
+            st.metric("📊 Tonnage", f"{total_tonnes:.3f} T")
+        
+        st.caption(
+            f"*{nb_se} {sur_emb['libelle']}(s) × {nb_uvc_par_se} UVC × "
+            f"{poids_uvc_kg:.3f} kg = {total_kg:,.0f} kg = {total_tonnes:.3f} T*".replace(',', ' ')
+        )
+        
+        # --- Date et infos complémentaires ---
+        st.markdown("---")
+        st.markdown("##### Informations complémentaires")
+        ic1, ic2, ic3 = st.columns(3)
+        
+        with ic1:
+            date_mvt = st.date_input("Date *", value=date.today(), key="s_date")
+        with ic2:
+            ref = st.text_input("Référence (BL, job...)", key="s_ref")
+        with ic3:
+            client = st.text_input("Client", key="s_client")
+        
+        notes = st.text_area("Notes", height=68, key="s_notes")
+        
+        # --- Prévisualisation ---
+        signe = "+" if is_entree else "-"
+        st.info(
+            f"**Récapitulatif** : {type_sel} | {code_produit} | "
+            f"{signe}{nb_se} {sur_emb['libelle']}(s) | "
+            f"{signe}{total_uvc} UVC | {signe}{total_tonnes:.3f} T | "
+            f"{date_mvt.strftime('%d/%m/%Y')}"
+        )
+        
+        # --- Validation ---
+        can_save = True
+        if poids_uvc_kg <= 0.001:
+            st.error("Le poids unitaire doit être supérieur à 0")
+            can_save = False
+        if total_tonnes <= 0:
+            st.error("Le tonnage calculé est nul")
+            can_save = False
+        
+        # --- Enregistrer ---
+        if st.button("💾 Enregistrer le mouvement", type="primary",
+                    use_container_width=True, key="btn_save", disabled=not can_save):
+            username = st.session_state.get('username', 'inconnu')
             
-            # Affichage calcul
-            st.markdown("---")
-            st.markdown("##### 🧮 Calcul automatique")
-            calc_c1, calc_c2, calc_c3, calc_c4 = st.columns(4)
-            with calc_c1:
-                st.metric("📦 Sur-emballages", f"{nb_se}")
-            with calc_c2:
-                st.metric("🏷️ UVC totales", f"{total_uvc:,}".replace(',', ' '))
-            with calc_c3:
-                st.metric("⚖️ Poids total", f"{total_kg:,.0f} kg".replace(',', ' '))
-            with calc_c4:
-                st.metric("📊 Tonnage", f"{total_tonnes:.3f} T")
-            
-            st.caption(
-                f"*{nb_se} × {nb_uvc_par_se} UVC × {poids_uvc_kg:.2f} kg = "
-                f"{total_kg:,.0f} kg = {total_tonnes:.3f} T*".replace(',', ' ')
+            ok, msg = ajouter_mouvement(
+                code_produit=code_produit,
+                type_mouvement=type_mvt,
+                date_mouvement=date_mvt,
+                sur_emballage_id=se_id,
+                nb_sur_emballages=nb_se,
+                nb_uvc=total_uvc,
+                poids_unitaire_kg=poids_uvc_kg,
+                poids_total_kg=total_kg,
+                quantite_tonnes=total_tonnes,
+                source='MANUEL',
+                reference=ref if ref else None,
+                client=client if client else None,
+                notes=notes if notes else None,
+                created_by=username
             )
             
-            # --- Date et infos complémentaires ---
-            st.markdown("---")
-            st.markdown("##### Informations complémentaires")
-            ic1, ic2, ic3 = st.columns(3)
-            
-            with ic1:
-                date_mvt = st.date_input("Date *", value=date.today(), key="s_date")
-            with ic2:
-                ref = st.text_input("Référence (BL, job...)", key="s_ref")
-            with ic3:
-                client = st.text_input("Client", key="s_client")
-            
-            notes = st.text_area("Notes", height=68, key="s_notes")
-            
-            # --- Prévisualisation ---
-            signe = "+" if is_entree else "-"
-            st.info(
-                f"**Récapitulatif** : {type_sel} | {code_produit} | "
-                f"{signe}{nb_se} {sur_emb['libelle']}(s) | "
-                f"{signe}{total_uvc} UVC | {signe}{total_tonnes:.3f} T | "
-                f"{date_mvt.strftime('%d/%m/%Y')}"
-            )
-            
-            # --- Enregistrer ---
-            if st.button("💾 Enregistrer le mouvement", type="primary",
-                        use_container_width=True, key="btn_save"):
-                username = st.session_state.get('username', 'inconnu')
-                
-                ok, msg = ajouter_mouvement(
-                    code_produit=code_produit,
-                    type_mouvement=type_mvt,
-                    date_mouvement=date_mvt,
-                    sur_emballage_id=se_id,
-                    nb_sur_emballages=nb_se,
-                    nb_uvc=total_uvc,
-                    poids_unitaire_kg=poids_uvc_kg,
-                    poids_total_kg=total_kg,
-                    quantite_tonnes=total_tonnes,
-                    source='MANUEL',
-                    reference=ref if ref else None,
-                    client=client if client else None,
-                    notes=notes if notes else None,
-                    created_by=username
-                )
-                
-                if ok:
-                    st.success(f"✅ {msg}")
-                    st.balloons()
-                    st.rerun()
-                else:
-                    st.error(f"❌ {msg}")
+            if ok:
+                st.success(f"✅ {msg}")
+                st.balloons()
+                st.rerun()
+            else:
+                st.error(f"❌ {msg}")
 
 # ============================================================================
 # ONGLET 4 : ÉVOLUTION
