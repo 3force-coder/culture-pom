@@ -248,7 +248,7 @@ def sauver_mapping_suremballage(code_emballage, sur_emballage_id, description=No
 
 
 def importer_fichier_frulog(uploaded_file, username='inconnu'):
-    """Import complet fichier Excel Frulog"""
+    """Import complet fichier Excel Frulog avec upsert sur no_de_bon"""
     try:
         df = pd.read_excel(uploaded_file, sheet_name=0)
         if len(df) == 0:
@@ -258,6 +258,10 @@ def importer_fichier_frulog(uploaded_file, username='inconnu'):
         known = list(COLONNES_MAPPING.values())
         cols_ok = [c for c in known if c in df_r.columns]
         df_c = df_r[cols_ok].copy()
+
+        # Vérifier que no_de_bon est présent
+        if 'no_de_bon' not in df_c.columns:
+            return False, "Colonne 'No de bon' introuvable dans le fichier"
 
         for col in DATE_COLS:
             if col in df_c.columns:
@@ -300,7 +304,6 @@ def importer_fichier_frulog(uploaded_file, username='inconnu'):
         # Charger mappings existants
         cursor.execute("SELECT cle_mapping, code_produit_commercial FROM frulog_mapping_produit WHERE is_active=TRUE")
         map_produit = {r['cle_mapping']: r['code_produit_commercial'] for r in cursor.fetchall()}
-
         cursor.execute("SELECT code_emballage, sur_emballage_id FROM frulog_mapping_suremballage WHERE is_active=TRUE")
         map_se = {r['code_emballage']: r['sur_emballage_id'] for r in cursor.fetchall()}
 
@@ -310,35 +313,90 @@ def importer_fichier_frulog(uploaded_file, username='inconnu'):
         df_c['sur_emballage_id'] = df_c['emballage'].apply(
             lambda e: map_se.get(str(e).strip().upper()) if e and str(e).strip() != '.' else None)
 
-        df_c['import_id'] = import_id
-        insert_cols = ['import_id'] + cols_ok + ['code_produit_commercial', 'sur_emballage_id', 'annee', 'semaine']
-        insert_cols = list(dict.fromkeys(insert_cols))
+        # Charger les no_de_bon déjà en base avec leurs champs de comparaison
+        cursor.execute("""
+            SELECT no_de_bon, etat, pds_net, montant_euro, type, nb_col
+            FROM frulog_lignes WHERE no_de_bon IS NOT NULL
+        """)
+        existing = {}
+        for r in cursor.fetchall():
+            existing[r['no_de_bon']] = {
+                'etat': r['etat'], 'pds_net': float(r['pds_net']) if r['pds_net'] else None,
+                'montant_euro': float(r['montant_euro']) if r['montant_euro'] else None,
+                'type': r['type'], 'nb_col': r['nb_col']
+            }
 
-        placeholders = ', '.join(['%s'] * len(insert_cols))
-        col_names = ', '.join(insert_cols)
+        # Colonnes pour insert/update
+        data_cols = [c for c in cols_ok if c != 'no_de_bon']
+        data_cols += ['code_produit_commercial', 'sur_emballage_id', 'annee', 'semaine']
+        data_cols = list(dict.fromkeys(data_cols))
 
-        inserted = 0
+        # Colonnes de comparaison pour détecter les changements
+        compare_keys = ['etat', 'pds_net', 'montant_euro', 'type', 'nb_col']
+
+        nb_new = 0
+        nb_updated = 0
+        nb_unchanged = 0
+
+        def to_python(val):
+            if val is None or (isinstance(val, float) and np.isnan(val)) or val is pd.NaT:
+                return None
+            elif isinstance(val, (np.integer, np.int64)):
+                return int(val)
+            elif isinstance(val, (np.floating, np.float64)):
+                return float(val)
+            return val
+
         for _, row in df_c.iterrows():
-            values = []
-            for col in insert_cols:
-                val = row.get(col)
-                if val is None or (isinstance(val, float) and np.isnan(val)):
-                    values.append(None)
-                elif isinstance(val, (np.integer, np.int64)):
-                    values.append(int(val))
-                elif isinstance(val, (np.floating, np.float64)):
-                    values.append(float(val))
-                elif val is pd.NaT:
-                    values.append(None)
+            bon = to_python(row.get('no_de_bon'))
+            if not bon:
+                continue
+
+            row_values = {col: to_python(row.get(col)) for col in data_cols}
+
+            if bon in existing:
+                # Comparer les champs clés
+                ex = existing[bon]
+                changed = False
+                for k in compare_keys:
+                    new_val = to_python(row.get(k))
+                    old_val = ex.get(k)
+                    # Comparaison tolérante aux types
+                    if str(new_val) != str(old_val):
+                        changed = True
+                        break
+
+                if changed:
+                    # UPDATE
+                    set_parts = [f"{col} = %s" for col in data_cols]
+                    set_parts.append("import_id = %s")
+                    vals = [row_values[col] for col in data_cols] + [import_id, bon]
+                    cursor.execute(
+                        f"UPDATE frulog_lignes SET {', '.join(set_parts)} WHERE no_de_bon = %s",
+                        vals
+                    )
+                    nb_updated += 1
                 else:
-                    values.append(val)
-            cursor.execute(f"INSERT INTO frulog_lignes ({col_names}) VALUES ({placeholders})", values)
-            inserted += 1
+                    nb_unchanged += 1
+            else:
+                # INSERT
+                all_cols = ['import_id', 'no_de_bon'] + data_cols
+                all_vals = [import_id, bon] + [row_values[col] for col in data_cols]
+                placeholders = ', '.join(['%s'] * len(all_cols))
+                cursor.execute(
+                    f"INSERT INTO frulog_lignes ({', '.join(all_cols)}) VALUES ({placeholders})",
+                    all_vals
+                )
+                nb_new += 1
 
         conn.commit()
         nb_mapped = df_c['code_produit_commercial'].notna().sum()
         cursor.close(); conn.close()
-        return True, f"Import #{import_id} : {inserted} lignes ({nb_e} expéd., {nb_a} avoirs). {nb_mapped}/{nb_total} mappées."
+
+        return True, (f"Import #{import_id} : {nb_total} lignes traitées → "
+                      f"**{nb_new} nouvelles**, **{nb_updated} modifiées**, "
+                      f"{nb_unchanged} inchangées. "
+                      f"{nb_mapped}/{nb_total} mappées.")
     except Exception as e:
         if 'conn' in locals(): conn.rollback()
         return False, f"Erreur : {str(e)}"
