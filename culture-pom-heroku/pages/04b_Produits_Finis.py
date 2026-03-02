@@ -94,7 +94,7 @@ def normaliser_poids_kg(poids, unite):
 # ============================================================================
 
 def get_stock_actuel():
-    """Calcule le stock actuel par produit (somme des mouvements)"""
+    """Calcule le stock actuel par produit (somme des mouvements) avec fraîcheur"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -112,7 +112,9 @@ def get_stock_actuel():
                 COUNT(*) FILTER (WHERE m.quantite_tonnes < 0) as nb_sorties,
                 COALESCE(SUM(m.quantite_tonnes) FILTER (WHERE m.quantite_tonnes > 0), 0) as total_entrees_t,
                 COALESCE(ABS(SUM(m.quantite_tonnes) FILTER (WHERE m.quantite_tonnes < 0)), 0) as total_sorties_t,
-                MAX(m.date_mouvement) as dernier_mouvement
+                MAX(m.date_mouvement) as dernier_mouvement,
+                MIN(m.date_production) FILTER (WHERE m.quantite_tonnes > 0) as date_prod_plus_ancienne,
+                MAX(m.date_production) FILTER (WHERE m.quantite_tonnes > 0) as date_prod_plus_recente
             FROM mouvements_produits_finis m
             LEFT JOIN ref_produits_commerciaux pc 
                 ON m.code_produit_commercial = pc.code_produit
@@ -129,6 +131,13 @@ def get_stock_actuel():
                         'total_sur_emb', 'total_uvc']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            
+            # Calculer l'âge en jours depuis la date de prod la plus ancienne
+            today = date.today()
+            df['age_jours'] = df['date_prod_plus_ancienne'].apply(
+                lambda d: (today - d).days if pd.notna(d) and d is not None else None
+            )
+            
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -220,7 +229,7 @@ def get_mouvements(code_produit=None, type_mouvement=None, date_debut=None, date
                 m.type_mouvement, m.quantite_tonnes, m.poids_total_kg,
                 m.nb_sur_emballages, m.nb_uvc, m.poids_unitaire_kg,
                 COALESCE(se.libelle, '') as sur_emballage,
-                m.date_mouvement, m.annee, m.semaine,
+                m.date_mouvement, m.date_production, m.annee, m.semaine,
                 m.source, m.reference, m.client, m.notes,
                 m.created_by, m.created_at
             FROM mouvements_produits_finis m
@@ -331,6 +340,7 @@ def get_sur_emballages_actifs():
 def ajouter_mouvement(code_produit, type_mouvement, date_mouvement,
                       sur_emballage_id, nb_sur_emballages, nb_uvc, 
                       poids_unitaire_kg, poids_total_kg, quantite_tonnes,
+                      date_production=None,
                       source='MANUEL', reference=None, client=None, 
                       notes=None, created_by=None):
     """Ajoute un mouvement de stock produit fini"""
@@ -358,14 +368,16 @@ def ajouter_mouvement(code_produit, type_mouvement, date_mouvement,
                  date_mouvement, annee, semaine, 
                  sur_emballage_id, nb_sur_emballages, nb_uvc,
                  poids_unitaire_kg, poids_total_kg,
+                 date_production,
                  source, reference, client, notes, created_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """, (
             code_produit, type_mouvement, quantite_tonnes,
             date_mouvement, iso[0], iso[1],
             sur_emballage_id, nb_sur_emballages, nb_uvc,
             poids_unitaire_kg, poids_total_kg,
+            date_production,
             source, reference, client, notes, created_by
         ))
         
@@ -455,6 +467,19 @@ with tab1:
     df_stock = get_stock_actuel()
     
     if not df_stock.empty:
+        # ⚠️ Alertes fraîcheur globales
+        if 'age_jours' in df_stock.columns:
+            stock_positif = df_stock[df_stock['stock_tonnes'] > 0]
+            alertes_orange = stock_positif[stock_positif['age_jours'] == 2]
+            alertes_rouge = stock_positif[stock_positif['age_jours'] >= 3]
+            
+            if not alertes_rouge.empty:
+                prods_rouge = ", ".join(alertes_rouge['code_produit_commercial'].tolist())
+                st.error(f"🔴 **{len(alertes_rouge)} produit(s) J+3 ou plus — refus client** : {prods_rouge}")
+            if not alertes_orange.empty:
+                prods_orange = ", ".join(alertes_orange['code_produit_commercial'].tolist())
+                st.warning(f"🟠 **{len(alertes_orange)} produit(s) J+2 — à expédier en priorité** : {prods_orange}")
+        
         col_f1, col_f2 = st.columns(2)
         with col_f1:
             marques = ["Toutes"] + sorted(df_stock['marque'].unique().tolist())
@@ -481,8 +506,27 @@ with tab1:
         df_d['Entrées (T)'] = df_d['total_entrees_t'].apply(lambda x: f"{x:.2f}" if x > 0 else "-")
         df_d['Sorties (T)'] = df_d['total_sorties_t'].apply(lambda x: f"{x:.2f}" if x > 0 else "-")
         
-        cols_show = ['code_produit_commercial', 'marque', 'libelle', 'Stock (T)', 'Stock (kg)',
-                     'UVC', 'Sur-Emb.', 'Entrées (T)', 'Sorties (T)', 'dernier_mouvement']
+        # Fraîcheur : âge et alerte
+        def format_fraicheur(row):
+            age = row.get('age_jours')
+            if age is None or pd.isna(age):
+                return "—"
+            age = int(age)
+            if age <= 1:
+                return f"🟢 J+{age}"
+            elif age == 2:
+                return f"🟠 J+{age} ⚠️"
+            else:
+                return f"🔴 J+{age} ❌"
+        
+        df_d['Fraîcheur'] = df_d.apply(format_fraicheur, axis=1)
+        df_d['Date Prod.'] = df_d['date_prod_plus_ancienne'].apply(
+            lambda d: d.strftime('%d/%m/%Y') if pd.notna(d) and d is not None else "—"
+        )
+        
+        cols_show = ['code_produit_commercial', 'marque', 'libelle', 'Stock (T)', 
+                     'Sur-Emb.', 'UVC', 'Date Prod.', 'Fraîcheur',
+                     'Entrées (T)', 'Sorties (T)', 'dernier_mouvement']
         cols_show = [c for c in cols_show if c in df_d.columns]
         
         rename = {'code_produit_commercial': 'Code', 'marque': 'Marque', 'libelle': 'Libellé',
@@ -553,8 +597,10 @@ with tab2:
             lambda x: f"{int(x):+d}" if pd.notna(x) and x != 0 else "-")
         df_md['UVC'] = df_md['nb_uvc'].apply(
             lambda x: f"{int(x):+d}" if pd.notna(x) and x != 0 else "-")
+        df_md['Date Prod.'] = df_md['date_production'].apply(
+            lambda d: d.strftime('%d/%m/%Y') if pd.notna(d) and d is not None else "-")
         
-        cols_mvt = ['id', 'date_mouvement', 'Type', 'code_produit_commercial',
+        cols_mvt = ['id', 'date_mouvement', 'Date Prod.', 'Type', 'code_produit_commercial',
                     'libelle_produit', 'Nb S-E', 'sur_emballage', 'UVC',
                     'Qté (T)', 'Poids (kg)', 'source', 'reference', 'client',
                     'notes', 'created_by']
@@ -764,15 +810,28 @@ with tab3:
         
         # --- Date et infos complémentaires ---
         st.markdown("---")
-        st.markdown("##### Informations complémentaires")
-        ic1, ic2, ic3 = st.columns(3)
+        st.markdown("##### Dates et informations")
+        ic1, ic2, ic3, ic4 = st.columns(4)
         
         with ic1:
-            date_mvt = st.date_input("Date *", value=date.today(), key="s_date")
+            date_prod = st.date_input("Date de production *", value=date.today(), key="s_date_prod",
+                                      help="Date de fabrication — sert au calcul de fraîcheur")
         with ic2:
-            ref = st.text_input("Référence (BL, job...)", key="s_ref")
+            date_mvt = st.date_input("Date du mouvement", value=date.today(), key="s_date",
+                                     help="Date d'enregistrement (entrée/sortie)")
         with ic3:
+            ref = st.text_input("Référence (BL, job...)", key="s_ref")
+        with ic4:
             client = st.text_input("Client", key="s_client")
+        
+        # Alerte fraîcheur en temps réel
+        age_prod = (date.today() - date_prod).days
+        if age_prod >= 3:
+            st.error(f"🔴 Date de production J+{age_prod} — produit refusé par les clients !")
+        elif age_prod == 2:
+            st.warning(f"🟠 Date de production J+{age_prod} — à expédier en priorité !")
+        elif age_prod >= 0:
+            st.success(f"🟢 Fraîcheur OK : J+{age_prod}")
         
         notes = st.text_area("Notes", height=68, key="s_notes")
         
@@ -782,7 +841,7 @@ with tab3:
             f"**Récapitulatif** : {type_sel} | {code_produit} | "
             f"{signe}{nb_se} {sur_emb['libelle']}(s) | "
             f"{signe}{total_uvc} UVC | {signe}{total_tonnes:.3f} T | "
-            f"{date_mvt.strftime('%d/%m/%Y')}"
+            f"Prod: {date_prod.strftime('%d/%m/%Y')} | Mvt: {date_mvt.strftime('%d/%m/%Y')}"
         )
         
         # --- Validation ---
@@ -809,6 +868,7 @@ with tab3:
                 poids_unitaire_kg=poids_uvc_kg,
                 poids_total_kg=total_kg,
                 quantite_tonnes=total_tonnes,
+                date_production=date_prod,
                 source='MANUEL',
                 reference=ref if ref else None,
                 client=client if client else None,
