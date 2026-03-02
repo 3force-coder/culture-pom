@@ -144,7 +144,7 @@ def get_combinaisons_non_mappees_produit():
                    SUM(ABS(COALESCE(fl.pds_net, 0))) as pds_total_kg,
                    COUNT(DISTINCT fl.client) as nb_clients
             FROM frulog_lignes fl
-            WHERE fl.type = 'E' AND fl.produit = 'PTC'
+            WHERE fl.type = 'E' 
               AND fl.code_produit_commercial IS NULL
               AND fl.emballage IS NOT NULL
             GROUP BY fl.emballage, fl.marque
@@ -164,7 +164,7 @@ def get_emballages_non_mappes_se():
                    COUNT(*) as nb_lignes,
                    SUM(COALESCE(fl.nb_col, 0)) as nb_col_total
             FROM frulog_lignes fl
-            WHERE fl.type = 'E' AND fl.produit = 'PTC'
+            WHERE fl.type = 'E' 
               AND fl.sur_emballage_id IS NULL
               AND fl.emballage IS NOT NULL
             GROUP BY fl.emballage
@@ -409,9 +409,9 @@ def get_kpis_frulog():
             SELECT COUNT(*) as total,
                 COUNT(*) FILTER (WHERE type='E') as nb_exp,
                 COUNT(DISTINCT client) FILTER (WHERE type='E') as nb_clients,
-                COALESCE(SUM(pds_net) FILTER (WHERE type='E' AND produit='PTC'), 0) as pds_kg,
+                COALESCE(SUM(pds_net) FILTER (WHERE type='E' ), 0) as pds_kg,
                 COUNT(*) FILTER (WHERE code_produit_commercial IS NOT NULL AND type='E') as mappees,
-                COUNT(*) FILTER (WHERE code_produit_commercial IS NULL AND type='E' AND produit='PTC') as non_mappees,
+                COUNT(*) FILTER (WHERE code_produit_commercial IS NULL AND type='E' ) as non_mappees,
                 COUNT(DISTINCT import_id) as nb_imports
             FROM frulog_lignes
         """)
@@ -423,7 +423,7 @@ def get_kpis_frulog():
 def get_analyse_data(import_id=None):
     try:
         conn = get_connection(); cursor = conn.cursor()
-        where = "WHERE fl.type='E' AND fl.produit='PTC'"
+        where = "WHERE fl.type='E' "
         params = []
         if import_id:
             where += " AND fl.import_id=%s"
@@ -482,7 +482,7 @@ def get_comparaison_previsions():
                 SELECT code_produit_commercial, annee, semaine,
                        SUM(pds_net) / 1000.0 as tonnes_expediees
                 FROM frulog_lignes
-                WHERE type='E' AND produit='PTC' AND code_produit_commercial IS NOT NULL
+                WHERE type='E'  AND code_produit_commercial IS NOT NULL
                 GROUP BY code_produit_commercial, annee, semaine
             ),
             prevu AS (
@@ -740,7 +740,7 @@ with tab4:
             df_s['tonnes'] = df_s['pds_kg'].astype(float) / 1000
             df_s['label'] = df_s.apply(lambda r: f"S{int(r['semaine']):02d}/{int(r['annee'])}", axis=1)
             fig = go.Figure([go.Bar(x=df_s['label'], y=df_s['tonnes'], marker_color='#2196f3')])
-            fig.update_layout(title="Expéditions PTC par semaine (T)", height=350,
+            fig.update_layout(title="Expéditions par semaine (T)", height=350,
                              xaxis_title="Semaine", yaxis_title="Tonnes")
             st.plotly_chart(fig, use_container_width=True)
 
