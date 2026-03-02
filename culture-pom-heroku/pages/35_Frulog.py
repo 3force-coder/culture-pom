@@ -420,61 +420,155 @@ def get_kpis_frulog():
     except: return None
 
 
-def get_analyse_data(import_id=None):
+
+def get_analyse_complete():
+    """Toutes les données d'analyse en une seule connexion"""
     try:
         conn = get_connection(); cursor = conn.cursor()
-        where = "WHERE fl.type='E' "
-        params = []
-        if import_id:
-            where += " AND fl.import_id=%s"
-            params.append(import_id)
+        results = {}
 
-        cursor.execute(f"""
-            SELECT fl.client, COUNT(*) as nb, SUM(COALESCE(fl.pds_net,0)) as pds_kg,
-                   SUM(COALESCE(fl.nb_col,0)) as colis, SUM(COALESCE(fl.montant_euro,0)) as ca
-            FROM frulog_lignes fl {where} GROUP BY fl.client ORDER BY pds_kg DESC
-        """, params)
-        par_client = cursor.fetchall()
+        # KPIs globaux
+        cursor.execute("""
+            SELECT COUNT(*) as total,
+                COUNT(*) FILTER (WHERE type='E') as nb_exp,
+                COUNT(*) FILTER (WHERE type='A') as nb_avoirs,
+                COUNT(DISTINCT client) FILTER (WHERE type='E') as nb_clients,
+                COALESCE(SUM(pds_net) FILTER (WHERE type='E'), 0) as pds_kg,
+                COALESCE(SUM(montant) FILTER (WHERE type='E'), 0) as ca_total,
+                COALESCE(AVG(prix) FILTER (WHERE type='E' AND prix > 0), 0) as prix_moy,
+                COUNT(*) FILTER (WHERE code_produit_commercial IS NOT NULL AND type='E') as mappees,
+                COUNT(*) FILTER (WHERE code_produit_commercial IS NULL AND type='E') as non_mappees,
+                COUNT(DISTINCT import_id) as nb_imports,
+                MIN(date_charg) FILTER (WHERE type='E') as date_min,
+                MAX(date_charg) FILTER (WHERE type='E') as date_max,
+                SUM(nb_col) FILTER (WHERE type='E') as nb_col_total,
+                SUM(nb_pal) FILTER (WHERE type='E') as nb_pal_total,
+                COUNT(DISTINCT variete) FILTER (WHERE type='E') as nb_varietes
+            FROM frulog_lignes
+        """)
+        results['kpis'] = cursor.fetchone()
 
-        cursor.execute(f"""
-            SELECT fl.annee, fl.semaine, COUNT(*) as nb,
-                   SUM(COALESCE(fl.pds_net,0)) as pds_kg, SUM(COALESCE(fl.nb_col,0)) as colis,
-                   COUNT(DISTINCT fl.client) as clients
-            FROM frulog_lignes fl {where} AND fl.annee IS NOT NULL
-            GROUP BY fl.annee, fl.semaine ORDER BY fl.annee, fl.semaine
-        """, params)
-        par_semaine = cursor.fetchall()
+        # Par client
+        cursor.execute("""
+            SELECT client, COUNT(*) as nb_lignes,
+                   SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant,0)) as ca,
+                   SUM(COALESCE(nb_col,0)) as colis, COUNT(DISTINCT variete) as nb_varietes,
+                   AVG(prix) FILTER (WHERE prix > 0) as prix_moy,
+                   MIN(date_charg) as premiere_expe, MAX(date_charg) as derniere_expe
+            FROM frulog_lignes WHERE type='E' GROUP BY client ORDER BY pds_kg DESC
+        """)
+        results['par_client'] = cursor.fetchall()
 
-        cursor.execute(f"""
-            SELECT COALESCE(fl.code_produit_commercial, '❓ Non mappé') as produit,
-                   COUNT(*) as nb, SUM(COALESCE(fl.pds_net,0)) as pds_kg,
-                   SUM(COALESCE(fl.nb_col,0)) as colis
-            FROM frulog_lignes fl {where}
-            GROUP BY COALESCE(fl.code_produit_commercial, '❓ Non mappé') ORDER BY pds_kg DESC
-        """, params)
-        par_produit = cursor.fetchall()
+        # Par variété
+        cursor.execute("""
+            SELECT variete, COUNT(*) as nb_lignes,
+                   SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant,0)) as ca,
+                   COUNT(DISTINCT client) as nb_clients,
+                   AVG(prix) FILTER (WHERE prix > 0) as prix_moy
+            FROM frulog_lignes WHERE type='E' AND variete IS NOT NULL
+            GROUP BY variete ORDER BY pds_kg DESC
+        """)
+        results['par_variete'] = cursor.fetchall()
 
-        cursor.execute(f"""
-            SELECT fl.variete, COUNT(*) as nb, SUM(COALESCE(fl.pds_net,0)) as pds_kg
-            FROM frulog_lignes fl {where}
-            GROUP BY fl.variete ORDER BY pds_kg DESC LIMIT 20
-        """, params)
-        par_variete = cursor.fetchall()
+        # Par mois
+        cursor.execute("""
+            SELECT EXTRACT(YEAR FROM date_charg)::int as annee,
+                   EXTRACT(MONTH FROM date_charg)::int as mois,
+                   COUNT(*) as nb_lignes, SUM(COALESCE(pds_net,0)) as pds_kg,
+                   SUM(COALESCE(montant,0)) as ca, COUNT(DISTINCT client) as nb_clients
+            FROM frulog_lignes WHERE type='E' AND date_charg IS NOT NULL
+            GROUP BY 1, 2 ORDER BY annee, mois
+        """)
+        results['par_mois'] = cursor.fetchall()
+
+        # Par semaine
+        cursor.execute("""
+            SELECT annee, semaine, COUNT(*) as nb_lignes,
+                   SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant,0)) as ca,
+                   COUNT(DISTINCT client) as nb_clients
+            FROM frulog_lignes WHERE type='E' AND annee IS NOT NULL
+            GROUP BY annee, semaine ORDER BY annee, semaine
+        """)
+        results['par_semaine'] = cursor.fetchall()
+
+        # Par produit commercial
+        cursor.execute("""
+            SELECT COALESCE(code_produit_commercial, '❓ Non mappé') as produit,
+                   COUNT(*) as nb_lignes, SUM(COALESCE(pds_net,0)) as pds_kg,
+                   SUM(COALESCE(montant,0)) as ca, SUM(COALESCE(nb_col,0)) as colis,
+                   COUNT(DISTINCT client) as nb_clients
+            FROM frulog_lignes WHERE type='E'
+            GROUP BY 1 ORDER BY pds_kg DESC
+        """)
+        results['par_produit'] = cursor.fetchall()
+
+        # Par emballage
+        cursor.execute("""
+            SELECT emballage, COUNT(*) as nb_lignes,
+                   SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant,0)) as ca,
+                   SUM(COALESCE(nb_col,0)) as colis
+            FROM frulog_lignes WHERE type='E' AND emballage IS NOT NULL
+            GROUP BY emballage ORDER BY pds_kg DESC
+        """)
+        results['par_emballage'] = cursor.fetchall()
+
+        # Par calibre
+        cursor.execute("""
+            SELECT calibre, COUNT(*) as nb_lignes,
+                   SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant,0)) as ca,
+                   COUNT(DISTINCT client) as nb_clients
+            FROM frulog_lignes WHERE type='E' AND calibre IS NOT NULL
+            GROUP BY calibre ORDER BY pds_kg DESC
+        """)
+        results['par_calibre'] = cursor.fetchall()
+
+        # Par depot
+        cursor.execute("""
+            SELECT depot, COUNT(*) as nb_lignes,
+                   SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant,0)) as ca
+            FROM frulog_lignes WHERE type='E' AND depot IS NOT NULL AND depot != '.'
+            GROUP BY depot ORDER BY pds_kg DESC
+        """)
+        results['par_depot'] = cursor.fetchall()
+
+        # Par vendeur
+        cursor.execute("""
+            SELECT vendeur, COUNT(*) as nb_lignes,
+                   SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant,0)) as ca,
+                   COUNT(DISTINCT client) as nb_clients
+            FROM frulog_lignes WHERE type='E' AND vendeur IS NOT NULL
+            GROUP BY vendeur ORDER BY ca DESC
+        """)
+        results['par_vendeur'] = cursor.fetchall()
+
+        # Par année
+        cursor.execute("""
+            SELECT EXTRACT(YEAR FROM date_charg)::int as annee,
+                   SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant,0)) as ca,
+                   COUNT(DISTINCT client) as nb_clients, COUNT(*) as nb_lignes
+            FROM frulog_lignes WHERE type='E' AND date_charg IS NOT NULL
+            GROUP BY 1 ORDER BY annee
+        """)
+        results['par_annee'] = cursor.fetchall()
+
+        # Croisé client × variété top 50
+        cursor.execute("""
+            SELECT client, variete, SUM(COALESCE(pds_net,0)) as pds_kg,
+                   SUM(COALESCE(montant,0)) as ca
+            FROM frulog_lignes WHERE type='E' AND variete IS NOT NULL
+            GROUP BY client, variete ORDER BY pds_kg DESC LIMIT 50
+        """)
+        results['croise_client_variete'] = cursor.fetchall()
 
         cursor.close(); conn.close()
-        return {
-            'par_client': pd.DataFrame(par_client) if par_client else pd.DataFrame(),
-            'par_semaine': pd.DataFrame(par_semaine) if par_semaine else pd.DataFrame(),
-            'par_produit': pd.DataFrame(par_produit) if par_produit else pd.DataFrame(),
-            'par_variete': pd.DataFrame(par_variete) if par_variete else pd.DataFrame()
-        }
+        return results
     except Exception as e:
         st.error(f"Erreur analyse : {str(e)}")
         return None
 
 
 def get_comparaison_previsions():
-    """Expédié (Frulog) vs Prévu (prévisions_ventes) par semaine/produit"""
+    """Expédié (Frulog) vs Prévu (prévisions_ventes)"""
     try:
         conn = get_connection(); cursor = conn.cursor()
         cursor.execute("""
@@ -482,7 +576,7 @@ def get_comparaison_previsions():
                 SELECT code_produit_commercial, annee, semaine,
                        SUM(pds_net) / 1000.0 as tonnes_expediees
                 FROM frulog_lignes
-                WHERE type='E'  AND code_produit_commercial IS NOT NULL
+                WHERE type='E' AND code_produit_commercial IS NOT NULL
                 GROUP BY code_produit_commercial, annee, semaine
             ),
             prevu AS (
@@ -496,19 +590,18 @@ def get_comparaison_previsions():
                    COALESCE(p.tonnes_prevues, 0) as prevu_t,
                    COALESCE(e.tonnes_expediees, 0) as expedie_t
             FROM expedie e
-            FULL OUTER JOIN prevu p 
+            FULL OUTER JOIN prevu p
                 ON e.code_produit_commercial = p.code_produit_commercial
                 AND e.annee = p.annee AND e.semaine = p.semaine
             WHERE COALESCE(e.annee, p.annee) IS NOT NULL
-            ORDER BY COALESCE(e.annee, p.annee), COALESCE(e.semaine, p.semaine), 
-                     COALESCE(e.code_produit_commercial, p.code_produit_commercial)
+            ORDER BY COALESCE(e.annee, p.annee), COALESCE(e.semaine, p.semaine)
         """)
         rows = cursor.fetchall(); cursor.close(); conn.close()
         if rows:
             df = pd.DataFrame(rows)
             df['ecart_t'] = df['expedie_t'].astype(float) - df['prevu_t'].astype(float)
             df['taux_realisation'] = df.apply(
-                lambda r: (float(r['expedie_t']) / float(r['prevu_t']) * 100) 
+                lambda r: (float(r['expedie_t'])/float(r['prevu_t'])*100)
                           if float(r['prevu_t']) > 0 else None, axis=1)
             return df
         return pd.DataFrame()
@@ -518,24 +611,37 @@ def get_comparaison_previsions():
 
 
 # ============================================================================
+# CHARGEMENT DONNÉES
+# ============================================================================
+
+data = get_analyse_complete()
+
+# ============================================================================
 # KPIs
 # ============================================================================
 
-kpis = get_kpis_frulog()
-if kpis and kpis['total'] > 0:
-    c1, c2, c3, c4, c5 = st.columns(5)
-    with c1: st.metric("📊 Imports", kpis['nb_imports'])
-    with c2: st.metric("🚚 Expéditions", kpis['nb_exp'])
-    with c3: st.metric("⚖️ Tonnage", f"{float(kpis['pds_kg'])/1000:,.1f} T".replace(',', ' '))
-    with c4: st.metric("👥 Clients", kpis['nb_clients'])
-    with c5:
-        tot = max(kpis['mappees'] + kpis['non_mappees'], 1)
-        st.metric("🔗 Mapping", f"{kpis['mappees']*100/tot:.0f}%")
+if data and data['kpis'] and data['kpis']['total'] > 0:
+    k = data['kpis']
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1: st.metric("🚚 Expéditions", f"{k['nb_exp']:,}".replace(',', ' '))
+    with c2: st.metric("⚖️ Tonnage", f"{float(k['pds_kg'])/1000:,.0f} T".replace(',', ' '))
+    with c3: st.metric("💰 CA", f"{float(k['ca_total'])/1000:,.0f} k€".replace(',', ' '))
+    with c4: st.metric("👥 Clients", k['nb_clients'])
+    with c5: st.metric("🥔 Variétés", k['nb_varietes'])
+    with c6:
+        tot = max(k['mappees'] + k['non_mappees'], 1)
+        st.metric("🔗 Mapping", f"{k['mappees']*100/tot:.0f}%")
+    
+    if k['date_min'] and k['date_max']:
+        st.caption(f"📅 Période : {k['date_min'].strftime('%d/%m/%Y')} → {k['date_max'].strftime('%d/%m/%Y')} — "
+                   f"Prix moyen : {float(k['prix_moy']):,.0f} €/T — "
+                   f"{int(k['nb_col_total'] or 0):,} colis — {int(k['nb_pal_total'] or 0):,} palettes".replace(',', ' '))
 
 st.markdown("---")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📥 Import", "🔗 Mapping Produits", "📦 Mapping Sur-Emb.", "📈 Analyse", "🎯 Prévu vs Réel"
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "📥 Import", "🔗 Mapping Produits", "📦 Mapping Sur-Emb.",
+    "📈 Vue d'ensemble", "🔍 Analyses détaillées", "🎯 Prévu vs Réel"
 ])
 
 # ============================================================================
@@ -573,7 +679,6 @@ with tab1:
         except Exception as e:
             st.error(f"Erreur lecture : {str(e)}")
     
-    # Historique imports
     st.markdown("---")
     st.markdown("##### 📋 Historique des imports")
     df_imp = get_imports()
@@ -586,13 +691,12 @@ with tab1:
         }), use_container_width=True, hide_index=True)
 
 # ============================================================================
-# TAB 2 : MAPPING PRODUITS (emballage+marque → produit commercial)
+# TAB 2 : MAPPING PRODUITS
 # ============================================================================
 
 with tab2:
     st.subheader("🔗 Mapping Emballage + Marque → Produit Commercial")
     
-    # Non mappées en haut
     df_nm = get_combinaisons_non_mappees_produit()
     if not df_nm.empty:
         st.markdown(f"##### ⚠️ {len(df_nm)} combinaison(s) sans mapping")
@@ -632,7 +736,6 @@ with tab2:
     else:
         st.success("✅ Toutes les combinaisons sont mappées")
     
-    # Mappings existants (modifiables)
     st.markdown("---")
     st.markdown("##### 📋 Mappings existants")
     df_mp = get_mapping_produit()
@@ -669,7 +772,7 @@ with tab2:
         st.info("Aucun mapping produit configuré")
 
 # ============================================================================
-# TAB 3 : MAPPING SUR-EMBALLAGES (code emballage → sur-emballage)
+# TAB 3 : MAPPING SUR-EMBALLAGES
 # ============================================================================
 
 with tab3:
@@ -715,100 +818,301 @@ with tab3:
         }), use_container_width=True, hide_index=True)
 
 # ============================================================================
-# TAB 4 : ANALYSE EXPÉDITIONS
+# TAB 4 : VUE D'ENSEMBLE
 # ============================================================================
 
 with tab4:
-    st.subheader("📈 Analyse des Expéditions")
-    
-    df_imp = get_imports()
-    import_filter = None
-    if not df_imp.empty:
-        opts = ["Tous les imports"] + [
-            f"#{int(r['id'])} — {r['nom_fichier']}" for _, r in df_imp.iterrows()
-        ]
-        sel = st.selectbox("Import", opts, key="ana_import")
-        if sel != "Tous les imports":
-            import_filter = int(sel.split('#')[1].split(' ')[0])
-    
-    data = get_analyse_data(import_filter)
-    if data:
-        # Évolution hebdo
-        if not data['par_semaine'].empty:
+    if not data:
+        st.info("📭 Importez des données Frulog pour voir les analyses")
+    else:
+        st.subheader("📈 Vue d'ensemble")
+        
+        # Évolution annuelle
+        if data['par_annee']:
+            df_a = pd.DataFrame(data['par_annee'])
+            df_a['tonnes'] = df_a['pds_kg'].astype(float) / 1000
+            df_a['ca_k'] = df_a['ca'].astype(float) / 1000
+            
+            ga1, ga2 = st.columns(2)
+            with ga1:
+                fig_a = go.Figure()
+                fig_a.add_trace(go.Bar(x=df_a['annee'].astype(str), y=df_a['tonnes'],
+                                       marker_color='#1565C0', name='Tonnes'))
+                fig_a.update_layout(title="Tonnage par année", height=350, xaxis_title="Année",
+                                   yaxis_title="Tonnes")
+                st.plotly_chart(fig_a, use_container_width=True)
+            with ga2:
+                fig_ca = go.Figure()
+                fig_ca.add_trace(go.Bar(x=df_a['annee'].astype(str), y=df_a['ca_k'],
+                                        marker_color='#2E7D32', name='CA k€'))
+                fig_ca.update_layout(title="Chiffre d'affaires par année", height=350,
+                                    xaxis_title="Année", yaxis_title="k€")
+                st.plotly_chart(fig_ca, use_container_width=True)
+            
+            st.dataframe(df_a.rename(columns={
+                'annee':'Année','tonnes':'Tonnes','ca_k':'CA (k€)',
+                'nb_clients':'Clients','nb_lignes':'Expéditions'
+            })[['Année','Tonnes','CA (k€)','Clients','Expéditions']],
+                use_container_width=True, hide_index=True)
+
+        # Évolution mensuelle
+        if data['par_mois']:
+            st.markdown("---")
+            st.markdown("##### 📅 Évolution mensuelle")
+            df_m = pd.DataFrame(data['par_mois'])
+            df_m['tonnes'] = df_m['pds_kg'].astype(float) / 1000
+            df_m['label'] = df_m.apply(lambda r: f"{int(r['mois']):02d}/{int(r['annee'])}", axis=1)
+            
+            fig_m = go.Figure()
+            fig_m.add_trace(go.Scatter(x=df_m['label'], y=df_m['tonnes'], mode='lines+markers',
+                                       line=dict(color='#1565C0', width=2), fill='tozeroy'))
+            fig_m.update_layout(title="Tonnage mensuel", height=400,
+                               xaxis_title="Mois", yaxis_title="Tonnes",
+                               xaxis=dict(tickangle=-45))
+            st.plotly_chart(fig_m, use_container_width=True)
+
+        # Évolution hebdo (dernières 52 semaines)
+        if data['par_semaine']:
+            st.markdown("---")
             st.markdown("##### 📊 Évolution hebdomadaire")
-            df_s = data['par_semaine'].copy()
+            df_s = pd.DataFrame(data['par_semaine'])
             df_s['tonnes'] = df_s['pds_kg'].astype(float) / 1000
             df_s['label'] = df_s.apply(lambda r: f"S{int(r['semaine']):02d}/{int(r['annee'])}", axis=1)
-            fig = go.Figure([go.Bar(x=df_s['label'], y=df_s['tonnes'], marker_color='#2196f3')])
-            fig.update_layout(title="Expéditions par semaine (T)", height=350,
-                             xaxis_title="Semaine", yaxis_title="Tonnes")
-            st.plotly_chart(fig, use_container_width=True)
-
-        ac1, ac2 = st.columns(2)
-        
-        with ac1:
-            if not data['par_client'].empty:
-                st.markdown("##### 👥 Top 15 Clients")
-                df_cli = data['par_client'].head(15).copy()
-                df_cli['tonnes'] = df_cli['pds_kg'].astype(float) / 1000
-                fig2 = px.bar(df_cli, x='client', y='tonnes', color='tonnes',
-                             color_continuous_scale='blues')
-                fig2.update_layout(height=400, xaxis_tickangle=-45, showlegend=False)
-                st.plotly_chart(fig2, use_container_width=True)
-        
-        with ac2:
-            if not data['par_variete'].empty:
-                st.markdown("##### 🥔 Répartition variétés")
-                df_v = data['par_variete'].head(10).copy()
-                df_v['tonnes'] = df_v['pds_kg'].astype(float) / 1000
-                fig3 = px.pie(df_v, names='variete', values='tonnes')
-                fig3.update_layout(height=400)
-                st.plotly_chart(fig3, use_container_width=True)
-        
-        if not data['par_produit'].empty:
-            st.markdown("##### 🏷️ Par Produit Commercial")
-            df_p = data['par_produit'].copy()
-            df_p['tonnes'] = df_p['pds_kg'].astype(float) / 1000
-            st.dataframe(
-                df_p[['produit','nb','tonnes','colis']].rename(columns={
-                    'produit':'Produit','nb':'Lignes','tonnes':'Tonnes','colis':'Colis'
-                }), use_container_width=True, hide_index=True)
-    else:
-        st.info("📭 Importez des données pour voir les analyses")
+            # Garder les 52 dernières semaines
+            df_s_last = df_s.tail(52)
+            
+            fig_s = go.Figure()
+            fig_s.add_trace(go.Bar(x=df_s_last['label'], y=df_s_last['tonnes'],
+                                   marker_color='#42A5F5'))
+            fig_s.update_layout(title="Expéditions par semaine — 12 derniers mois (T)",
+                               height=400, xaxis_title="Semaine", yaxis_title="Tonnes",
+                               xaxis=dict(tickangle=-45))
+            st.plotly_chart(fig_s, use_container_width=True)
 
 # ============================================================================
-# TAB 5 : PRÉVU VS RÉEL (comparaison prévisions)
+# TAB 5 : ANALYSES DÉTAILLÉES
 # ============================================================================
 
 with tab5:
+    if not data:
+        st.info("📭 Importez des données Frulog")
+    else:
+        vue = st.radio("Analyser par :", ["👥 Clients", "🥔 Variétés", "🏷️ Produits", "📦 Emballages",
+                                          "📏 Calibres", "🏢 Dépôts", "👤 Vendeurs", "🔀 Croisé Client×Variété"],
+                       horizontal=True)
+        st.markdown("---")
+        
+        def fmt_t(kg):
+            return f"{float(kg)/1000:,.1f}".replace(',', ' ')
+        def fmt_k(v):
+            return f"{float(v)/1000:,.0f}".replace(',', ' ')
+        def fmt_prix(v):
+            return f"{float(v):,.0f}".replace(',', ' ') if v else "—"
+        
+        # --- CLIENTS ---
+        if vue == "👥 Clients" and data['par_client']:
+            df = pd.DataFrame(data['par_client'])
+            df['tonnes'] = df['pds_kg'].astype(float) / 1000
+            df['ca_k'] = df['ca'].astype(float) / 1000
+            
+            st.markdown(f"##### 👥 {len(df)} clients")
+            
+            gc1, gc2 = st.columns(2)
+            with gc1:
+                fig = px.bar(df.head(20), x='client', y='tonnes', title="Top 20 Clients (Tonnage)",
+                            color='tonnes', color_continuous_scale='blues')
+                fig.update_layout(height=450, xaxis_tickangle=-45, showlegend=False)
+                st.plotly_chart(fig, use_container_width=True)
+            with gc2:
+                fig2 = px.bar(df.head(20), x='client', y='ca_k', title="Top 20 Clients (CA k€)",
+                             color='ca_k', color_continuous_scale='greens')
+                fig2.update_layout(height=450, xaxis_tickangle=-45, showlegend=False)
+                st.plotly_chart(fig2, use_container_width=True)
+            
+            # Pareto
+            df_sorted = df.sort_values('ca', ascending=False).copy()
+            df_sorted['ca_cumul'] = df_sorted['ca'].astype(float).cumsum()
+            ca_total = df_sorted['ca'].astype(float).sum()
+            df_sorted['pct_cumul'] = df_sorted['ca_cumul'] / ca_total * 100
+            nb_80 = len(df_sorted[df_sorted['pct_cumul'] <= 80]) + 1
+            st.info(f"📊 **Pareto** : {nb_80} clients représentent 80% du CA ({nb_80*100//len(df)}% du portefeuille)")
+            
+            st.dataframe(df[['client','tonnes','ca_k','colis','nb_varietes','prix_moy',
+                            'premiere_expe','derniere_expe']].rename(columns={
+                'client':'Client','tonnes':'Tonnes','ca_k':'CA (k€)','colis':'Colis',
+                'nb_varietes':'Variétés','prix_moy':'Prix moy (€/T)',
+                'premiere_expe':'1ère expéd.','derniere_expe':'Dernière'
+            }).head(50), use_container_width=True, hide_index=True,
+                column_config={
+                    'Prix moy (€/T)': st.column_config.NumberColumn(format="%.0f"),
+                    '1ère expéd.': st.column_config.DateColumn(format='DD/MM/YYYY'),
+                    'Dernière': st.column_config.DateColumn(format='DD/MM/YYYY'),
+                })
+            
+            # Export
+            buf = io.BytesIO()
+            df.to_excel(buf, index=False, engine='openpyxl')
+            st.download_button("📥 Export clients complet", buf.getvalue(),
+                              f"clients_frulog_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                              use_container_width=True)
+        
+        # --- VARIÉTÉS ---
+        elif vue == "🥔 Variétés" and data['par_variete']:
+            df = pd.DataFrame(data['par_variete'])
+            df['tonnes'] = df['pds_kg'].astype(float) / 1000
+            df['ca_k'] = df['ca'].astype(float) / 1000
+            
+            st.markdown(f"##### 🥔 {len(df)} variétés")
+            
+            gv1, gv2 = st.columns(2)
+            with gv1:
+                fig = px.pie(df.head(15), names='variete', values='tonnes',
+                            title="Top 15 Variétés (Tonnage)")
+                fig.update_layout(height=450)
+                st.plotly_chart(fig, use_container_width=True)
+            with gv2:
+                fig2 = px.bar(df.head(15), x='variete', y='prix_moy',
+                             title="Prix moyen par variété (€/T)", color='prix_moy',
+                             color_continuous_scale='YlOrRd')
+                fig2.update_layout(height=450, showlegend=False)
+                st.plotly_chart(fig2, use_container_width=True)
+            
+            st.dataframe(df[['variete','tonnes','ca_k','nb_clients','prix_moy','nb_lignes']].rename(columns={
+                'variete':'Variété','tonnes':'Tonnes','ca_k':'CA (k€)',
+                'nb_clients':'Clients','prix_moy':'Prix moy (€/T)','nb_lignes':'Expéditions'
+            }).head(30), use_container_width=True, hide_index=True,
+                column_config={'Prix moy (€/T)': st.column_config.NumberColumn(format="%.0f")})
+        
+        # --- PRODUITS COMMERCIAUX ---
+        elif vue == "🏷️ Produits" and data['par_produit']:
+            df = pd.DataFrame(data['par_produit'])
+            df['tonnes'] = df['pds_kg'].astype(float) / 1000
+            df['ca_k'] = df['ca'].astype(float) / 1000
+            
+            st.markdown(f"##### 🏷️ Par Produit Commercial")
+            fig = px.bar(df, x='produit', y='tonnes', title="Tonnage par produit",
+                        color='tonnes', color_continuous_scale='blues')
+            fig.update_layout(height=400, xaxis_tickangle=-45, showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.dataframe(df[['produit','tonnes','ca_k','colis','nb_clients','nb_lignes']].rename(columns={
+                'produit':'Produit','tonnes':'Tonnes','ca_k':'CA (k€)',
+                'colis':'Colis','nb_clients':'Clients','nb_lignes':'Lignes'
+            }), use_container_width=True, hide_index=True)
+        
+        # --- EMBALLAGES ---
+        elif vue == "📦 Emballages" and data['par_emballage']:
+            df = pd.DataFrame(data['par_emballage'])
+            df['tonnes'] = df['pds_kg'].astype(float) / 1000
+            
+            st.markdown(f"##### 📦 {len(df)} types d'emballage")
+            fig = px.pie(df.head(10), names='emballage', values='tonnes',
+                        title="Répartition par emballage (Tonnage)")
+            fig.update_layout(height=400)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.dataframe(df[['emballage','tonnes','colis','nb_lignes']].rename(columns={
+                'emballage':'Emballage','tonnes':'Tonnes','colis':'Colis','nb_lignes':'Lignes'
+            }), use_container_width=True, hide_index=True)
+        
+        # --- CALIBRES ---
+        elif vue == "📏 Calibres" and data['par_calibre']:
+            df = pd.DataFrame(data['par_calibre'])
+            df['tonnes'] = df['pds_kg'].astype(float) / 1000
+            
+            st.markdown(f"##### 📏 {len(df)} calibres")
+            fig = px.bar(df, x='calibre', y='tonnes', title="Tonnage par calibre",
+                        color='tonnes', color_continuous_scale='purples')
+            fig.update_layout(height=400, showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.dataframe(df[['calibre','tonnes','nb_clients','nb_lignes']].rename(columns={
+                'calibre':'Calibre','tonnes':'Tonnes','nb_clients':'Clients','nb_lignes':'Lignes'
+            }), use_container_width=True, hide_index=True)
+        
+        # --- DÉPÔTS ---
+        elif vue == "🏢 Dépôts" and data['par_depot']:
+            df = pd.DataFrame(data['par_depot'])
+            df['tonnes'] = df['pds_kg'].astype(float) / 1000
+            df['ca_k'] = df['ca'].astype(float) / 1000
+            
+            st.markdown(f"##### 🏢 {len(df)} dépôts")
+            fig = px.bar(df.head(20), x='depot', y='tonnes', title="Top 20 Dépôts (Tonnage)",
+                        color='tonnes', color_continuous_scale='oranges')
+            fig.update_layout(height=400, xaxis_tickangle=-45, showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.dataframe(df[['depot','tonnes','ca_k','nb_lignes']].head(30).rename(columns={
+                'depot':'Dépôt','tonnes':'Tonnes','ca_k':'CA (k€)','nb_lignes':'Lignes'
+            }), use_container_width=True, hide_index=True)
+        
+        # --- VENDEURS ---
+        elif vue == "👤 Vendeurs" and data['par_vendeur']:
+            df = pd.DataFrame(data['par_vendeur'])
+            df['tonnes'] = df['pds_kg'].astype(float) / 1000
+            df['ca_k'] = df['ca'].astype(float) / 1000
+            
+            st.markdown(f"##### 👤 {len(df)} vendeurs")
+            fig = px.bar(df, x='vendeur', y='ca_k', title="CA par vendeur (k€)",
+                        color='ca_k', color_continuous_scale='greens')
+            fig.update_layout(height=400, showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.dataframe(df[['vendeur','tonnes','ca_k','nb_clients','nb_lignes']].rename(columns={
+                'vendeur':'Vendeur','tonnes':'Tonnes','ca_k':'CA (k€)',
+                'nb_clients':'Clients','nb_lignes':'Lignes'
+            }), use_container_width=True, hide_index=True)
+        
+        # --- CROISÉ CLIENT × VARIÉTÉ ---
+        elif vue == "🔀 Croisé Client×Variété" and data['croise_client_variete']:
+            df = pd.DataFrame(data['croise_client_variete'])
+            df['tonnes'] = df['pds_kg'].astype(float) / 1000
+            df['ca_k'] = df['ca'].astype(float) / 1000
+            
+            st.markdown("##### 🔀 Top 50 combinaisons Client × Variété")
+            st.dataframe(df[['client','variete','tonnes','ca_k']].rename(columns={
+                'client':'Client','variete':'Variété','tonnes':'Tonnes','ca_k':'CA (k€)'
+            }), use_container_width=True, hide_index=True)
+            
+            # Heatmap top 10 clients × top 10 variétés
+            top_clients = df.groupby('client')['pds_kg'].sum().nlargest(10).index.tolist()
+            top_var = df.groupby('variete')['pds_kg'].sum().nlargest(10).index.tolist()
+            df_heat = df[df['client'].isin(top_clients) & df['variete'].isin(top_var)]
+            
+            if not df_heat.empty:
+                pivot = df_heat.pivot_table(values='tonnes', index='client', columns='variete', fill_value=0)
+                fig = px.imshow(pivot, title="Heatmap Top 10 Clients × Top 10 Variétés (T)",
+                               color_continuous_scale='Blues', aspect='auto')
+                fig.update_layout(height=500)
+                st.plotly_chart(fig, use_container_width=True)
+
+# ============================================================================
+# TAB 6 : PRÉVU VS RÉEL
+# ============================================================================
+
+with tab6:
     st.subheader("🎯 Prévu vs Réel — Fiabilité des Prévisions")
-    st.caption("*Compare les prévisions commerciales avec les expéditions Frulog réelles*")
     
     df_comp = get_comparaison_previsions()
     
     if not df_comp.empty:
-        # Fiabilité globale
         df_avec_prevu = df_comp[df_comp['prevu_t'].astype(float) > 0]
-        if not df_avec_prevu.empty:
-            taux_global = (df_avec_prevu['expedie_t'].astype(float).sum() / 
-                          df_avec_prevu['prevu_t'].astype(float).sum()) * 100
-        else:
-            taux_global = 0
-        
+        taux_global = ((df_avec_prevu['expedie_t'].astype(float).sum() /
+                       df_avec_prevu['prevu_t'].astype(float).sum()) * 100) if not df_avec_prevu.empty else 0
         total_prevu = df_comp['prevu_t'].astype(float).sum()
         total_exp = df_comp['expedie_t'].astype(float).sum()
         ecart = total_exp - total_prevu
         
         kc1, kc2, kc3, kc4 = st.columns(4)
-        with kc1: st.metric("📊 Prévu total", f"{total_prevu:.1f} T")
-        with kc2: st.metric("🚚 Expédié total", f"{total_exp:.1f} T")
+        with kc1: st.metric("📊 Prévu", f"{total_prevu:.1f} T")
+        with kc2: st.metric("🚚 Expédié", f"{total_exp:.1f} T")
         with kc3: st.metric("📐 Écart", f"{ecart:+.1f} T")
-        with kc4: st.metric("🎯 Taux réalisation", f"{taux_global:.0f}%")
+        with kc4: st.metric("🎯 Réalisation", f"{taux_global:.0f}%")
         
         st.markdown("---")
         
-        # Fiabilité par semaine
-        st.markdown("##### 📊 Fiabilité par semaine")
+        # Par semaine
+        st.markdown("##### 📊 Prévu vs Expédié par semaine")
         df_sem = df_comp.groupby(['annee', 'semaine']).agg(
             prevu=('prevu_t', lambda x: x.astype(float).sum()),
             expedie=('expedie_t', lambda x: x.astype(float).sum())
@@ -823,25 +1127,23 @@ with tab5:
                                   marker_color='#90CAF9'))
         fig_comp.add_trace(go.Bar(x=df_sem['label'], y=df_sem['expedie'], name='Expédié',
                                   marker_color='#1565C0'))
-        fig_comp.update_layout(barmode='group', title="Prévu vs Expédié par semaine (T)",
+        fig_comp.update_layout(barmode='group', title="Prévu vs Expédié (T)",
                               height=400, xaxis_title="Semaine", yaxis_title="Tonnes")
         st.plotly_chart(fig_comp, use_container_width=True)
         
-        # Taux par semaine
+        # Taux fiabilité coloré
         if df_sem['taux'].notna().any():
-            fig_taux = go.Figure()
-            colors = ['#4CAF50' if t and 80 <= t <= 120 else '#FF9800' if t and (60 <= t < 80 or 120 < t <= 150) 
+            fig_t = go.Figure()
+            colors = ['#4CAF50' if t and 80 <= t <= 120 else '#FF9800' if t and (60 <= t < 80 or 120 < t <= 150)
                       else '#F44336' for t in df_sem['taux']]
-            fig_taux.add_trace(go.Bar(x=df_sem['label'], y=df_sem['taux'], marker_color=colors))
-            fig_taux.add_hline(y=100, line_dash="dash", line_color="black", annotation_text="100%")
-            fig_taux.update_layout(title="Taux de réalisation par semaine (%)",
-                                  height=350, xaxis_title="Semaine", yaxis_title="%")
-            st.plotly_chart(fig_taux, use_container_width=True)
+            fig_t.add_trace(go.Bar(x=df_sem['label'], y=df_sem['taux'], marker_color=colors))
+            fig_t.add_hline(y=100, line_dash="dash", line_color="black", annotation_text="100%")
+            fig_t.update_layout(title="Taux de réalisation par semaine (%)", height=350)
+            st.plotly_chart(fig_t, use_container_width=True)
         
-        # Détail par produit
+        # Par produit
         st.markdown("---")
         st.markdown("##### 🏷️ Détail par produit")
-        
         df_prod = df_comp.groupby('produit').agg(
             prevu=('prevu_t', lambda x: x.astype(float).sum()),
             expedie=('expedie_t', lambda x: x.astype(float).sum())
@@ -851,25 +1153,21 @@ with tab5:
             lambda r: f"{r['expedie']/r['prevu']*100:.0f}%" if r['prevu'] > 0 else "—", axis=1)
         df_prod = df_prod.sort_values('prevu', ascending=False)
         
-        st.dataframe(
-            df_prod.rename(columns={
-                'produit':'Produit', 'prevu':'Prévu (T)', 'expedie':'Expédié (T)',
-                'ecart':'Écart (T)', 'taux':'Taux'
-            }), use_container_width=True, hide_index=True
-        )
+        st.dataframe(df_prod.rename(columns={
+            'produit':'Produit','prevu':'Prévu (T)','expedie':'Expédié (T)',
+            'ecart':'Écart (T)','taux':'Taux'
+        }), use_container_width=True, hide_index=True)
         
         # Export
-        st.markdown("---")
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as w:
             df_comp.to_excel(w, index=False, sheet_name='Détail')
             df_sem.to_excel(w, index=False, sheet_name='Par Semaine')
             df_prod.to_excel(w, index=False, sheet_name='Par Produit')
-        st.download_button("📥 Export Excel complet", buf.getvalue(),
+        st.download_button("📥 Export Excel", buf.getvalue(),
                           f"prevu_vs_reel_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                           use_container_width=True)
     else:
-        st.info("📭 Aucune donnée de comparaison. Importez des données Frulog et vérifiez que les prévisions sont saisies.")
+        st.info("📭 Aucune donnée. Importez des données Frulog et/ou saisissez des prévisions.")
 
 show_footer()
