@@ -1,10 +1,12 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from database import get_connection
 from components import show_footer
 from auth import require_access
+import plotly.express as px
+import plotly.graph_objects as go
 import io
 
 st.set_page_config(page_title="Produits Finis - POMI", page_icon="📦", layout="wide")
@@ -36,14 +38,6 @@ st.markdown("""
         margin-top: 0.5rem !important;
         margin-bottom: 0.5rem !important;
     }
-    .positive-value {
-        color: #2ca02c;
-        font-weight: bold;
-    }
-    .negative-value {
-        color: #d62728;
-        font-weight: bold;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -51,7 +45,7 @@ st.markdown("""
 require_access("STOCK")
 
 st.title("📦 Stock Produits Finis")
-st.caption("*Gestion et valorisation des produits finis*")
+st.caption("*Suivi des entrées/sorties par produit commercial — Modèle par mouvements*")
 st.markdown("---")
 
 # ============================================================================
@@ -64,140 +58,192 @@ def format_number_fr(value):
         return "0"
     try:
         return f"{int(value):,}".replace(',', ' ')
-    except:
+    except (ValueError, TypeError):
         return str(value)
 
-def format_float_fr(value, decimals=2):
-    """Formate un float avec des espaces pour les milliers"""
+def format_tonnes(value):
+    """Formate un tonnage"""
     if pd.isna(value) or value is None:
-        return "0.00"
+        return "0.00 T"
     try:
-        return f"{float(value):,.{decimals}f}".replace(',', ' ')
-    except:
+        return f"{float(value):,.2f} T".replace(',', ' ')
+    except (ValueError, TypeError):
         return str(value)
 
-def format_currency(value):
-    """Formate un montant en euros"""
-    if pd.isna(value) or value is None:
-        return "0.00 €"
-    try:
-        return f"{float(value):,.2f} €".replace(',', ' ')
-    except:
-        return str(value)
+# ============================================================================
+# FONCTIONS BDD
+# ============================================================================
 
-def get_kpis_produits_finis():
-    """Récupère les KPIs globaux des produits finis"""
+def get_stock_actuel():
+    """Calcule le stock actuel par produit commercial (somme des mouvements)"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                m.code_produit_commercial,
+                COALESCE(pc.marque, '') as marque,
+                COALESCE(pc.libelle, m.code_produit_commercial) as libelle,
+                COALESCE(pc.code_variete, '') as variete,
+                SUM(m.quantite_tonnes) as stock_tonnes,
+                COUNT(*) FILTER (WHERE m.type_mouvement IN ('PRODUCTION', 'CORRECTION_ENTREE')) as nb_entrees,
+                COUNT(*) FILTER (WHERE m.type_mouvement IN ('EXPEDITION', 'CORRECTION_SORTIE', 'IMPORT_FRULOG')) as nb_sorties,
+                SUM(m.quantite_tonnes) FILTER (WHERE m.quantite_tonnes > 0) as total_entrees,
+                ABS(SUM(m.quantite_tonnes) FILTER (WHERE m.quantite_tonnes < 0)) as total_sorties,
+                MAX(m.date_mouvement) as dernier_mouvement
+            FROM mouvements_produits_finis m
+            LEFT JOIN ref_produits_commerciaux pc 
+                ON m.code_produit_commercial = pc.code_produit
+            GROUP BY m.code_produit_commercial, pc.marque, pc.libelle, pc.code_variete
+            ORDER BY stock_tonnes DESC
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if rows:
+            df = pd.DataFrame(rows)
+            numeric_cols = ['stock_tonnes', 'total_entrees', 'total_sorties']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            return df
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Erreur chargement stock : {str(e)}")
+        return pd.DataFrame()
+
+
+def get_kpis():
+    """Récupère les KPIs globaux"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # KPIs par statut
+        # Stock total
         cursor.execute("""
             SELECT 
-                statut,
-                COUNT(*) as nb_lignes,
-                COALESCE(SUM(poids_total_kg), 0) as poids_total,
-                COALESCE(SUM(nb_uvc_total), 0) as uvc_total,
-                COALESCE(SUM(quantite_sur_emballages), 0) as sur_emb_total,
-                COALESCE(SUM(cout_total), 0) as cout_total,
-                COALESCE(SUM(prix_vente_total), 0) as ca_total,
-                COALESCE(SUM(marge_brute), 0) as marge_totale
-            FROM stock_produits_finis
-            WHERE is_active = TRUE
-            GROUP BY statut
+                COALESCE(SUM(quantite_tonnes), 0) as stock_total,
+                COUNT(DISTINCT code_produit_commercial) FILTER (
+                    WHERE code_produit_commercial IN (
+                        SELECT code_produit_commercial 
+                        FROM mouvements_produits_finis 
+                        GROUP BY code_produit_commercial 
+                        HAVING SUM(quantite_tonnes) > 0
+                    )
+                ) as nb_produits_en_stock
+            FROM mouvements_produits_finis
         """)
-        rows = cursor.fetchall()
+        row = cursor.fetchone()
+        stock_total = float(row['stock_total']) if row else 0
         
-        # Totaux globaux
+        # Nb produits avec stock positif
+        cursor.execute("""
+            SELECT COUNT(*) as cnt FROM (
+                SELECT code_produit_commercial 
+                FROM mouvements_produits_finis 
+                GROUP BY code_produit_commercial 
+                HAVING SUM(quantite_tonnes) > 0
+            ) sub
+        """)
+        nb_en_stock = cursor.fetchone()['cnt']
+        
+        # Entrées/Sorties semaine en cours
         cursor.execute("""
             SELECT 
-                COUNT(*) as nb_lignes,
-                COALESCE(SUM(poids_total_kg), 0) as poids_total,
-                COALESCE(SUM(nb_uvc_total), 0) as uvc_total,
-                COALESCE(SUM(quantite_sur_emballages), 0) as sur_emb_total,
-                COALESCE(SUM(cout_total), 0) as cout_total,
-                COALESCE(SUM(prix_vente_total), 0) as ca_total,
-                COALESCE(SUM(marge_brute), 0) as marge_totale
-            FROM stock_produits_finis
-            WHERE is_active = TRUE
+                COALESCE(SUM(quantite_tonnes) FILTER (WHERE quantite_tonnes > 0), 0) as entrees_semaine,
+                COALESCE(ABS(SUM(quantite_tonnes) FILTER (WHERE quantite_tonnes < 0)), 0) as sorties_semaine
+            FROM mouvements_produits_finis
+            WHERE annee = %s AND semaine = %s
+        """, (date.today().isocalendar()[1], date.today().isocalendar()[1]))
+        
+        iso = date.today().isocalendar()
+        cursor.execute("""
+            SELECT 
+                COALESCE(SUM(quantite_tonnes) FILTER (WHERE quantite_tonnes > 0), 0) as entrees_semaine,
+                COALESCE(ABS(SUM(quantite_tonnes) FILTER (WHERE quantite_tonnes < 0)), 0) as sorties_semaine
+            FROM mouvements_produits_finis
+            WHERE annee = %s AND semaine = %s
+        """, (iso[0], iso[1]))
+        row_sem = cursor.fetchone()
+        
+        # Top 3 produits
+        cursor.execute("""
+            SELECT code_produit_commercial, SUM(quantite_tonnes) as stock
+            FROM mouvements_produits_finis
+            GROUP BY code_produit_commercial
+            HAVING SUM(quantite_tonnes) > 0
+            ORDER BY stock DESC
+            LIMIT 3
         """)
-        totaux = cursor.fetchone()
+        top3 = cursor.fetchall()
+        
+        # Total mouvements
+        cursor.execute("SELECT COUNT(*) as cnt FROM mouvements_produits_finis")
+        nb_mouvements = cursor.fetchone()['cnt']
         
         cursor.close()
         conn.close()
         
-        # Construire dict par statut
-        kpis_statut = {}
-        for row in rows:
-            kpis_statut[row['statut']] = dict(row)
-        
         return {
-            'totaux': dict(totaux) if totaux else {},
-            'par_statut': kpis_statut
+            'stock_total': stock_total,
+            'nb_en_stock': nb_en_stock,
+            'entrees_semaine': float(row_sem['entrees_semaine']) if row_sem else 0,
+            'sorties_semaine': float(row_sem['sorties_semaine']) if row_sem else 0,
+            'top3': top3 if top3 else [],
+            'nb_mouvements': nb_mouvements
         }
-        
     except Exception as e:
-        st.error(f"❌ Erreur KPIs : {str(e)}")
+        st.error(f"Erreur KPIs : {str(e)}")
         return None
 
-def get_produits_finis(statut_filter=None, produit_filter=None, date_debut=None, date_fin=None):
-    """Récupère la liste des produits finis avec jointures"""
+
+def get_mouvements(code_produit=None, type_mouvement=None, date_debut=None, date_fin=None, limit=200):
+    """Récupère l'historique des mouvements avec filtres"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
         query = """
             SELECT 
-                spf.id,
-                spf.production_job_id,
-                spf.code_produit_commercial,
-                spf.lot_origine,
-                spf.sur_emballage_id,
-                COALESCE(se.libelle, '(Aucun)') as sur_emballage_libelle,
-                COALESCE(se.nb_uvc, 0) as uvc_par_suremb,
-                spf.quantite_sur_emballages,
-                spf.nb_uvc_total,
-                spf.poids_total_kg,
-                spf.cout_matiere_premiere,
-                spf.cout_production,
-                spf.cout_sur_emballage,
-                spf.cout_total,
-                spf.prix_vente_unitaire,
-                spf.prix_vente_total,
-                spf.marge_brute,
-                spf.marge_pct,
-                spf.statut,
-                spf.date_production,
-                spf.date_expedition,
-                spf.site_stockage,
-                spf.emplacement,
-                spf.notes,
-                spf.created_by,
-                spf.created_at
-            FROM stock_produits_finis spf
-            LEFT JOIN ref_sur_emballages se ON spf.sur_emballage_id = se.id
-            WHERE spf.is_active = TRUE
+                m.id,
+                m.code_produit_commercial,
+                COALESCE(pc.libelle, m.code_produit_commercial) as libelle_produit,
+                m.type_mouvement,
+                m.quantite_tonnes,
+                m.date_mouvement,
+                m.annee,
+                m.semaine,
+                m.source,
+                m.reference,
+                m.client,
+                m.notes,
+                m.created_by,
+                m.created_at
+            FROM mouvements_produits_finis m
+            LEFT JOIN ref_produits_commerciaux pc 
+                ON m.code_produit_commercial = pc.code_produit
+            WHERE 1=1
         """
-        
         params = []
         
-        if statut_filter and statut_filter != "Tous":
-            query += " AND spf.statut = %s"
-            params.append(statut_filter)
+        if code_produit and code_produit != "Tous":
+            query += " AND m.code_produit_commercial = %s"
+            params.append(code_produit)
         
-        if produit_filter and produit_filter != "Tous":
-            query += " AND spf.code_produit_commercial = %s"
-            params.append(produit_filter)
+        if type_mouvement and type_mouvement != "Tous":
+            query += " AND m.type_mouvement = %s"
+            params.append(type_mouvement)
         
         if date_debut:
-            query += " AND spf.date_production >= %s"
+            query += " AND m.date_mouvement >= %s"
             params.append(date_debut)
         
         if date_fin:
-            query += " AND spf.date_production <= %s"
+            query += " AND m.date_mouvement <= %s"
             params.append(date_fin)
         
-        query += " ORDER BY spf.date_production DESC, spf.id DESC"
+        query += f" ORDER BY m.date_mouvement DESC, m.id DESC LIMIT {int(limit)}"
         
         cursor.execute(query, params)
         rows = cursor.fetchall()
@@ -206,564 +252,609 @@ def get_produits_finis(statut_filter=None, produit_filter=None, date_debut=None,
         
         if rows:
             df = pd.DataFrame(rows)
-            # Convertir colonnes numériques
-            numeric_cols = ['quantite_sur_emballages', 'nb_uvc_total', 'poids_total_kg',
-                           'cout_matiere_premiere', 'cout_production', 'cout_sur_emballage',
-                           'cout_total', 'prix_vente_unitaire', 'prix_vente_total',
-                           'marge_brute', 'marge_pct']
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            df['quantite_tonnes'] = pd.to_numeric(df['quantite_tonnes'], errors='coerce').fillna(0)
             return df
         return pd.DataFrame()
-        
     except Exception as e:
-        st.error(f"❌ Erreur : {str(e)}")
+        st.error(f"Erreur mouvements : {str(e)}")
         return pd.DataFrame()
 
-def get_produits_commerciaux_list():
-    """Liste des produits commerciaux distincts"""
+
+def get_evolution_stock(nb_semaines=12):
+    """Calcule l'évolution du stock par semaine pour le graphique"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        
         cursor.execute("""
-            SELECT DISTINCT code_produit_commercial 
-            FROM stock_produits_finis 
-            WHERE is_active = TRUE AND code_produit_commercial IS NOT NULL
-            ORDER BY code_produit_commercial
-        """)
+            WITH semaines AS (
+                SELECT DISTINCT annee, semaine 
+                FROM mouvements_produits_finis
+                ORDER BY annee, semaine
+            ),
+            cumul AS (
+                SELECT 
+                    annee,
+                    semaine,
+                    SUM(quantite_tonnes) as mouvement_semaine,
+                    SUM(SUM(quantite_tonnes)) OVER (ORDER BY annee, semaine) as stock_cumule
+                FROM mouvements_produits_finis
+                GROUP BY annee, semaine
+                ORDER BY annee, semaine
+            )
+            SELECT * FROM cumul ORDER BY annee DESC, semaine DESC LIMIT %s
+        """, (nb_semaines,))
+        
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        return [row['code_produit_commercial'] for row in rows]
-    except:
-        return []
+        
+        if rows:
+            df = pd.DataFrame(rows)
+            df['semaine_label'] = df.apply(
+                lambda r: f"S{int(r['semaine']):02d}/{int(r['annee'])}", axis=1
+            )
+            df = df.sort_values(['annee', 'semaine'])
+            return df
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Erreur évolution : {str(e)}")
+        return pd.DataFrame()
 
-def get_sur_emballages_list():
-    """Liste des sur-emballages actifs"""
+
+def get_produits_commerciaux_actifs():
+    """Liste des produits commerciaux actifs pour les dropdowns"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, code_sur_emballage, libelle, nb_uvc, prix_unitaire
-            FROM ref_sur_emballages
+            SELECT code_produit, marque, libelle
+            FROM ref_produits_commerciaux
             WHERE is_active = TRUE
-            ORDER BY libelle
+            ORDER BY marque, libelle
         """)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
         return rows if rows else []
-    except:
+    except Exception as e:
         return []
 
-def update_statut_produit(produit_id, nouveau_statut, date_expedition=None):
-    """Met à jour le statut d'un produit fini"""
+
+def ajouter_mouvement(code_produit, type_mouvement, quantite_tonnes, 
+                      date_mouvement, source='MANUEL', reference=None, 
+                      client=None, notes=None, created_by=None):
+    """Ajoute un mouvement de stock produit fini"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        if nouveau_statut == 'EXPÉDIÉ' and date_expedition:
-            cursor.execute("""
-                UPDATE stock_produits_finis
-                SET statut = %s, date_expedition = %s, updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s
-            """, (nouveau_statut, date_expedition, produit_id))
+        # Calculer année/semaine ISO
+        iso = date_mouvement.isocalendar()
+        annee = iso[0]
+        semaine = iso[1]
+        
+        # Quantité : positive pour entrée, négative pour sortie
+        if type_mouvement in ('EXPEDITION', 'CORRECTION_SORTIE', 'IMPORT_FRULOG'):
+            quantite = -abs(float(quantite_tonnes))
         else:
-            cursor.execute("""
-                UPDATE stock_produits_finis
-                SET statut = %s, updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s
-            """, (nouveau_statut, produit_id))
+            quantite = abs(float(quantite_tonnes))
         
+        cursor.execute("""
+            INSERT INTO mouvements_produits_finis 
+                (code_produit_commercial, type_mouvement, quantite_tonnes,
+                 date_mouvement, annee, semaine, source, reference, 
+                 client, notes, created_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """, (
+            code_produit, type_mouvement, quantite,
+            date_mouvement, annee, semaine, source, reference,
+            client, notes, created_by
+        ))
+        
+        new_id = cursor.fetchone()['id']
         conn.commit()
         cursor.close()
         conn.close()
-        return True, f"✅ Statut mis à jour : {nouveau_statut}"
+        
+        return True, f"Mouvement #{new_id} enregistré ({quantite:+.2f} T)"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
-        return False, f"❌ Erreur : {str(e)}"
+        return False, f"Erreur : {str(e)}"
 
-def update_valorisation_produit(produit_id, prix_vente_unitaire, cout_mp=None, cout_prod=None, cout_suremb=None):
-    """Met à jour la valorisation d'un produit fini"""
+
+def supprimer_mouvement(mouvement_id):
+    """Supprime un mouvement (hard delete — traçabilité via logs si nécessaire)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Récupérer nb_uvc_total pour calculer prix_vente_total
-        cursor.execute("SELECT nb_uvc_total, cout_matiere_premiere, cout_production, cout_sur_emballage FROM stock_produits_finis WHERE id = %s", (produit_id,))
-        row = cursor.fetchone()
+        # Vérifier existence
+        cursor.execute("SELECT id FROM mouvements_produits_finis WHERE id = %s", (mouvement_id,))
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return False, "Mouvement introuvable"
         
-        if not row:
-            return False, "❌ Produit introuvable"
-        
-        nb_uvc = float(row['nb_uvc_total'] or 0)
-        
-        # Coûts : utiliser nouvelles valeurs ou existantes
-        cout_mp_final = float(cout_mp) if cout_mp is not None else float(row['cout_matiere_premiere'] or 0)
-        cout_prod_final = float(cout_prod) if cout_prod is not None else float(row['cout_production'] or 0)
-        cout_suremb_final = float(cout_suremb) if cout_suremb is not None else float(row['cout_sur_emballage'] or 0)
-        
-        # Calculs
-        cout_total = cout_mp_final + cout_prod_final + cout_suremb_final
-        prix_vente_total = prix_vente_unitaire * nb_uvc
-        marge_brute = prix_vente_total - cout_total
-        marge_pct = (marge_brute / cout_total * 100) if cout_total > 0 else 0
-        
-        cursor.execute("""
-            UPDATE stock_produits_finis
-            SET prix_vente_unitaire = %s,
-                prix_vente_total = %s,
-                cout_matiere_premiere = %s,
-                cout_production = %s,
-                cout_sur_emballage = %s,
-                cout_total = %s,
-                marge_brute = %s,
-                marge_pct = %s,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s
-        """, (prix_vente_unitaire, prix_vente_total, cout_mp_final, cout_prod_final,
-              cout_suremb_final, cout_total, marge_brute, marge_pct, produit_id))
-        
+        cursor.execute("DELETE FROM mouvements_produits_finis WHERE id = %s", (mouvement_id,))
         conn.commit()
         cursor.close()
         conn.close()
-        return True, f"✅ Valorisation mise à jour - Marge: {marge_brute:.2f}€ ({marge_pct:.1f}%)"
+        
+        return True, f"Mouvement #{mouvement_id} supprimé"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
-        return False, f"❌ Erreur : {str(e)}"
+        return False, f"Erreur : {str(e)}"
 
-def delete_produit_fini(produit_id):
-    """Supprime (soft delete) un produit fini"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            UPDATE stock_produits_finis
-            SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s
-        """, (produit_id,))
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return True, "✅ Produit supprimé"
-    except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
-        return False, f"❌ Erreur : {str(e)}"
 
 # ============================================================================
 # AFFICHAGE - KPIs
 # ============================================================================
 
-kpis = get_kpis_produits_finis()
+kpis = get_kpis()
 
-if kpis and kpis['totaux']:
-    totaux = kpis['totaux']
-    par_statut = kpis['par_statut']
-    
-    # KPIs principaux
+if kpis:
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
-        st.metric("📦 Lignes Stock", format_number_fr(totaux.get('nb_lignes', 0)))
+        st.metric("📦 Stock Total", format_tonnes(kpis['stock_total']))
     
     with col2:
-        poids_t = float(totaux.get('poids_total', 0)) / 1000
-        st.metric("⚖️ Poids Total", f"{format_float_fr(poids_t, 1)} T")
+        st.metric("🏷️ Produits en Stock", kpis['nb_en_stock'])
     
     with col3:
-        st.metric("📊 UVC Total", format_number_fr(totaux.get('uvc_total', 0)))
+        st.metric("📥 Entrées Semaine", format_tonnes(kpis['entrees_semaine']))
     
     with col4:
-        ca = float(totaux.get('ca_total', 0))
-        st.metric("💰 CA Potentiel", format_currency(ca))
+        st.metric("📤 Sorties Semaine", format_tonnes(kpis['sorties_semaine']))
     
     with col5:
-        marge = float(totaux.get('marge_totale', 0))
-        cout = float(totaux.get('cout_total', 0))
-        marge_pct = (marge / cout * 100) if cout > 0 else 0
-        st.metric("📈 Marge Totale", format_currency(marge), f"{marge_pct:.1f}%")
+        st.metric("📊 Total Mouvements", format_number_fr(kpis['nb_mouvements']))
     
-    st.markdown("---")
-    
-    # KPIs par statut
-    st.markdown("##### 📊 Répartition par Statut")
-    
-    statuts_cols = st.columns(3)
-    statut_icons = {'EN_STOCK': '🟢', 'EXPÉDIÉ': '🚚', 'CONSOMMÉ': '⚫'}
-    
-    for i, (statut, icon) in enumerate(statut_icons.items()):
-        with statuts_cols[i]:
-            data = par_statut.get(statut, {})
-            nb = data.get('nb_lignes', 0)
-            poids = float(data.get('poids_total', 0)) / 1000
-            ca = float(data.get('ca_total', 0))
-            st.metric(f"{icon} {statut}", f"{nb} lignes", f"{poids:.1f}T | {format_currency(ca)}")
+    # Top 3 produits
+    if kpis['top3']:
+        st.markdown("---")
+        st.markdown("##### 🏆 Top 3 Produits en Stock")
+        top_cols = st.columns(3)
+        medals = ['🥇', '🥈', '🥉']
+        for i, prod in enumerate(kpis['top3']):
+            with top_cols[i]:
+                st.metric(
+                    f"{medals[i]} {prod['code_produit_commercial'][:30]}",
+                    format_tonnes(prod['stock'])
+                )
 
 else:
-    st.info("📭 Aucun produit fini en stock")
+    st.info("📭 Aucun mouvement enregistré — Commencez par saisir une entrée en stock")
 
 st.markdown("---")
 
 # ============================================================================
-# FILTRES
+# ONGLETS
 # ============================================================================
 
-st.markdown("#### 🔍 Filtres")
-
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-    statuts = ["Tous", "EN_STOCK", "EXPÉDIÉ", "CONSOMMÉ"]
-    filtre_statut = st.selectbox("Statut", statuts, key="filter_statut")
-
-with col2:
-    produits = ["Tous"] + get_produits_commerciaux_list()
-    filtre_produit = st.selectbox("Produit", produits, key="filter_produit")
-
-with col3:
-    date_debut = st.date_input("Date début", value=None, key="filter_date_debut")
-
-with col4:
-    date_fin = st.date_input("Date fin", value=None, key="filter_date_fin")
-
-st.markdown("---")
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📊 Stock Actuel", 
+    "📋 Historique Mouvements", 
+    "➕ Saisie Mouvement",
+    "📈 Évolution"
+])
 
 # ============================================================================
-# TABLEAU DES PRODUITS FINIS
+# ONGLET 1 : STOCK ACTUEL
 # ============================================================================
 
-df = get_produits_finis(
-    statut_filter=filtre_statut if filtre_statut != "Tous" else None,
-    produit_filter=filtre_produit if filtre_produit != "Tous" else None,
-    date_debut=date_debut,
-    date_fin=date_fin
-)
+with tab1:
+    st.subheader("📊 Stock Actuel par Produit")
+    
+    df_stock = get_stock_actuel()
+    
+    if not df_stock.empty:
+        # Filtres
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            marques = ["Toutes"] + sorted(df_stock['marque'].unique().tolist())
+            filtre_marque = st.selectbox("Filtrer par marque", marques, key="stock_filtre_marque")
+        with col_f2:
+            options_stock = ["Tous", "En stock (>0)", "Rupture (=0)", "Négatif (<0)"]
+            filtre_stock = st.selectbox("Filtrer par niveau", options_stock, key="stock_filtre_niveau")
+        
+        df_filtered = df_stock.copy()
+        if filtre_marque != "Toutes":
+            df_filtered = df_filtered[df_filtered['marque'] == filtre_marque]
+        if filtre_stock == "En stock (>0)":
+            df_filtered = df_filtered[df_filtered['stock_tonnes'] > 0]
+        elif filtre_stock == "Rupture (=0)":
+            df_filtered = df_filtered[df_filtered['stock_tonnes'] == 0]
+        elif filtre_stock == "Négatif (<0)":
+            df_filtered = df_filtered[df_filtered['stock_tonnes'] < 0]
+        
+        st.markdown(f"**{len(df_filtered)} produit(s) trouvé(s)**")
+        
+        # Préparer affichage
+        df_display = df_filtered.copy()
+        df_display['stock_display'] = df_display['stock_tonnes'].apply(lambda x: f"{x:+.2f} T")
+        df_display['entrees'] = df_display['total_entrees'].apply(lambda x: f"{x:.2f} T" if pd.notna(x) and x > 0 else "-")
+        df_display['sorties'] = df_display['total_sorties'].apply(lambda x: f"{x:.2f} T" if pd.notna(x) and x > 0 else "-")
+        
+        colonnes = ['code_produit_commercial', 'marque', 'libelle', 'variete',
+                     'stock_display', 'entrees', 'sorties', 'nb_entrees', 'nb_sorties', 
+                     'dernier_mouvement']
+        noms = {
+            'code_produit_commercial': 'Code Produit',
+            'marque': 'Marque',
+            'libelle': 'Libellé',
+            'variete': 'Variété',
+            'stock_display': 'Stock (T)',
+            'entrees': 'Total Entrées',
+            'sorties': 'Total Sorties',
+            'nb_entrees': 'Nb Entrées',
+            'nb_sorties': 'Nb Sorties',
+            'dernier_mouvement': 'Dernier Mvt'
+        }
+        
+        # Filtrer colonnes existantes
+        colonnes = [c for c in colonnes if c in df_display.columns]
+        df_show = df_display[colonnes].rename(columns=noms)
+        
+        st.dataframe(
+            df_show,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                'Dernier Mvt': st.column_config.DateColumn('Dernier Mvt', format='DD/MM/YYYY'),
+            }
+        )
+        
+        # Export
+        st.markdown("---")
+        col_exp1, col_exp2 = st.columns(2)
+        with col_exp1:
+            csv = df_filtered.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "📥 Export CSV",
+                csv,
+                f"stock_pf_{datetime.now().strftime('%Y%m%d')}.csv",
+                "text/csv",
+                use_container_width=True
+            )
+        with col_exp2:
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df_filtered.to_excel(writer, index=False, sheet_name='Stock PF')
+            st.download_button(
+                "📥 Export Excel",
+                buffer.getvalue(),
+                f"stock_pf_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+    else:
+        st.info("📭 Aucun stock — Saisissez des mouvements dans l'onglet '➕ Saisie Mouvement'")
 
-if not df.empty:
-    st.markdown(f"#### 📋 Liste des Produits Finis ({len(df)} résultats)")
+# ============================================================================
+# ONGLET 2 : HISTORIQUE MOUVEMENTS
+# ============================================================================
+
+with tab2:
+    st.subheader("📋 Historique des Mouvements")
     
-    # Préparer affichage
-    df_display = df.copy()
+    # Filtres
+    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
     
-    # Formater colonnes
-    df_display['poids_kg'] = df_display['poids_total_kg'].apply(lambda x: f"{x:,.0f}".replace(',', ' '))
-    df_display['cout'] = df_display['cout_total'].apply(lambda x: f"{x:,.2f}€".replace(',', ' '))
-    df_display['prix_vente'] = df_display['prix_vente_total'].apply(lambda x: f"{x:,.2f}€".replace(',', ' '))
-    df_display['marge'] = df_display['marge_brute'].apply(lambda x: f"{x:,.2f}€".replace(',', ' '))
-    df_display['marge_%'] = df_display['marge_pct'].apply(lambda x: f"{x:.1f}%")
+    with col_f1:
+        produits_list = get_produits_commerciaux_actifs()
+        options_produit = ["Tous"] + [p['code_produit'] for p in produits_list]
+        filtre_produit = st.selectbox("Produit", options_produit, key="hist_produit")
     
-    # Emoji statut
-    def statut_emoji(s):
-        if s == 'EN_STOCK':
-            return '🟢 EN_STOCK'
-        elif s == 'EXPÉDIÉ':
-            return '🚚 EXPÉDIÉ'
-        elif s == 'CONSOMMÉ':
-            return '⚫ CONSOMMÉ'
-        return s
+    with col_f2:
+        types_mvt = ["Tous", "PRODUCTION", "EXPEDITION", "CORRECTION_ENTREE", 
+                     "CORRECTION_SORTIE", "IMPORT_FRULOG"]
+        filtre_type = st.selectbox("Type", types_mvt, key="hist_type")
     
-    df_display['statut_display'] = df_display['statut'].apply(statut_emoji)
+    with col_f3:
+        date_deb = st.date_input("Du", value=None, key="hist_date_deb")
     
-    # Colonnes à afficher
-    colonnes_affichage = [
-        'id', 'date_production', 'code_produit_commercial', 'lot_origine',
-        'sur_emballage_libelle', 'quantite_sur_emballages', 'nb_uvc_total',
-        'poids_kg', 'cout', 'prix_vente', 'marge', 'marge_%',
-        'statut_display', 'site_stockage', 'emplacement'
-    ]
+    with col_f4:
+        date_end = st.date_input("Au", value=None, key="hist_date_fin")
     
-    # Renommer colonnes
-    colonnes_rename = {
-        'id': 'ID',
-        'date_production': 'Date Prod.',
-        'code_produit_commercial': 'Produit',
-        'lot_origine': 'Lot Origine',
-        'sur_emballage_libelle': 'Sur-Emb.',
-        'quantite_sur_emballages': 'Qté S-E',
-        'nb_uvc_total': 'UVC',
-        'poids_kg': 'Poids (kg)',
-        'cout': 'Coût',
-        'prix_vente': 'PV Total',
-        'marge': 'Marge',
-        'marge_%': 'Marge %',
-        'statut_display': 'Statut',
-        'site_stockage': 'Site',
-        'emplacement': 'Empl.'
-    }
-    
-    df_show = df_display[colonnes_affichage].rename(columns=colonnes_rename)
-    
-    # Config colonnes
-    column_config = {
-        'ID': st.column_config.NumberColumn('ID', width='small'),
-        'Date Prod.': st.column_config.DateColumn('Date Prod.', format='DD/MM/YYYY'),
-        'Produit': st.column_config.TextColumn('Produit', width='medium'),
-        'UVC': st.column_config.NumberColumn('UVC', format='%d'),
-        'Qté S-E': st.column_config.NumberColumn('Qté S-E', format='%d'),
-    }
-    
-    # Tableau avec sélection
-    event = st.dataframe(
-        df_show,
-        column_config=column_config,
-        use_container_width=True,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row",
-        key="table_produits_finis"
+    df_mouvements = get_mouvements(
+        code_produit=filtre_produit if filtre_produit != "Tous" else None,
+        type_mouvement=filtre_type if filtre_type != "Tous" else None,
+        date_debut=date_deb,
+        date_fin=date_end
     )
     
-    # Récupérer sélection
-    selected_rows = event.selection.rows if hasattr(event, 'selection') else []
-    
-    st.markdown("---")
-    
-    # ============================================================================
-    # ACTIONS SUR SÉLECTION
-    # ============================================================================
-    
-    if len(selected_rows) > 0:
-        selected_idx = selected_rows[0]
-        selected_row = df.iloc[selected_idx]
-        produit_id = int(selected_row['id'])
+    if not df_mouvements.empty:
+        st.markdown(f"**{len(df_mouvements)} mouvement(s)**")
         
-        st.success(f"✅ Sélectionné : **{selected_row['code_produit_commercial']}** - Lot: {selected_row['lot_origine']} (ID: {produit_id})")
+        # Préparer affichage
+        df_mvt_display = df_mouvements.copy()
         
-        # Onglets d'actions
-        tab1, tab2, tab3 = st.tabs(["📊 Détails", "💰 Valorisation", "🔧 Actions"])
+        # Emoji type mouvement
+        type_emojis = {
+            'PRODUCTION': '🏭',
+            'EXPEDITION': '🚚',
+            'CORRECTION_ENTREE': '📥',
+            'CORRECTION_SORTIE': '📤',
+            'IMPORT_FRULOG': '📊'
+        }
+        df_mvt_display['type_display'] = df_mvt_display['type_mouvement'].apply(
+            lambda t: f"{type_emojis.get(t, '❓')} {t}"
+        )
         
-        with tab1:
-            # Détails du produit
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.markdown("**📦 Produit**")
-                st.write(f"Code : {selected_row['code_produit_commercial']}")
-                st.write(f"Lot origine : {selected_row['lot_origine']}")
-                st.write(f"Date production : {selected_row['date_production']}")
-            
-            with col2:
-                st.markdown("**📊 Quantités**")
-                st.write(f"Sur-emballage : {selected_row['sur_emballage_libelle']}")
-                st.write(f"Qté sur-emb. : {int(selected_row['quantite_sur_emballages'])}")
-                st.write(f"UVC total : {int(selected_row['nb_uvc_total'])}")
-                st.write(f"Poids : {format_number_fr(selected_row['poids_total_kg'])} kg")
-            
-            with col3:
-                st.markdown("**📍 Stockage**")
-                st.write(f"Site : {selected_row['site_stockage']}")
-                st.write(f"Emplacement : {selected_row['emplacement']}")
-                st.write(f"Statut : {selected_row['statut']}")
-                if selected_row['date_expedition']:
-                    st.write(f"Expédié le : {selected_row['date_expedition']}")
+        # Quantité avec couleur
+        df_mvt_display['qte_display'] = df_mvt_display['quantite_tonnes'].apply(
+            lambda q: f"+{q:.2f} T" if q > 0 else f"{q:.2f} T"
+        )
         
-        with tab2:
-            st.markdown("##### 💰 Valorisation")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("**Coûts actuels**")
-                st.write(f"• Matière première : {format_currency(selected_row['cout_matiere_premiere'])}")
-                st.write(f"• Production : {format_currency(selected_row['cout_production'])}")
-                st.write(f"• Sur-emballage : {format_currency(selected_row['cout_sur_emballage'])}")
-                st.write(f"**• TOTAL : {format_currency(selected_row['cout_total'])}**")
-            
-            with col2:
-                st.markdown("**Prix de vente**")
-                st.write(f"• Prix unitaire/UVC : {format_currency(selected_row['prix_vente_unitaire'])}")
-                st.write(f"• Nb UVC : {int(selected_row['nb_uvc_total'])}")
-                st.write(f"**• PV TOTAL : {format_currency(selected_row['prix_vente_total'])}**")
-                
-                marge = selected_row['marge_brute']
-                marge_pct = selected_row['marge_pct']
-                color = "positive-value" if marge >= 0 else "negative-value"
-                st.markdown(f"**• MARGE : <span class='{color}'>{format_currency(marge)} ({marge_pct:.1f}%)</span>**", unsafe_allow_html=True)
-            
-            st.markdown("---")
-            st.markdown("##### ✏️ Modifier la valorisation")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                new_prix_unit = st.number_input(
-                    "Prix vente/UVC (€)",
-                    min_value=0.0,
-                    value=float(selected_row['prix_vente_unitaire'] or 0),
-                    step=0.01,
-                    key="edit_prix_unit"
-                )
-            
-            with col2:
-                new_cout_mp = st.number_input(
-                    "Coût MP (€)",
-                    min_value=0.0,
-                    value=float(selected_row['cout_matiere_premiere'] or 0),
-                    step=0.01,
-                    key="edit_cout_mp"
-                )
-            
-            with col3:
-                new_cout_prod = st.number_input(
-                    "Coût Prod (€)",
-                    min_value=0.0,
-                    value=float(selected_row['cout_production'] or 0),
-                    step=0.01,
-                    key="edit_cout_prod"
-                )
-            
-            with col4:
-                new_cout_suremb = st.number_input(
-                    "Coût Sur-Emb (€)",
-                    min_value=0.0,
-                    value=float(selected_row['cout_sur_emballage'] or 0),
-                    step=0.01,
-                    key="edit_cout_suremb"
-                )
-            
-            # Prévisualisation
-            new_cout_total = new_cout_mp + new_cout_prod + new_cout_suremb
-            new_pv_total = new_prix_unit * int(selected_row['nb_uvc_total'])
-            new_marge = new_pv_total - new_cout_total
-            new_marge_pct = (new_marge / new_cout_total * 100) if new_cout_total > 0 else 0
-            
-            st.info(f"📊 **Prévisualisation** : PV Total = {format_currency(new_pv_total)} | Coût = {format_currency(new_cout_total)} | Marge = {format_currency(new_marge)} ({new_marge_pct:.1f}%)")
-            
-            if st.button("💾 Enregistrer Valorisation", type="primary", key="btn_save_valo"):
-                success, msg = update_valorisation_produit(
-                    produit_id, new_prix_unit, new_cout_mp, new_cout_prod, new_cout_suremb
-                )
-                if success:
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.error(msg)
+        colonnes_mvt = ['id', 'date_mouvement', 'type_display', 'code_produit_commercial',
+                        'libelle_produit', 'qte_display', 'source', 'reference', 
+                        'client', 'notes', 'created_by']
+        noms_mvt = {
+            'id': 'ID',
+            'date_mouvement': 'Date',
+            'type_display': 'Type',
+            'code_produit_commercial': 'Code Produit',
+            'libelle_produit': 'Produit',
+            'qte_display': 'Quantité',
+            'source': 'Source',
+            'reference': 'Référence',
+            'client': 'Client',
+            'notes': 'Notes',
+            'created_by': 'Par'
+        }
         
-        with tab3:
-            st.markdown("##### 🔧 Actions")
+        colonnes_mvt = [c for c in colonnes_mvt if c in df_mvt_display.columns]
+        df_mvt_show = df_mvt_display[colonnes_mvt].rename(columns=noms_mvt)
+        
+        event = st.dataframe(
+            df_mvt_show,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="table_mouvements",
+            column_config={
+                'Date': st.column_config.DateColumn('Date', format='DD/MM/YYYY'),
+                'ID': st.column_config.NumberColumn('ID', width='small'),
+            }
+        )
+        
+        # Sélection pour suppression
+        selected_rows = event.selection.rows if hasattr(event, 'selection') else []
+        
+        if len(selected_rows) > 0:
+            selected_idx = selected_rows[0]
+            selected_mvt = df_mouvements.iloc[selected_idx]
+            mvt_id = int(selected_mvt['id'])
             
-            col1, col2, col3 = st.columns(3)
+            st.warning(
+                f"Mouvement #{mvt_id} sélectionné : "
+                f"{selected_mvt['type_mouvement']} | "
+                f"{selected_mvt['code_produit_commercial']} | "
+                f"{float(selected_mvt['quantite_tonnes']):+.2f} T"
+            )
             
-            with col1:
-                st.markdown("**📤 Changer Statut**")
-                statut_actuel = selected_row['statut']
-                
-                if statut_actuel == 'EN_STOCK':
-                    if st.button("🚚 Marquer Expédié", key="btn_expedier", use_container_width=True):
-                        st.session_state['show_expedition_form'] = True
-                    
-                    if st.session_state.get('show_expedition_form', False):
-                        date_exp = st.date_input("Date expédition", value=date.today(), key="date_exp")
-                        col_ok, col_cancel = st.columns(2)
-                        with col_ok:
-                            if st.button("✅ Valider", key="btn_val_exp"):
-                                success, msg = update_statut_produit(produit_id, 'EXPÉDIÉ', date_exp)
-                                if success:
-                                    st.success(msg)
-                                    st.session_state.pop('show_expedition_form', None)
-                                    st.rerun()
-                                else:
-                                    st.error(msg)
-                        with col_cancel:
-                            if st.button("❌", key="btn_cancel_exp"):
-                                st.session_state.pop('show_expedition_form', None)
-                                st.rerun()
-                
-                elif statut_actuel == 'EXPÉDIÉ':
-                    st.info("📦 Produit déjà expédié")
-                    if st.button("↩️ Remettre EN_STOCK", key="btn_retour_stock"):
-                        success, msg = update_statut_produit(produit_id, 'EN_STOCK')
+            col_del1, col_del2 = st.columns([1, 3])
+            with col_del1:
+                if st.button("🗑️ Supprimer ce mouvement", type="secondary", key="btn_delete_mvt"):
+                    st.session_state['confirm_delete_mvt'] = mvt_id
+            
+            if st.session_state.get('confirm_delete_mvt') == mvt_id:
+                st.error("Cette action est irréversible. Le stock sera recalculé.")
+                col_ok, col_cancel = st.columns(2)
+                with col_ok:
+                    if st.button("Oui, supprimer", key="btn_confirm_del_mvt"):
+                        success, msg = supprimer_mouvement(mvt_id)
                         if success:
                             st.success(msg)
+                            st.session_state.pop('confirm_delete_mvt', None)
                             st.rerun()
                         else:
                             st.error(msg)
-            
-            with col2:
-                st.markdown("**⚫ Consommer**")
-                if statut_actuel != 'CONSOMMÉ':
-                    if st.button("⚫ Marquer Consommé", key="btn_consommer", use_container_width=True):
-                        success, msg = update_statut_produit(produit_id, 'CONSOMMÉ')
-                        if success:
-                            st.success(msg)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-                else:
-                    st.info("Produit déjà consommé")
-            
-            with col3:
-                st.markdown("**🗑️ Supprimer**")
-                if st.button("🗑️ Supprimer", key="btn_delete", type="secondary", use_container_width=True):
-                    st.session_state['confirm_delete'] = True
-                
-                if st.session_state.get('confirm_delete', False):
-                    st.warning("⚠️ Confirmer la suppression ?")
-                    col_ok, col_cancel = st.columns(2)
-                    with col_ok:
-                        if st.button("✅ Oui, supprimer", key="btn_confirm_del"):
-                            success, msg = delete_produit_fini(produit_id)
-                            if success:
-                                st.success(msg)
-                                st.session_state.pop('confirm_delete', None)
-                                st.rerun()
-                            else:
-                                st.error(msg)
-                    with col_cancel:
-                        if st.button("❌ Annuler", key="btn_cancel_del"):
-                            st.session_state.pop('confirm_delete', None)
-                            st.rerun()
-    
-    else:
-        st.info("👆 Sélectionnez une ligne dans le tableau pour voir les détails et actions")
-    
-    # ============================================================================
-    # EXPORT
-    # ============================================================================
-    
-    st.markdown("---")
-    st.markdown("#### 📤 Exports")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Export CSV
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            "📥 Télécharger CSV",
-            csv,
-            f"produits_finis_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            "text/csv",
-            use_container_width=True
-        )
-    
-    with col2:
-        # Export Excel
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Produits Finis')
+                with col_cancel:
+                    if st.button("Annuler", key="btn_cancel_del_mvt"):
+                        st.session_state.pop('confirm_delete_mvt', None)
+                        st.rerun()
         
-        st.download_button(
-            "📥 Télécharger Excel",
-            buffer.getvalue(),
-            f"produits_finis_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-
-else:
-    st.info("📭 Aucun produit fini trouvé avec ces filtres")
-    
-    # Afficher quand même si la table est vide
-    if filtre_statut == "Tous" and filtre_produit == "Tous" and not date_debut and not date_fin:
+        # Export mouvements
         st.markdown("---")
-        st.markdown("💡 **Les produits finis sont créés automatiquement lors de la terminaison des jobs de production.**")
-        st.markdown("→ Allez dans **Planning Production** pour créer et terminer des jobs.")
+        csv_mvt = df_mouvements.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            "📥 Export Mouvements CSV",
+            csv_mvt,
+            f"mouvements_pf_{datetime.now().strftime('%Y%m%d')}.csv",
+            "text/csv"
+        )
+    else:
+        st.info("📭 Aucun mouvement trouvé avec ces filtres")
+
+# ============================================================================
+# ONGLET 3 : SAISIE MOUVEMENT
+# ============================================================================
+
+with tab3:
+    st.subheader("➕ Saisir un Mouvement")
+    
+    produits = get_produits_commerciaux_actifs()
+    
+    if not produits:
+        st.warning("Aucun produit commercial actif trouvé dans ref_produits_commerciaux")
+    else:
+        # Type de mouvement
+        st.markdown("##### Type de mouvement")
+        type_col1, type_col2 = st.columns(2)
+        
+        with type_col1:
+            type_options = {
+                "🏭 Entrée Production": "PRODUCTION",
+                "🚚 Sortie Expédition": "EXPEDITION",
+                "📥 Correction Entrée (+)": "CORRECTION_ENTREE",
+                "📤 Correction Sortie (-)": "CORRECTION_SORTIE",
+            }
+            type_selected = st.selectbox(
+                "Type *",
+                list(type_options.keys()),
+                key="saisie_type"
+            )
+            type_mouvement = type_options[type_selected]
+        
+        with type_col2:
+            is_entree = type_mouvement in ('PRODUCTION', 'CORRECTION_ENTREE')
+            if is_entree:
+                st.success("📥 Ce mouvement va **augmenter** le stock")
+            else:
+                st.error("📤 Ce mouvement va **diminuer** le stock")
+        
+        st.markdown("---")
+        
+        # Produit et quantité
+        st.markdown("##### Détails")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            prod_options = [f"{p['code_produit']} — {p['marque']} {p['libelle']}" for p in produits]
+            prod_selected_idx = st.selectbox(
+                "Produit commercial *",
+                range(len(prod_options)),
+                format_func=lambda i: prod_options[i],
+                key="saisie_produit"
+            )
+            code_produit = produits[prod_selected_idx]['code_produit']
+        
+        with col2:
+            quantite = st.number_input(
+                "Quantité (tonnes) *",
+                min_value=0.01,
+                max_value=500.0,
+                value=1.0,
+                step=0.5,
+                format="%.2f",
+                key="saisie_quantite"
+            )
+        
+        with col3:
+            date_mvt = st.date_input(
+                "Date *",
+                value=date.today(),
+                key="saisie_date"
+            )
+        
+        # Infos complémentaires
+        col4, col5 = st.columns(2)
+        
+        with col4:
+            reference = st.text_input(
+                "Référence (n° BL, n° job...)",
+                key="saisie_reference"
+            )
+        
+        with col5:
+            client_mvt = st.text_input(
+                "Client (si expédition)",
+                key="saisie_client"
+            )
+        
+        notes_mvt = st.text_area(
+            "Notes",
+            height=80,
+            key="saisie_notes"
+        )
+        
+        # Prévisualisation
+        signe = "+" if is_entree else "-"
+        st.info(
+            f"**Prévisualisation** : {type_selected} | "
+            f"{code_produit} | {signe}{quantite:.2f} T | "
+            f"Date: {date_mvt.strftime('%d/%m/%Y')}"
+        )
+        
+        # Bouton enregistrer
+        if st.button("💾 Enregistrer le mouvement", type="primary", use_container_width=True, key="btn_save_mvt"):
+            username = st.session_state.get('username', 'inconnu')
+            
+            success, msg = ajouter_mouvement(
+                code_produit=code_produit,
+                type_mouvement=type_mouvement,
+                quantite_tonnes=quantite,
+                date_mouvement=date_mvt,
+                source='MANUEL',
+                reference=reference if reference else None,
+                client=client_mvt if client_mvt else None,
+                notes=notes_mvt if notes_mvt else None,
+                created_by=username
+            )
+            
+            if success:
+                st.success(f"✅ {msg}")
+                st.balloons()
+                st.rerun()
+            else:
+                st.error(f"❌ {msg}")
+
+# ============================================================================
+# ONGLET 4 : ÉVOLUTION
+# ============================================================================
+
+with tab4:
+    st.subheader("📈 Évolution du Stock")
+    
+    nb_sem = st.slider("Nombre de semaines", 4, 52, 12, key="evol_nb_sem")
+    
+    df_evol = get_evolution_stock(nb_sem)
+    
+    if not df_evol.empty:
+        # Graphique stock cumulé
+        fig = go.Figure()
+        
+        fig.add_trace(go.Scatter(
+            x=df_evol['semaine_label'],
+            y=df_evol['stock_cumule'],
+            mode='lines+markers',
+            name='Stock cumulé (T)',
+            line=dict(color='#2196f3', width=3),
+            marker=dict(size=8),
+            fill='tozeroy',
+            fillcolor='rgba(33, 150, 243, 0.1)'
+        ))
+        
+        # Barres entrées/sorties par semaine
+        fig.add_trace(go.Bar(
+            x=df_evol['semaine_label'],
+            y=df_evol['mouvement_semaine'],
+            name='Mouvement net (T)',
+            marker_color=df_evol['mouvement_semaine'].apply(
+                lambda x: '#4caf50' if x >= 0 else '#f44336'
+            ).tolist(),
+            opacity=0.5
+        ))
+        
+        fig.update_layout(
+            title="Stock Produits Finis — Évolution hebdomadaire",
+            xaxis_title="Semaine",
+            yaxis_title="Tonnes",
+            height=450,
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02)
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Tableau détaillé
+        with st.expander("📊 Détail par semaine"):
+            df_evol_display = df_evol[['semaine_label', 'mouvement_semaine', 'stock_cumule']].copy()
+            df_evol_display.columns = ['Semaine', 'Mouvement Net (T)', 'Stock Cumulé (T)']
+            st.dataframe(df_evol_display, use_container_width=True, hide_index=True)
+    else:
+        st.info("📭 Pas assez de données pour afficher l'évolution")
+        st.markdown("Saisissez des mouvements dans l'onglet '➕ Saisie Mouvement' pour voir le graphique.")
+
+# ============================================================================
+# FOOTER
+# ============================================================================
 
 show_footer()
