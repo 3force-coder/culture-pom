@@ -100,6 +100,7 @@ pages = {
     "📈 Commercial": [
         st.Page("pages/06_Previsions_Ventes.py", title="Prévisions Ventes", icon="📈"),
         st.Page("pages/07_Affectation_Stock.py", title="Affectation Stock", icon="🔗"),
+        st.Page("pages/35_Frulog.py", title="Stats Frulog", icon="📊"),
     ],
         "📊 Prévisions": [
         st.Page("pages/31_Prev_Dashboard.py", title="Dashboard Prév.", icon="📊"),
