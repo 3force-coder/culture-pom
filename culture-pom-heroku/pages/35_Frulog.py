@@ -613,20 +613,34 @@ def render_analyse_ventes(data, data_prev, label_prev, label, show_produit=False
             st.plotly_chart(fig, use_container_width=True)
         if data['par_semaine']:
             df_s = pd.DataFrame(data['par_semaine']); df_s['tonnes'] = df_s['pds_kg'].astype(float)/1000
-            # Agréger par semaine
-            df_s = df_s.groupby('semaine', as_index=False).agg({'tonnes':'sum'}).sort_values('semaine')
+            df_s = df_s.groupby('semaine', as_index=False).agg({'tonnes':'sum'})
             df_s['sem_label'] = df_s['semaine'].apply(lambda s: f"S{int(s):02d}")
+            # Ordre campagne : S23→S52 puis S01→S22
+            ordre_sem = [f"S{i:02d}" for i in list(range(23,53)) + list(range(1,23))]
             fig = go.Figure()
+            # Semaine courante ISO
+            from datetime import date
+            sem_courante = date.today().isocalendar()[1]
+            sem_courante_label = f"S{sem_courante:02d}"
             if data_prev and data_prev.get('par_semaine'):
                 df_sp = pd.DataFrame(data_prev['par_semaine']); df_sp['tonnes'] = df_sp['pds_kg'].astype(float)/1000
-                df_sp = df_sp.groupby('semaine', as_index=False).agg({'tonnes':'sum'}).sort_values('semaine')
+                df_sp = df_sp.groupby('semaine', as_index=False).agg({'tonnes':'sum'})
                 df_sp['sem_label'] = df_sp['semaine'].apply(lambda s: f"S{int(s):02d}")
                 fig.add_trace(go.Bar(x=df_sp['sem_label'], y=df_sp['tonnes'], name='N-1', marker_color='#FFB74D',
                     text=[fmt_t(v) for v in df_sp['tonnes']], textposition='outside', textfont=dict(size=7, color='#E65100')))
             fig.add_trace(go.Bar(x=df_s['sem_label'], y=df_s['tonnes'], name='Période', marker_color='#1565C0',
                 text=[fmt_t(v) for v in df_s['tonnes']], textposition='outside', textfont=dict(size=7, color='#0D47A1')))
+            # Zone grisée après semaine courante (futur = SPLY only)
+            if sem_courante_label in ordre_sem:
+                idx_cur = ordre_sem.index(sem_courante_label)
+                if idx_cur < len(ordre_sem) - 1:
+                    fig.add_vrect(x0=ordre_sem[idx_cur], x1=ordre_sem[-1],
+                        fillcolor="rgba(200,200,200,0.15)", line_width=0,
+                        annotation_text="Projection N-1", annotation_position="top left",
+                        annotation_font_size=9, annotation_font_color="#888")
             fig.update_layout(title="Tonnage hebdo — N vs N-1", height=420, barmode='group',
-                xaxis=dict(tickangle=-45), legend=dict(orientation="h", yanchor="bottom", y=1.02))
+                xaxis=dict(tickangle=-45, categoryorder='array', categoryarray=ordre_sem),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02))
             st.plotly_chart(fig, use_container_width=True)
 
     elif vue == "👥 Clients":
