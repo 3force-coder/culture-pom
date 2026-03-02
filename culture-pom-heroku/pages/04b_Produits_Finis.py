@@ -346,6 +346,41 @@ def get_sur_emballages_actifs():
         return []
 
 
+def get_clients_crm():
+    """Liste des clients CRM pour dropdown avec saisie libre"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT nom_client 
+            FROM crm_magasins 
+            WHERE nom_client IS NOT NULL AND nom_client != ''
+              AND statut IN ('ACTIF', 'PROSPECT', 'EN_PAUSE')
+            ORDER BY nom_client
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [r['nom_client'].strip() for r in rows if r['nom_client'] and r['nom_client'].strip()]
+    except Exception as e:
+        return []
+
+
+def widget_client(key_prefix, label="Client"):
+    """Widget client : dropdown CRM + saisie libre. Retourne le nom client."""
+    clients_crm = get_clients_crm()
+    options = ["— Aucun —", "✏️ Saisie libre"] + clients_crm
+    
+    choix = st.selectbox(label, options, key=f"{key_prefix}_select")
+    
+    if choix == "✏️ Saisie libre":
+        return st.text_input("Nom du client", key=f"{key_prefix}_libre")
+    elif choix == "— Aucun —":
+        return None
+    else:
+        return choix
+
+
 def ajouter_mouvement(code_produit, type_mouvement, date_mouvement,
                       sur_emballage_id, nb_sur_emballages, nb_uvc, 
                       poids_unitaire_kg, poids_total_kg, quantite_tonnes,
@@ -621,7 +656,7 @@ with tab1:
                     )
                 
                 with sc3:
-                    client_sortie = st.text_input("Client", key="sortie_client")
+                    client_sortie = widget_client("sortie", "Client")
                 
                 sc4, sc5 = st.columns(2)
                 with sc4:
@@ -948,7 +983,7 @@ with tab3:
         with ic3:
             ref = st.text_input("Référence (BL, job...)", key="s_ref")
         with ic4:
-            client = st.text_input("Client", key="s_client")
+            client = widget_client("entree", "Client")
         
         # Indicateur fraîcheur en temps réel
         age_prod = (date.today() - date_prod).days
