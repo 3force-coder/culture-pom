@@ -662,7 +662,6 @@ with tab3:
             code_produit = produit['code_produit']
             # Poids unitaire du référentiel (converti en KG)
             poids_ref_kg = normaliser_poids_kg(produit['poids_unitaire'], produit['unite_poids'])
-            # Afficher l'unité d'origine pour info
             unite_origine = (produit['unite_poids'] or 'KG').upper().strip()
             poids_origine = float(produit['poids_unitaire']) if produit['poids_unitaire'] else 0
         
@@ -678,6 +677,18 @@ with tab3:
             nb_se = st.number_input("Nombre de sur-emballages *",
                                     min_value=1, max_value=9999, value=1, step=1, key="s_nb")
         
+        # ⭐ Détection changement produit/sur-emballage → reset poids et UVC
+        prev_prod = st.session_state.get('_prev_prod', None)
+        prev_se = st.session_state.get('_prev_se', None)
+        
+        if prev_prod != code_produit:
+            st.session_state['_prev_prod'] = code_produit
+            st.session_state['s_poids_uvc'] = max(poids_ref_kg, 0.001)
+        
+        if prev_se != se_id:
+            st.session_state['_prev_se'] = se_id
+            st.session_state['s_nb_uvc'] = nb_uvc_ref
+        
         # --- Paramètres ajustables (pré-remplis depuis référentiel) ---
         st.markdown("---")
         st.markdown("##### ⚙️ Paramètres de calcul *(modifiables si besoin)*")
@@ -692,12 +703,14 @@ with tab3:
         pc1, pc2, pc3 = st.columns(3)
         
         with pc1:
-            # Poids unitaire modifiable — en KG avec conversion si G
+            # Poids unitaire modifiable — initialisé dans session_state par la détection ci-dessus
+            if 's_poids_uvc' not in st.session_state:
+                st.session_state['s_poids_uvc'] = max(poids_ref_kg, 0.001)
+            
             poids_uvc_kg = st.number_input(
                 "Poids unitaire UVC (kg) *",
                 min_value=0.001,
                 max_value=500.0,
-                value=max(poids_ref_kg, 0.001),
                 step=0.1,
                 format="%.3f",
                 key="s_poids_uvc",
@@ -706,11 +719,13 @@ with tab3:
         
         with pc2:
             # Nb UVC par sur-emballage modifiable
+            if 's_nb_uvc' not in st.session_state:
+                st.session_state['s_nb_uvc'] = nb_uvc_ref
+            
             nb_uvc_par_se = st.number_input(
                 f"UVC par {sur_emb['libelle']} *",
                 min_value=1,
                 max_value=9999,
-                value=nb_uvc_ref,
                 step=1,
                 key="s_nb_uvc",
                 help=f"Nombre d'UVC dans un(e) {sur_emb['libelle']}. Référentiel : {nb_uvc_ref}"
