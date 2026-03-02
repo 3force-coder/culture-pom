@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from database import get_connection
 from components import show_footer
 from auth import require_access
@@ -19,53 +19,82 @@ st.markdown("""<style>
 </style>""", unsafe_allow_html=True)
 
 require_access("COMMERCIAL")
-
 st.title("📊 Frulog — Import & Analyse")
-st.caption("*Conditionnement, Négoce & Achats*")
 
 # ============================================================================
-# FILTRE CAMPAGNE GLOBAL
+# FILTRES GLOBAUX : CAMPAGNE + DATE RANGE + COMPARAISON
 # ============================================================================
-
-def get_campagnes():
-    """Génère la liste des campagnes : Campagne YYYY = 01/06/YYYY-1 au 31/05/YYYY"""
-    now = datetime.now()
-    current_year = now.year if now.month >= 6 else now.year - 1
-    # Campagne en cours = current_year+1 (ex: si on est en mars 2026, campagne 2026 = juin 2025 → mai 2026)
-    current_camp = current_year + 1
-    camps = []
-    for y in range(current_camp + 1, 2022, -1):  # future + actuelle + historique
-        camps.append(y)
-    return camps
 
 def campagne_dates(year):
-    """Retourne (date_debut, date_fin) pour une campagne"""
     return date(year - 1, 6, 1), date(year, 5, 31)
 
+def get_campagnes():
+    now = datetime.now()
+    cy = now.year + 1 if now.month >= 6 else now.year
+    return list(range(cy + 1, 2022, -1))
+
 campagnes = get_campagnes()
-camp_labels = {y: f"Campagne {y} ({y-1}/06 → {y}/05)" for y in campagnes}
-camp_labels[0] = "🔓 Toutes les campagnes"
 
-fc1, fc2 = st.columns([3, 1])
-with fc1:
-    sel_camp = st.selectbox("🗓️ Campagne", [0] + campagnes,
-                           format_func=lambda y: camp_labels.get(y, str(y)),
-                           key="filtre_campagne")
-with fc2:
-    if sel_camp:
-        d1, d2 = campagne_dates(sel_camp)
-        st.info(f"📅 {d1.strftime('%d/%m/%Y')} → {d2.strftime('%d/%m/%Y')}")
-    else:
-        st.info("📅 Aucun filtre de date")
+with st.container():
+    fc1, fc2, fc3, fc4 = st.columns([2, 1.5, 1.5, 2])
+    with fc1:
+        camp_opts = [0] + campagnes
+        camp_labels_map = {0: "🔓 Toutes", **{y: f"Camp. {y} ({y-1}/06→{y}/05)" for y in campagnes}}
+        sel_camp = st.selectbox("🗓️ Campagne", camp_opts,
+                               format_func=lambda y: camp_labels_map[y], key="f_camp")
+    with fc2:
+        d_min_camp = campagne_dates(sel_camp)[0] if sel_camp else date(2022, 1, 1)
+        d_max_camp = campagne_dates(sel_camp)[1] if sel_camp else date(2027, 12, 31)
+        date_deb = st.date_input("📅 Du", value=d_min_camp, min_value=d_min_camp,
+                                 max_value=d_max_camp, key="f_deb")
+    with fc3:
+        date_fin = st.date_input("📅 Au", value=d_max_camp, min_value=d_min_camp,
+                                 max_value=d_max_camp, key="f_fin")
+    with fc4:
+        mode_compare = st.selectbox("🔀 Comparaison", [
+            "Aucune", "📅 Campagne vs Campagne", "📆 Mois vs Mois", "📆 Semaine vs Semaine"
+        ], key="f_compare")
 
-# Variables globales de filtre
-CAMP_DATE_MIN = campagne_dates(sel_camp)[0] if sel_camp else None
-CAMP_DATE_MAX = campagne_dates(sel_camp)[1] if sel_camp else None
+# Comparaison — paramètres
+COMP_DATES = None  # (label1, d1_min, d1_max, label2, d2_min, d2_max) ou None
+if mode_compare == "📅 Campagne vs Campagne":
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        c1 = st.selectbox("Campagne A", campagnes, key="comp_c1")
+    with cc2:
+        c2 = st.selectbox("Campagne B", [c for c in campagnes if c != c1], key="comp_c2")
+    d1a, d1b = campagne_dates(c1); d2a, d2b = campagne_dates(c2)
+    COMP_DATES = (f"Camp. {c1}", d1a, d1b, f"Camp. {c2}", d2a, d2b)
+elif mode_compare == "📆 Mois vs Mois":
+    mois_names = {1:'Janvier',2:'Février',3:'Mars',4:'Avril',5:'Mai',6:'Juin',
+                  7:'Juillet',8:'Août',9:'Septembre',10:'Octobre',11:'Novembre',12:'Décembre'}
+    cm1, cm2, cm3, cm4 = st.columns(4)
+    with cm1: ma = st.selectbox("Mois A", range(1,13), format_func=lambda m: mois_names[m], key="comp_ma")
+    with cm2: ya = st.number_input("Année A", 2022, 2027, datetime.now().year, key="comp_ya")
+    with cm3: mb = st.selectbox("Mois B", range(1,13), format_func=lambda m: mois_names[m], index=max(0, datetime.now().month-2), key="comp_mb")
+    with cm4: yb = st.number_input("Année B", 2022, 2027, datetime.now().year - 1, key="comp_yb")
+    import calendar
+    d1a = date(int(ya), int(ma), 1); d1b = date(int(ya), int(ma), calendar.monthrange(int(ya), int(ma))[1])
+    d2a = date(int(yb), int(mb), 1); d2b = date(int(yb), int(mb), calendar.monthrange(int(yb), int(mb))[1])
+    COMP_DATES = (f"{mois_names[ma]} {ya}", d1a, d1b, f"{mois_names[mb]} {yb}", d2a, d2b)
+elif mode_compare == "📆 Semaine vs Semaine":
+    cs1, cs2, cs3, cs4 = st.columns(4)
+    with cs1: sa = st.number_input("Semaine A", 1, 53, max(1, datetime.now().isocalendar()[1]-1), key="comp_sa")
+    with cs2: ysa = st.number_input("Année A", 2022, 2027, datetime.now().year, key="comp_ysa")
+    with cs3: sb = st.number_input("Semaine B", 1, 53, max(1, datetime.now().isocalendar()[1]-1), key="comp_sb")
+    with cs4: ysb = st.number_input("Année B", 2022, 2027, datetime.now().year - 1, key="comp_ysb")
+    d1a = date.fromisocalendar(int(ysa), int(sa), 1); d1b = d1a + timedelta(days=6)
+    d2a = date.fromisocalendar(int(ysb), int(sb), 1); d2b = d2a + timedelta(days=6)
+    COMP_DATES = (f"S{sa}/{ysa}", d1a, d1b, f"S{sb}/{ysb}", d2a, d2b)
 
 st.markdown("---")
 
+# Variables globales filtre
+DATE_DEB = date_deb
+DATE_FIN = date_fin
+
 # ============================================================================
-# CONSTANTES — Mapping colonnes
+# CONSTANTES
 # ============================================================================
 
 COLONNES_VENTES = {
@@ -92,7 +121,6 @@ COLONNES_VENTES = {
     '111 Val':'col_111_val','Transport':'transport',
     'GTIN U':'gtin_u','GTIN P':'gtin_p','GTIN C':'gtin_c','GGN':'ggn','Dt.Expi':'dt_expi'
 }
-
 COLONNES_ACHAT = {
     'Date du bon':'date_du_bon','Dt chargmt':'dt_chargmt','No de Bon':'no_de_bon',
     'Vendeur':'vendeur','Apporteur':'apporteur','Famille':'famille','Dépôt':'depot',
@@ -107,7 +135,6 @@ COLONNES_ACHAT = {
     'Date facture':'date_facture','tare':'tare','Type':'type',
     'Référence':'reference','GGN':'ggn','Dt.Expi':'dt_expi'
 }
-
 VENTES_DATE_COLS = ['date_cmd','date_charg','date_livr','date_crea','dt_fac_v','dt_fac_a','dte_fab','dt_expi']
 VENTES_INT_COLS = ['nb_col','nb_pce','etat','nb_pal','nb_pal_sol']
 VENTES_NUM_COLS = ['pds_brut','tare_v','pds_net','prix','montant','montant_euro',
@@ -119,46 +146,37 @@ ACHAT_DATE_COLS = ['date_du_bon','dt_chargmt','date_facture','dt_expi']
 ACHAT_INT_COLS = ['nb_pal','nb_colis','nb_col_sup','etat']
 ACHAT_NUM_COLS = ['pds_brut','pds_net','prix_achat','montant_ht','montant_euro','tare']
 
-
-def make_cle_produit(emballage, marque):
-    e = str(emballage).strip().upper() if emballage and str(emballage).strip() != '.' else ''
-    m = str(marque).strip().upper() if marque and str(marque).strip() != '.' else ''
+def make_cle_produit(emb, mrq):
+    e = str(emb).strip().upper() if emb and str(emb).strip() != '.' else ''
+    m = str(mrq).strip().upper() if mrq and str(mrq).strip() != '.' else ''
     return f"{e}|{m}"
 
-
 def to_python(val):
-    if val is None or (isinstance(val, float) and np.isnan(val)) or val is pd.NaT:
-        return None
-    elif isinstance(val, (np.integer, np.int64)):
-        return int(val)
-    elif isinstance(val, (np.floating, np.float64)):
-        return float(val)
+    if val is None or (isinstance(val, float) and np.isnan(val)) or val is pd.NaT: return None
+    if isinstance(val, (np.integer, np.int64)): return int(val)
+    if isinstance(val, (np.floating, np.float64)): return float(val)
     return val
 
-
 def clean_text(x):
-    if pd.isna(x) or str(x).strip() == '.':
-        return None
+    if pd.isna(x) or str(x).strip() == '.': return None
     return str(x).strip()
 
+def cw_ventes(d1=None, d2=None):
+    """Clause WHERE campagne/daterange pour ventes"""
+    dd = d1 or DATE_DEB; df = d2 or DATE_FIN
+    return f" AND date_charg >= '{dd}' AND date_charg <= '{df}'"
 
-def camp_where_ventes(prefix="", extra_and=True):
-    """Génère la clause WHERE de campagne pour tables ventes (date_charg)"""
-    if not CAMP_DATE_MIN:
-        return ""
-    p = f"{prefix}." if prefix else ""
-    clause = f"{p}date_charg >= '{CAMP_DATE_MIN}' AND {p}date_charg <= '{CAMP_DATE_MAX}'"
-    return f" AND {clause}" if extra_and else f" WHERE {clause}"
+def cw_achat(d1=None, d2=None):
+    dd = d1 or DATE_DEB; df = d2 or DATE_FIN
+    return f" AND dt_chargmt >= '{dd}' AND dt_chargmt <= '{df}'"
 
-
-def camp_where_achat(prefix="", extra_and=True):
-    """Génère la clause WHERE de campagne pour table achat (dt_chargmt)"""
-    if not CAMP_DATE_MIN:
-        return ""
-    p = f"{prefix}." if prefix else ""
-    clause = f"{p}dt_chargmt >= '{CAMP_DATE_MIN}' AND {p}dt_chargmt <= '{CAMP_DATE_MAX}'"
-    return f" AND {clause}" if extra_and else f" WHERE {clause}"
-
+def sply_dates():
+    """Retourne les dates de la même période l'année précédente"""
+    try:
+        d1 = DATE_DEB.replace(year=DATE_DEB.year - 1)
+        d2 = DATE_FIN.replace(year=DATE_FIN.year - 1)
+        return d1, d2
+    except: return None, None
 
 # ============================================================================
 # FONCTIONS BDD
@@ -166,118 +184,100 @@ def camp_where_achat(prefix="", extra_and=True):
 
 def get_imports(source=None):
     try:
-        conn = get_connection(); cursor = conn.cursor()
-        where = f"WHERE source='{source}'" if source else ""
-        cursor.execute(f"SELECT * FROM frulog_imports {where} ORDER BY date_import DESC LIMIT 50")
-        rows = cursor.fetchall(); cursor.close(); conn.close()
+        conn = get_connection(); cur = conn.cursor()
+        w = f"WHERE source='{source}'" if source else ""
+        cur.execute(f"SELECT * FROM frulog_imports {w} ORDER BY date_import DESC LIMIT 50")
+        rows = cur.fetchall(); cur.close(); conn.close()
         return pd.DataFrame(rows) if rows else pd.DataFrame()
     except: return pd.DataFrame()
 
 def get_mapping_produit():
     try:
-        conn = get_connection(); cursor = conn.cursor()
-        cursor.execute("""SELECT fm.*, pc.libelle as libelle_produit, pc.marque as marque_produit
-            FROM frulog_mapping_produit fm
-            LEFT JOIN ref_produits_commerciaux pc ON fm.code_produit_commercial = pc.code_produit
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("""SELECT fm.*, pc.libelle as libelle_produit
+            FROM frulog_mapping_produit fm LEFT JOIN ref_produits_commerciaux pc ON fm.code_produit_commercial = pc.code_produit
             WHERE fm.is_active = TRUE ORDER BY fm.emballage, fm.marque""")
-        rows = cursor.fetchall(); cursor.close(); conn.close()
+        rows = cur.fetchall(); cur.close(); conn.close()
         return pd.DataFrame(rows) if rows else pd.DataFrame()
     except: return pd.DataFrame()
 
 def get_mapping_suremballage():
     try:
-        conn = get_connection(); cursor = conn.cursor()
-        cursor.execute("""SELECT fms.*, se.libelle as libelle_se, se.nb_uvc
-            FROM frulog_mapping_suremballage fms
-            LEFT JOIN ref_sur_emballages se ON fms.sur_emballage_id = se.id
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("""SELECT fms.*, se.libelle as libelle_se, se.nb_uvc
+            FROM frulog_mapping_suremballage fms LEFT JOIN ref_sur_emballages se ON fms.sur_emballage_id = se.id
             WHERE fms.is_active = TRUE ORDER BY fms.code_emballage""")
-        rows = cursor.fetchall(); cursor.close(); conn.close()
+        rows = cur.fetchall(); cur.close(); conn.close()
         return pd.DataFrame(rows) if rows else pd.DataFrame()
     except: return pd.DataFrame()
 
 def get_produits_commerciaux():
     try:
-        conn = get_connection(); cursor = conn.cursor()
-        cursor.execute("SELECT code_produit, marque, libelle FROM ref_produits_commerciaux WHERE is_active=TRUE ORDER BY marque, libelle")
-        rows = cursor.fetchall(); cursor.close(); conn.close()
-        return rows or []
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("SELECT code_produit, marque, libelle FROM ref_produits_commerciaux WHERE is_active=TRUE ORDER BY marque, libelle")
+        rows = cur.fetchall(); cur.close(); conn.close(); return rows or []
     except: return []
 
 def get_sur_emballages():
     try:
-        conn = get_connection(); cursor = conn.cursor()
-        cursor.execute("SELECT id, libelle, nb_uvc FROM ref_sur_emballages WHERE is_active=TRUE ORDER BY libelle")
-        rows = cursor.fetchall(); cursor.close(); conn.close()
-        return rows or []
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("SELECT id, libelle, nb_uvc FROM ref_sur_emballages WHERE is_active=TRUE ORDER BY libelle")
+        rows = cur.fetchall(); cur.close(); conn.close(); return rows or []
     except: return []
 
-def get_combinaisons_non_mappees_produit():
+def get_combinaisons_non_mappees():
     try:
-        conn = get_connection(); cursor = conn.cursor()
-        cursor.execute(f"""SELECT fl.emballage, fl.marque, COUNT(*) as nb_lignes,
-                   SUM(ABS(COALESCE(fl.pds_net, 0))) as pds_total_kg,
-                   COUNT(DISTINCT fl.client) as nb_clients
-            FROM frulog_lignes_condi fl
-            WHERE fl.type = 'E' AND fl.code_produit_commercial IS NULL
-            AND fl.emballage IS NOT NULL {camp_where_ventes('fl')}
-            GROUP BY fl.emballage, fl.marque ORDER BY nb_lignes DESC""")
-        rows = cursor.fetchall(); cursor.close(); conn.close()
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute(f"""SELECT fl.emballage, fl.marque, COUNT(*) as nb_lignes,
+            SUM(ABS(COALESCE(fl.pds_net, 0)))/1000 as tonnes, COUNT(DISTINCT fl.client) as nb_clients
+            FROM frulog_lignes_condi fl WHERE fl.type='E' AND fl.code_produit_commercial IS NULL
+            AND fl.emballage IS NOT NULL {cw_ventes()} GROUP BY fl.emballage, fl.marque ORDER BY nb_lignes DESC""")
+        rows = cur.fetchall(); cur.close(); conn.close()
         return pd.DataFrame(rows) if rows else pd.DataFrame()
     except: return pd.DataFrame()
 
 def get_emballages_non_mappes_se():
     try:
-        conn = get_connection(); cursor = conn.cursor()
-        cursor.execute(f"""SELECT fl.emballage as code_emballage, COUNT(*) as nb_lignes,
-                   SUM(COALESCE(fl.nb_col, 0)) as nb_col_total
-            FROM frulog_lignes_condi fl
-            WHERE fl.type = 'E' AND fl.sur_emballage_id IS NULL
-            AND fl.emballage IS NOT NULL {camp_where_ventes('fl')}
-            GROUP BY fl.emballage ORDER BY nb_lignes DESC""")
-        rows = cursor.fetchall(); cursor.close(); conn.close()
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute(f"""SELECT fl.emballage as code_emballage, COUNT(*) as nb_lignes, SUM(COALESCE(fl.nb_col,0)) as nb_col_total
+            FROM frulog_lignes_condi fl WHERE fl.type='E' AND fl.sur_emballage_id IS NULL
+            AND fl.emballage IS NOT NULL {cw_ventes()} GROUP BY fl.emballage ORDER BY nb_lignes DESC""")
+        rows = cur.fetchall(); cur.close(); conn.close()
         return pd.DataFrame(rows) if rows else pd.DataFrame()
     except: return pd.DataFrame()
 
-def sauver_mapping_produit(emballage, marque, code_produit, description=None):
+def sauver_mapping_produit(emb, mrq, code_produit):
     try:
-        conn = get_connection(); cursor = conn.cursor()
-        cle = make_cle_produit(emballage, marque)
-        cursor.execute("""INSERT INTO frulog_mapping_produit (emballage, marque, cle_mapping, code_produit_commercial, description)
-            VALUES (%s,%s,%s,%s,%s) ON CONFLICT (cle_mapping) DO UPDATE SET
-            code_produit_commercial=EXCLUDED.code_produit_commercial, description=EXCLUDED.description, updated_at=CURRENT_TIMESTAMP
-            RETURNING id""", (emballage, marque, cle, code_produit, description))
-        mid = cursor.fetchone()['id']
-        # MAJ toutes les lignes condi avec cette combinaison (pas que campagne)
-        cursor.execute("""UPDATE frulog_lignes_condi SET code_produit_commercial=%s
-            WHERE emballage=%s AND (marque=%s OR (%s IS NULL AND marque IS NULL))
-            AND code_produit_commercial IS NULL""", (code_produit, emballage, marque, marque))
-        updated = cursor.rowcount
-        conn.commit(); cursor.close(); conn.close()
-        return True, f"Mapping #{mid} OK ({updated} lignes mises à jour)"
+        conn = get_connection(); cur = conn.cursor()
+        cle = make_cle_produit(emb, mrq)
+        cur.execute("""INSERT INTO frulog_mapping_produit (emballage, marque, cle_mapping, code_produit_commercial)
+            VALUES (%s,%s,%s,%s) ON CONFLICT (cle_mapping) DO UPDATE SET code_produit_commercial=EXCLUDED.code_produit_commercial, updated_at=CURRENT_TIMESTAMP
+            RETURNING id""", (emb, mrq, cle, code_produit))
+        mid = cur.fetchone()['id']
+        cur.execute("UPDATE frulog_lignes_condi SET code_produit_commercial=%s WHERE emballage=%s AND (marque=%s OR (%s IS NULL AND marque IS NULL)) AND code_produit_commercial IS NULL",
+                    (code_produit, emb, mrq, mrq))
+        n = cur.rowcount; conn.commit(); cur.close(); conn.close()
+        return True, f"Mapping #{mid} — {n} lignes mises à jour"
     except Exception as e:
         if 'conn' in locals(): conn.rollback()
         return False, str(e)
 
-def sauver_mapping_suremballage(code_emballage, sur_emballage_id, description=None):
+def sauver_mapping_se(code, se_id):
     try:
-        conn = get_connection(); cursor = conn.cursor()
-        cursor.execute("""INSERT INTO frulog_mapping_suremballage (code_emballage, sur_emballage_id, description)
-            VALUES (%s,%s,%s) ON CONFLICT (code_emballage) DO UPDATE SET
-            sur_emballage_id=EXCLUDED.sur_emballage_id, description=EXCLUDED.description, updated_at=CURRENT_TIMESTAMP
-            RETURNING id""", (code_emballage, sur_emballage_id, description))
-        mid = cursor.fetchone()['id']
-        cursor.execute("UPDATE frulog_lignes_condi SET sur_emballage_id=%s WHERE emballage=%s AND sur_emballage_id IS NULL",
-                       (sur_emballage_id, code_emballage))
-        updated = cursor.rowcount
-        conn.commit(); cursor.close(); conn.close()
-        return True, f"Mapping S-E #{mid} OK ({updated} lignes)"
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("""INSERT INTO frulog_mapping_suremballage (code_emballage, sur_emballage_id)
+            VALUES (%s,%s) ON CONFLICT (code_emballage) DO UPDATE SET sur_emballage_id=EXCLUDED.sur_emballage_id, updated_at=CURRENT_TIMESTAMP
+            RETURNING id""", (code, se_id))
+        mid = cur.fetchone()['id']
+        cur.execute("UPDATE frulog_lignes_condi SET sur_emballage_id=%s WHERE emballage=%s AND sur_emballage_id IS NULL", (se_id, code))
+        n = cur.rowcount; conn.commit(); cur.close(); conn.close()
+        return True, f"Mapping #{mid} — {n} lignes"
     except Exception as e:
         if 'conn' in locals(): conn.rollback()
         return False, str(e)
-
 
 # ============================================================================
-# IMPORT VENTES (CONDI / NEGOCE)
+# IMPORT VENTES
 # ============================================================================
 
 def importer_ventes(uploaded_file, source, username='inconnu'):
@@ -286,12 +286,10 @@ def importer_ventes(uploaded_file, source, username='inconnu'):
         df = pd.read_excel(uploaded_file, sheet_name=0)
         if len(df) == 0: return False, "Fichier vide"
         df_r = df.rename(columns=COLONNES_VENTES)
-        known = list(COLONNES_VENTES.values())
-        cols_ok = [c for c in known if c in df_r.columns]
+        cols_ok = [c for c in COLONNES_VENTES.values() if c in df_r.columns]
         df_c = df_r[cols_ok].copy()
         if 'no_de_bon' not in df_c.columns: return False, "Colonne 'No de bon' introuvable"
-        if 'type' in df_c.columns:
-            df_c = df_c[df_c['type'].isin(['E', 'A'])].copy()
+        if 'type' in df_c.columns: df_c = df_c[df_c['type'].isin(['E','A'])].copy()
         for col in VENTES_DATE_COLS:
             if col in df_c.columns: df_c[col] = pd.to_datetime(df_c[col], errors='coerce').dt.date
         for col in VENTES_INT_COLS:
@@ -301,78 +299,61 @@ def importer_ventes(uploaded_file, source, username='inconnu'):
         for col in ['type','produit','variete','categ','calibre','couleur','emballage','marque','client','depot']:
             if col in df_c.columns: df_c[col] = df_c[col].apply(clean_text)
         if 'date_charg' in df_c.columns:
-            df_c['annee'] = df_c['date_charg'].apply(lambda d: d.isocalendar()[0] if pd.notna(d) and d is not None else None)
-            df_c['semaine'] = df_c['date_charg'].apply(lambda d: d.isocalendar()[1] if pd.notna(d) and d is not None else None)
-        conn = get_connection(); cursor = conn.cursor()
+            df_c['annee'] = df_c['date_charg'].apply(lambda d: d.isocalendar()[0] if pd.notna(d) else None)
+            df_c['semaine'] = df_c['date_charg'].apply(lambda d: d.isocalendar()[1] if pd.notna(d) else None)
+        conn = get_connection(); cur = conn.cursor()
         nb_total = len(df_c)
-        nb_e = len(df_c[df_c.get('type', pd.Series()) == 'E']) if 'type' in df_c.columns else 0
-        nb_a = len(df_c[df_c.get('type', pd.Series()) == 'A']) if 'type' in df_c.columns else 0
+        nb_e = len(df_c[df_c.get('type',pd.Series())=='E']) if 'type' in df_c.columns else 0
+        nb_a = len(df_c[df_c.get('type',pd.Series())=='A']) if 'type' in df_c.columns else 0
         d_min = df_c['date_charg'].dropna().min() if 'date_charg' in df_c.columns else None
         d_max = df_c['date_charg'].dropna().max() if 'date_charg' in df_c.columns else None
-        cursor.execute("""INSERT INTO frulog_imports (nom_fichier, source, nb_lignes_total, nb_lignes_type_e,
-            nb_lignes_type_a, nb_lignes_sans_type, date_debut, date_fin, created_by)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+        cur.execute("INSERT INTO frulog_imports (nom_fichier,source,nb_lignes_total,nb_lignes_type_e,nb_lignes_type_a,nb_lignes_sans_type,date_debut,date_fin,created_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
             (uploaded_file.name, source, nb_total, nb_e, nb_a, nb_total-nb_e-nb_a, d_min, d_max, username))
-        import_id = cursor.fetchone()['id']
-        map_produit = {}; map_se = {}
+        import_id = cur.fetchone()['id']
+        mp = {}; mse = {}
         if source == 'CONDI':
-            cursor.execute("SELECT cle_mapping, code_produit_commercial FROM frulog_mapping_produit WHERE is_active=TRUE")
-            map_produit = {r['cle_mapping']: r['code_produit_commercial'] for r in cursor.fetchall()}
-            cursor.execute("SELECT code_emballage, sur_emballage_id FROM frulog_mapping_suremballage WHERE is_active=TRUE")
-            map_se = {r['code_emballage']: r['sur_emballage_id'] for r in cursor.fetchall()}
-        if map_produit:
-            df_c['code_produit_commercial'] = df_c.apply(
-                lambda r: map_produit.get(make_cle_produit(r.get('emballage'), r.get('marque'))), axis=1)
-        if map_se:
-            df_c['sur_emballage_id'] = df_c['emballage'].apply(
-                lambda e: map_se.get(str(e).strip().upper()) if e and str(e).strip() != '.' else None)
-        cursor.execute(f"SELECT no_de_bon, etat, pds_net, montant, type, nb_col FROM {table} WHERE no_de_bon IS NOT NULL")
-        existing = {r['no_de_bon']: r for r in cursor.fetchall()}
-        data_cols = [c for c in cols_ok if c != 'no_de_bon'] + ['annee', 'semaine']
-        if source == 'CONDI': data_cols += ['code_produit_commercial', 'sur_emballage_id']
+            cur.execute("SELECT cle_mapping,code_produit_commercial FROM frulog_mapping_produit WHERE is_active=TRUE")
+            mp = {r['cle_mapping']:r['code_produit_commercial'] for r in cur.fetchall()}
+            cur.execute("SELECT code_emballage,sur_emballage_id FROM frulog_mapping_suremballage WHERE is_active=TRUE")
+            mse = {r['code_emballage']:r['sur_emballage_id'] for r in cur.fetchall()}
+        if mp: df_c['code_produit_commercial'] = df_c.apply(lambda r: mp.get(make_cle_produit(r.get('emballage'),r.get('marque'))), axis=1)
+        if mse: df_c['sur_emballage_id'] = df_c['emballage'].apply(lambda e: mse.get(str(e).strip().upper()) if e and str(e).strip()!='.' else None)
+        cur.execute(f"SELECT no_de_bon,etat,pds_net,montant,type,nb_col FROM {table} WHERE no_de_bon IS NOT NULL")
+        existing = {r['no_de_bon']:r for r in cur.fetchall()}
+        data_cols = [c for c in cols_ok if c!='no_de_bon']+['annee','semaine']
+        if source=='CONDI': data_cols += ['code_produit_commercial','sur_emballage_id']
         data_cols = list(dict.fromkeys(data_cols))
-        compare_keys = ['etat', 'pds_net', 'montant', 'type', 'nb_col']
-        nb_new = nb_updated = nb_unchanged = 0
-        for _, row in df_c.iterrows():
+        nb_new=nb_upd=nb_unc=0
+        for _,row in df_c.iterrows():
             bon = to_python(row.get('no_de_bon'))
             if not bon: continue
-            rv = {col: to_python(row.get(col)) for col in data_cols}
+            rv = {c:to_python(row.get(c)) for c in data_cols}
             if bon in existing:
                 ex = existing[bon]
-                if any(str(to_python(row.get(k))) != str(ex.get(k)) for k in compare_keys):
-                    sp = [f"{col}=%s" for col in data_cols] + ["import_id=%s"]
-                    vals = [rv[col] for col in data_cols] + [import_id, bon]
-                    cursor.execute(f"UPDATE {table} SET {', '.join(sp)} WHERE no_de_bon=%s", vals)
-                    nb_updated += 1
-                else: nb_unchanged += 1
+                if any(str(to_python(row.get(k)))!=str(ex.get(k)) for k in ['etat','pds_net','montant','type','nb_col']):
+                    sp=[f"{c}=%s" for c in data_cols]+["import_id=%s"]
+                    cur.execute(f"UPDATE {table} SET {','.join(sp)} WHERE no_de_bon=%s", [rv[c] for c in data_cols]+[import_id,bon])
+                    nb_upd+=1
+                else: nb_unc+=1
             else:
-                ac = ['import_id', 'no_de_bon'] + data_cols
-                av = [import_id, bon] + [rv[col] for col in data_cols]
-                cursor.execute(f"INSERT INTO {table} ({', '.join(ac)}) VALUES ({', '.join(['%s']*len(ac))})", av)
-                nb_new += 1
-        conn.commit()
-        nb_mapped = df_c['code_produit_commercial'].notna().sum() if 'code_produit_commercial' in df_c.columns else 0
-        cursor.close(); conn.close()
-        m = f" {nb_mapped}/{nb_total} mappées." if source == 'CONDI' else ""
-        return True, f"Import #{import_id} ({source}) : {nb_total} lignes → **{nb_new} nouvelles**, **{nb_updated} modifiées**, {nb_unchanged} inchangées.{m}"
+                ac=['import_id','no_de_bon']+data_cols
+                cur.execute(f"INSERT INTO {table} ({','.join(ac)}) VALUES ({','.join(['%s']*len(ac))})", [import_id,bon]+[rv[c] for c in data_cols])
+                nb_new+=1
+        conn.commit(); cur.close(); conn.close()
+        m = f" {df_c['code_produit_commercial'].notna().sum()}/{nb_total} mappées." if source=='CONDI' and 'code_produit_commercial' in df_c.columns else ""
+        return True, f"Import #{import_id} ({source}) : {nb_total} → **{nb_new} new**, **{nb_upd} maj**, {nb_unc} ident.{m}"
     except Exception as e:
         if 'conn' in locals(): conn.rollback()
-        return False, f"Erreur : {str(e)}"
-
-
-# ============================================================================
-# IMPORT ACHAT
-# ============================================================================
+        return False, str(e)
 
 def importer_achat(uploaded_file, username='inconnu'):
     try:
         df = pd.read_excel(uploaded_file, sheet_name=0)
-        if len(df) == 0: return False, "Fichier vide"
+        if len(df)==0: return False, "Fichier vide"
         df_r = df.rename(columns=COLONNES_ACHAT)
-        known = list(COLONNES_ACHAT.values())
-        cols_ok = [c for c in known if c in df_r.columns]
+        cols_ok = [c for c in COLONNES_ACHAT.values() if c in df_r.columns]
         df_c = df_r[cols_ok].copy()
-        if 'no_de_bon' not in df_c.columns: return False, "Colonne 'No de Bon' introuvable"
+        if 'no_de_bon' not in df_c.columns: return False, "Colonne introuvable"
         for col in ACHAT_DATE_COLS:
             if col in df_c.columns: df_c[col] = pd.to_datetime(df_c[col], errors='coerce').dt.date
         for col in ACHAT_INT_COLS:
@@ -381,319 +362,364 @@ def importer_achat(uploaded_file, username='inconnu'):
             if col in df_c.columns: df_c[col] = pd.to_numeric(df_c[col], errors='coerce')
         for col in ['vendeur','apporteur','produit','variete','emballage','marque','depot','calibre','type']:
             if col in df_c.columns: df_c[col] = df_c[col].apply(clean_text)
-        date_col = 'dt_chargmt' if 'dt_chargmt' in df_c.columns else 'date_du_bon'
-        if date_col in df_c.columns:
-            df_c['annee'] = df_c[date_col].apply(lambda d: d.isocalendar()[0] if pd.notna(d) and d is not None else None)
-            df_c['semaine'] = df_c[date_col].apply(lambda d: d.isocalendar()[1] if pd.notna(d) and d is not None else None)
-        conn = get_connection(); cursor = conn.cursor()
-        nb_total = len(df_c)
-        nb_s = len(df_c[df_c.get('type', pd.Series()) == 'S']) if 'type' in df_c.columns else 0
-        nb_a = len(df_c[df_c.get('type', pd.Series()) == 'A']) if 'type' in df_c.columns else 0
-        d_min = df_c[date_col].dropna().min() if date_col in df_c.columns else None
-        d_max = df_c[date_col].dropna().max() if date_col in df_c.columns else None
-        cursor.execute("""INSERT INTO frulog_imports (nom_fichier, source, nb_lignes_total, nb_lignes_type_e,
-            nb_lignes_type_a, nb_lignes_sans_type, date_debut, date_fin, created_by)
-            VALUES (%s,'ACHAT',%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
-            (uploaded_file.name, nb_total, nb_s, nb_a, nb_total-nb_s-nb_a, d_min, d_max, username))
-        import_id = cursor.fetchone()['id']
-        cursor.execute("SELECT no_de_bon, etat, pds_net, montant_euro, type FROM frulog_lignes_achat WHERE no_de_bon IS NOT NULL")
-        existing = {str(r['no_de_bon']): r for r in cursor.fetchall()}
-        data_cols = [c for c in cols_ok if c != 'no_de_bon'] + ['annee', 'semaine']
-        data_cols = list(dict.fromkeys(data_cols))
-        compare_keys = ['etat', 'pds_net', 'montant_euro', 'type']
-        nb_new = nb_updated = nb_unchanged = 0
-        for _, row in df_c.iterrows():
+        dc = 'dt_chargmt' if 'dt_chargmt' in df_c.columns else 'date_du_bon'
+        if dc in df_c.columns:
+            df_c['annee'] = df_c[dc].apply(lambda d: d.isocalendar()[0] if pd.notna(d) else None)
+            df_c['semaine'] = df_c[dc].apply(lambda d: d.isocalendar()[1] if pd.notna(d) else None)
+        conn = get_connection(); cur = conn.cursor()
+        nt = len(df_c)
+        cur.execute("INSERT INTO frulog_imports (nom_fichier,source,nb_lignes_total,nb_lignes_type_e,nb_lignes_type_a,nb_lignes_sans_type,date_debut,date_fin,created_by) VALUES (%s,'ACHAT',%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            (uploaded_file.name, nt, len(df_c[df_c.get('type',pd.Series())=='S']) if 'type' in df_c.columns else 0, len(df_c[df_c.get('type',pd.Series())=='A']) if 'type' in df_c.columns else 0, 0, df_c[dc].dropna().min() if dc in df_c.columns else None, df_c[dc].dropna().max() if dc in df_c.columns else None, username))
+        iid = cur.fetchone()['id']
+        cur.execute("SELECT no_de_bon,etat,pds_net,montant_euro,type FROM frulog_lignes_achat WHERE no_de_bon IS NOT NULL")
+        existing = {str(r['no_de_bon']):r for r in cur.fetchall()}
+        data_cols = list(dict.fromkeys([c for c in cols_ok if c!='no_de_bon']+['annee','semaine']))
+        nn=nu=nc=0
+        for _,row in df_c.iterrows():
             bon = str(to_python(row.get('no_de_bon')))
-            if not bon or bon == 'None': continue
-            rv = {col: to_python(row.get(col)) for col in data_cols}
+            if not bon or bon=='None': continue
+            rv = {c:to_python(row.get(c)) for c in data_cols}
             if bon in existing:
-                ex = existing[bon]
-                if any(str(to_python(row.get(k))) != str(ex.get(k)) for k in compare_keys):
-                    sp = [f"{col}=%s" for col in data_cols] + ["import_id=%s"]
-                    vals = [rv[col] for col in data_cols] + [import_id, bon]
-                    cursor.execute(f"UPDATE frulog_lignes_achat SET {', '.join(sp)} WHERE no_de_bon=%s", vals)
-                    nb_updated += 1
-                else: nb_unchanged += 1
+                if any(str(to_python(row.get(k)))!=str(existing[bon].get(k)) for k in ['etat','pds_net','montant_euro','type']):
+                    sp=[f"{c}=%s" for c in data_cols]+["import_id=%s"]
+                    cur.execute(f"UPDATE frulog_lignes_achat SET {','.join(sp)} WHERE no_de_bon=%s", [rv[c] for c in data_cols]+[iid,bon])
+                    nu+=1
+                else: nc+=1
             else:
-                ac = ['import_id', 'no_de_bon'] + data_cols
-                av = [import_id, bon] + [rv[col] for col in data_cols]
-                cursor.execute(f"INSERT INTO frulog_lignes_achat ({', '.join(ac)}) VALUES ({', '.join(['%s']*len(ac))})", av)
-                nb_new += 1
-        conn.commit(); cursor.close(); conn.close()
-        return True, f"Import #{import_id} (ACHAT) : {nb_total} lignes → **{nb_new} nouvelles**, **{nb_updated} modifiées**, {nb_unchanged} inchangées."
+                ac=['import_id','no_de_bon']+data_cols
+                cur.execute(f"INSERT INTO frulog_lignes_achat ({','.join(ac)}) VALUES ({','.join(['%s']*len(ac))})", [iid,bon]+[rv[c] for c in data_cols])
+                nn+=1
+        conn.commit(); cur.close(); conn.close()
+        return True, f"Import #{iid} (ACHAT) : {nt} → **{nn} new**, **{nu} maj**, {nc} ident."
     except Exception as e:
         if 'conn' in locals(): conn.rollback()
-        return False, f"Erreur : {str(e)}"
-
+        return False, str(e)
 
 # ============================================================================
-# ANALYSE VENTES
+# ANALYSE AVEC SPLY
 # ============================================================================
 
-def get_analyse_ventes(table):
+def get_analyse_ventes(table, d1=None, d2=None):
     try:
-        conn = get_connection(); cursor = conn.cursor()
-        cw = camp_where_ventes()
-        r = {}
-        cursor.execute(f"""SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE type='E') as nb_exp,
+        conn = get_connection(); cur = conn.cursor()
+        w = cw_ventes(d1, d2); r = {}
+        cur.execute(f"""SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE type='E') as nb_exp,
             COUNT(DISTINCT client) FILTER (WHERE type='E') as nb_clients,
-            COALESCE(SUM(pds_net) FILTER (WHERE type='E'), 0) as pds_kg,
-            COALESCE(SUM(montant) FILTER (WHERE type='E'), 0) as ca,
-            COALESCE(AVG(prix) FILTER (WHERE type='E' AND prix > 0), 0) as prix_moy,
+            COALESCE(SUM(pds_net) FILTER (WHERE type='E'),0) as pds_kg,
+            COALESCE(SUM(montant) FILTER (WHERE type='E'),0) as ca,
+            COALESCE(AVG(prix) FILTER (WHERE type='E' AND prix>0),0) as prix_moy,
             COUNT(DISTINCT variete) FILTER (WHERE type='E') as nb_varietes,
             MIN(date_charg) FILTER (WHERE type='E') as date_min,
             MAX(date_charg) FILTER (WHERE type='E') as date_max,
             COUNT(*) FILTER (WHERE code_produit_commercial IS NOT NULL AND type='E') as mappees,
             COUNT(*) FILTER (WHERE code_produit_commercial IS NULL AND type='E') as non_mappees
-            FROM {table} WHERE 1=1 {cw}""")
-        r['kpis'] = cursor.fetchone()
-        for key, sql in [
-            ('par_client', f"SELECT client, COUNT(*) as nb, SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant,0)) as ca, AVG(prix) FILTER (WHERE prix>0) as prix_moy, MIN(date_charg) as premiere, MAX(date_charg) as derniere FROM {table} WHERE type='E' {cw} GROUP BY client ORDER BY pds_kg DESC"),
-            ('par_variete', f"SELECT variete, COUNT(*) as nb, SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant,0)) as ca, COUNT(DISTINCT client) as nb_clients, AVG(prix) FILTER (WHERE prix>0) as prix_moy FROM {table} WHERE type='E' AND variete IS NOT NULL {cw} GROUP BY variete ORDER BY pds_kg DESC"),
-            ('par_mois', f"SELECT EXTRACT(YEAR FROM date_charg)::int as annee, EXTRACT(MONTH FROM date_charg)::int as mois, SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant,0)) as ca FROM {table} WHERE type='E' AND date_charg IS NOT NULL {cw} GROUP BY 1,2 ORDER BY annee, mois"),
-            ('par_semaine', f"SELECT annee, semaine, SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant,0)) as ca, COUNT(DISTINCT client) as nb_clients FROM {table} WHERE type='E' AND annee IS NOT NULL {cw} GROUP BY annee, semaine ORDER BY annee, semaine"),
-            ('par_produit', f"SELECT COALESCE(code_produit_commercial, '❓ Non mappé') as produit, COUNT(*) as nb, SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant,0)) as ca FROM {table} WHERE type='E' {cw} GROUP BY 1 ORDER BY pds_kg DESC"),
-            ('par_emballage', f"SELECT emballage, COUNT(*) as nb, SUM(COALESCE(pds_net,0)) as pds_kg FROM {table} WHERE type='E' AND emballage IS NOT NULL {cw} GROUP BY emballage ORDER BY pds_kg DESC"),
-            ('par_calibre', f"SELECT calibre, COUNT(*) as nb, SUM(COALESCE(pds_net,0)) as pds_kg, COUNT(DISTINCT client) as nb_clients FROM {table} WHERE type='E' AND calibre IS NOT NULL {cw} GROUP BY calibre ORDER BY pds_kg DESC"),
-            ('par_vendeur', f"SELECT vendeur, SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant,0)) as ca, COUNT(DISTINCT client) as nb_clients FROM {table} WHERE type='E' AND vendeur IS NOT NULL {cw} GROUP BY vendeur ORDER BY ca DESC"),
-            ('par_annee', f"SELECT EXTRACT(YEAR FROM date_charg)::int as annee, SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant,0)) as ca, COUNT(DISTINCT client) as nb_clients, COUNT(*) as nb FROM {table} WHERE type='E' AND date_charg IS NOT NULL {cw} GROUP BY 1 ORDER BY annee"),
-        ]:
-            cursor.execute(sql); r[key] = cursor.fetchall()
-        cursor.close(); conn.close()
-        return r
-    except Exception as e:
-        st.error(f"Erreur : {str(e)}"); return None
+            FROM {table} WHERE 1=1 {w}""")
+        r['kpis'] = cur.fetchone()
+        queries = {
+            'par_client': f"SELECT client,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca,AVG(prix) FILTER (WHERE prix>0) as prix_moy,MIN(date_charg) as premiere,MAX(date_charg) as derniere FROM {table} WHERE type='E'{w} GROUP BY client ORDER BY pds_kg DESC",
+            'par_variete': f"SELECT variete,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca,COUNT(DISTINCT client) as nb_clients,AVG(prix) FILTER (WHERE prix>0) as prix_moy FROM {table} WHERE type='E' AND variete IS NOT NULL{w} GROUP BY variete ORDER BY pds_kg DESC",
+            'par_mois': f"SELECT EXTRACT(YEAR FROM date_charg)::int as annee,EXTRACT(MONTH FROM date_charg)::int as mois,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca FROM {table} WHERE type='E' AND date_charg IS NOT NULL{w} GROUP BY 1,2 ORDER BY annee,mois",
+            'par_semaine': f"SELECT annee,semaine,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca FROM {table} WHERE type='E' AND annee IS NOT NULL{w} GROUP BY annee,semaine ORDER BY annee,semaine",
+            'par_produit': f"SELECT COALESCE(code_produit_commercial,'❓ Non mappé') as produit,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca FROM {table} WHERE type='E'{w} GROUP BY 1 ORDER BY pds_kg DESC",
+            'par_emballage': f"SELECT emballage,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg FROM {table} WHERE type='E' AND emballage IS NOT NULL{w} GROUP BY emballage ORDER BY pds_kg DESC",
+            'par_calibre': f"SELECT calibre,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg,COUNT(DISTINCT client) as nb_clients FROM {table} WHERE type='E' AND calibre IS NOT NULL{w} GROUP BY calibre ORDER BY pds_kg DESC",
+            'par_vendeur': f"SELECT vendeur,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca,COUNT(DISTINCT client) as nb_clients FROM {table} WHERE type='E' AND vendeur IS NOT NULL{w} GROUP BY vendeur ORDER BY ca DESC",
+        }
+        for k2,sql in queries.items():
+            cur.execute(sql); r[k2] = cur.fetchall()
+        cur.close(); conn.close(); return r
+    except Exception as e: st.error(str(e)); return None
 
-
-def get_analyse_achat():
+def get_analyse_achat(d1=None, d2=None):
     try:
-        conn = get_connection(); cursor = conn.cursor()
-        cw = camp_where_achat()
-        r = {}
-        cursor.execute(f"""SELECT COUNT(*) as total, COUNT(DISTINCT apporteur) as nb_fournisseurs,
-            COALESCE(SUM(pds_net), 0) as pds_kg, COALESCE(SUM(montant_euro), 0) as ca,
-            COALESCE(AVG(prix_achat) FILTER (WHERE prix_achat > 0), 0) as prix_moy,
-            COUNT(DISTINCT variete) as nb_varietes,
-            MIN(dt_chargmt) as date_min, MAX(dt_chargmt) as date_max
-            FROM frulog_lignes_achat WHERE 1=1 {cw}""")
-        r['kpis'] = cursor.fetchone()
-        for key, sql in [
-            ('par_fournisseur', f"SELECT apporteur, COUNT(*) as nb, SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant_euro,0)) as ca, AVG(prix_achat) FILTER (WHERE prix_achat>0) as prix_moy, COUNT(DISTINCT variete) as nb_varietes FROM frulog_lignes_achat WHERE 1=1 {cw} GROUP BY apporteur ORDER BY pds_kg DESC"),
-            ('par_variete', f"SELECT variete, COUNT(*) as nb, SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant_euro,0)) as ca, COUNT(DISTINCT apporteur) as nb_fournisseurs, AVG(prix_achat) FILTER (WHERE prix_achat>0) as prix_moy FROM frulog_lignes_achat WHERE variete IS NOT NULL {cw} GROUP BY variete ORDER BY pds_kg DESC"),
-            ('par_mois', f"SELECT EXTRACT(YEAR FROM dt_chargmt)::int as annee, EXTRACT(MONTH FROM dt_chargmt)::int as mois, SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant_euro,0)) as ca FROM frulog_lignes_achat WHERE dt_chargmt IS NOT NULL {cw} GROUP BY 1,2 ORDER BY annee, mois"),
-            ('par_depot', f"SELECT depot, COUNT(*) as nb, SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant_euro,0)) as ca FROM frulog_lignes_achat WHERE depot IS NOT NULL {cw} GROUP BY depot ORDER BY pds_kg DESC"),
-            ('par_annee', f"SELECT EXTRACT(YEAR FROM dt_chargmt)::int as annee, SUM(COALESCE(pds_net,0)) as pds_kg, SUM(COALESCE(montant_euro,0)) as ca, COUNT(DISTINCT apporteur) as nb_fournisseurs, COUNT(*) as nb FROM frulog_lignes_achat WHERE dt_chargmt IS NOT NULL {cw} GROUP BY 1 ORDER BY annee"),
-        ]:
-            cursor.execute(sql); r[key] = cursor.fetchall()
-        cursor.close(); conn.close()
-        return r
-    except Exception as e:
-        st.error(f"Erreur : {str(e)}"); return None
-
+        conn = get_connection(); cur = conn.cursor()
+        w = cw_achat(d1, d2); r = {}
+        cur.execute(f"""SELECT COUNT(*) as total,COUNT(DISTINCT apporteur) as nb_fournisseurs,
+            COALESCE(SUM(pds_net),0) as pds_kg,COALESCE(SUM(montant_euro),0) as ca,
+            COALESCE(AVG(prix_achat) FILTER (WHERE prix_achat>0),0) as prix_moy,
+            COUNT(DISTINCT variete) as nb_varietes,MIN(dt_chargmt) as date_min,MAX(dt_chargmt) as date_max
+            FROM frulog_lignes_achat WHERE 1=1{w}""")
+        r['kpis'] = cur.fetchone()
+        for k2,sql in {
+            'par_fournisseur': f"SELECT apporteur,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant_euro,0)) as ca,AVG(prix_achat) FILTER (WHERE prix_achat>0) as prix_moy,COUNT(DISTINCT variete) as nb_varietes FROM frulog_lignes_achat WHERE 1=1{w} GROUP BY apporteur ORDER BY pds_kg DESC",
+            'par_variete': f"SELECT variete,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant_euro,0)) as ca,COUNT(DISTINCT apporteur) as nb_fournisseurs,AVG(prix_achat) FILTER (WHERE prix_achat>0) as prix_moy FROM frulog_lignes_achat WHERE variete IS NOT NULL{w} GROUP BY variete ORDER BY pds_kg DESC",
+            'par_mois': f"SELECT EXTRACT(YEAR FROM dt_chargmt)::int as annee,EXTRACT(MONTH FROM dt_chargmt)::int as mois,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant_euro,0)) as ca FROM frulog_lignes_achat WHERE dt_chargmt IS NOT NULL{w} GROUP BY 1,2 ORDER BY annee,mois",
+            'par_depot': f"SELECT depot,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant_euro,0)) as ca FROM frulog_lignes_achat WHERE depot IS NOT NULL{w} GROUP BY depot ORDER BY pds_kg DESC",
+        }.items():
+            cur.execute(sql); r[k2] = cur.fetchall()
+        cur.close(); conn.close(); return r
+    except Exception as e: st.error(str(e)); return None
 
 def get_comparaison_previsions():
     try:
-        conn = get_connection(); cursor = conn.cursor()
-        cw = camp_where_ventes()
-        cursor.execute(f"""WITH expedie AS (
-                SELECT code_produit_commercial, annee, semaine, SUM(pds_net)/1000.0 as tonnes_exp
-                FROM frulog_lignes_condi WHERE type='E' AND code_produit_commercial IS NOT NULL {cw}
-                GROUP BY code_produit_commercial, annee, semaine),
-            prevu AS (SELECT code_produit_commercial, annee::int, semaine::int, quantite_prevue_tonnes as tonnes_prev FROM previsions_ventes)
-            SELECT COALESCE(e.code_produit_commercial, p.code_produit_commercial) as produit,
-                   COALESCE(e.annee, p.annee) as annee, COALESCE(e.semaine, p.semaine) as semaine,
-                   COALESCE(p.tonnes_prev, 0) as prevu_t, COALESCE(e.tonnes_exp, 0) as expedie_t
-            FROM expedie e FULL OUTER JOIN prevu p
-                ON e.code_produit_commercial=p.code_produit_commercial AND e.annee=p.annee AND e.semaine=p.semaine
-            WHERE COALESCE(e.annee, p.annee) IS NOT NULL ORDER BY 2, 3""")
-        rows = cursor.fetchall(); cursor.close(); conn.close()
+        conn = get_connection(); cur = conn.cursor()
+        w = cw_ventes()
+        cur.execute(f"""WITH expedie AS (SELECT code_produit_commercial,annee,semaine,SUM(pds_net)/1000.0 as t FROM frulog_lignes_condi WHERE type='E' AND code_produit_commercial IS NOT NULL{w} GROUP BY 1,2,3),
+            prevu AS (SELECT code_produit_commercial,annee::int,semaine::int,quantite_prevue_tonnes as t FROM previsions_ventes)
+            SELECT COALESCE(e.code_produit_commercial,p.code_produit_commercial) as produit,COALESCE(e.annee,p.annee) as annee,COALESCE(e.semaine,p.semaine) as semaine,COALESCE(p.t,0) as prevu_t,COALESCE(e.t,0) as expedie_t
+            FROM expedie e FULL OUTER JOIN prevu p ON e.code_produit_commercial=p.code_produit_commercial AND e.annee=p.annee AND e.semaine=p.semaine
+            WHERE COALESCE(e.annee,p.annee) IS NOT NULL ORDER BY 2,3""")
+        rows = cur.fetchall(); cur.close(); conn.close()
         if rows:
             df = pd.DataFrame(rows)
-            df['ecart_t'] = df['expedie_t'].astype(float) - df['prevu_t'].astype(float)
-            df['taux'] = df.apply(lambda r: (float(r['expedie_t'])/float(r['prevu_t'])*100) if float(r['prevu_t'])>0 else None, axis=1)
+            df['ecart_t'] = df['expedie_t'].astype(float)-df['prevu_t'].astype(float)
+            df['taux'] = df.apply(lambda r: float(r['expedie_t'])/float(r['prevu_t'])*100 if float(r['prevu_t'])>0 else None, axis=1)
             return df
         return pd.DataFrame()
     except: return pd.DataFrame()
 
 
 # ============================================================================
-# HELPER ANALYSE UI
+# HELPERS GRAPHIQUES AVEC ÉTIQUETTES + SPLY
 # ============================================================================
 
-def render_analyse_ventes(data, label, show_produit=False):
-    if not data or not data.get('kpis') or not data['kpis'] or data['kpis']['total'] == 0:
-        st.info(f"📭 Aucune donnée {label}" + (" pour cette campagne" if sel_camp else ""))
-        return
-    k = data['kpis']
-    c1, c2, c3, c4, c5 = st.columns(5)
-    with c1: st.metric("🚚 Expéditions", f"{k['nb_exp']:,}".replace(',', ' '))
-    with c2: st.metric("⚖️ Tonnage", f"{float(k['pds_kg'])/1000:,.0f} T".replace(',', ' '))
-    with c3: st.metric("💰 CA", f"{float(k['ca'])/1000:,.0f} k€".replace(',', ' '))
-    with c4: st.metric("👥 Clients", k['nb_clients'])
-    with c5: st.metric("🥔 Variétés", k['nb_varietes'])
-    if k['date_min'] and k['date_max']:
+def fmt_t(v):
+    """Formatte un tonnage"""
+    v = float(v)
+    if abs(v) >= 1000: return f"{v/1000:,.1f}kT".replace(',', ' ')
+    return f"{v:,.0f}T".replace(',', ' ')
+
+def fmt_k(v):
+    v = float(v)
+    if abs(v) >= 1000: return f"{v/1000:,.1f}M€".replace(',', ' ')
+    return f"{v:,.0f}k€".replace(',', ' ')
+
+def pct_evol(v_new, v_old):
+    if not v_old or float(v_old) == 0: return None
+    return (float(v_new) - float(v_old)) / abs(float(v_old)) * 100
+
+def bar_with_labels(x, y, name=None, color='#1565C0', fmt_fn=None):
+    """Crée une trace bar avec étiquettes"""
+    texts = [fmt_fn(v) if fmt_fn else f"{float(v):,.0f}".replace(',', ' ') for v in y]
+    return go.Bar(x=x, y=y, name=name, marker_color=color, text=texts, textposition='outside', textfont_size=10)
+
+
+def render_kpis_sply(k, k_prev, label_prev, is_achat=False):
+    """KPIs avec SPLY"""
+    cols = st.columns(5)
+    def show_metric(col, icon, name, val, val_prev, fmt_func=None):
+        with col:
+            if fmt_func:
+                v_str = fmt_func(val)
+            else:
+                v_str = f"{int(val):,}".replace(',', ' ')
+            delta = None; delta_color = "normal"
+            if val_prev is not None and float(val_prev) > 0:
+                p = pct_evol(val, val_prev)
+                if p is not None:
+                    delta = f"{p:+.1f}% vs {label_prev}"
+            st.metric(f"{icon} {name}", v_str, delta=delta)
+
+    pds = float(k['pds_kg'])/1000; pds_p = float(k_prev['pds_kg'])/1000 if k_prev else None
+    ca = float(k['ca'])/1000; ca_p = float(k_prev['ca'])/1000 if k_prev else None
+
+    if is_achat:
+        show_metric(cols[0], "📋", "Lignes", k['total'], k_prev['total'] if k_prev else None)
+        show_metric(cols[1], "⚖️", "Tonnage", pds, pds_p, fmt_t)
+        show_metric(cols[2], "💰", "Montant", ca, ca_p, fmt_k)
+        show_metric(cols[3], "🏭", "Fournisseurs", k['nb_fournisseurs'], k_prev['nb_fournisseurs'] if k_prev else None)
+        show_metric(cols[4], "🥔", "Variétés", k['nb_varietes'], k_prev['nb_varietes'] if k_prev else None)
+    else:
+        show_metric(cols[0], "🚚", "Expéditions", k['nb_exp'], k_prev['nb_exp'] if k_prev else None)
+        show_metric(cols[1], "⚖️", "Tonnage", pds, pds_p, fmt_t)
+        show_metric(cols[2], "💰", "CA", ca, ca_p, fmt_k)
+        show_metric(cols[3], "👥", "Clients", k['nb_clients'], k_prev['nb_clients'] if k_prev else None)
+        show_metric(cols[4], "🥔", "Variétés", k['nb_varietes'], k_prev['nb_varietes'] if k_prev else None)
+
+    if k.get('date_min') and k.get('date_max'):
         st.caption(f"📅 {k['date_min'].strftime('%d/%m/%Y')} → {k['date_max'].strftime('%d/%m/%Y')} — Prix moy : {float(k['prix_moy']):,.0f} €/T".replace(',', ' '))
+
+
+def render_analyse_ventes(data, data_prev, label_prev, label, show_produit=False):
+    if not data or not data.get('kpis') or data['kpis']['total'] == 0:
+        st.info(f"📭 Aucune donnée {label} pour cette période")
+        return
+    k = data['kpis']; kp = data_prev['kpis'] if data_prev and data_prev.get('kpis') and data_prev['kpis']['total'] > 0 else None
+
+    render_kpis_sply(k, kp, label_prev)
     if show_produit and k.get('mappees') is not None:
-        tot = max(k['mappees'] + k['non_mappees'], 1)
+        tot = max(k['mappees']+k['non_mappees'], 1)
         st.caption(f"🔗 Mapping : {k['mappees']*100/tot:.0f}% ({k['mappees']}/{tot})")
     st.markdown("---")
-    vues = ["📊 Vue d'ensemble", "👥 Clients", "🥔 Variétés", "📦 Emballages", "📏 Calibres", "👤 Vendeurs"]
+
+    vues = ["📊 Vue d'ensemble","👥 Clients","🥔 Variétés","📦 Emballages","📏 Calibres","👤 Vendeurs"]
     if show_produit: vues.insert(3, "🏷️ Produits")
-    vue = st.radio("Analyser par :", vues, horizontal=True, key=f"vue_{label}")
+    vue = st.radio("Analyser :", vues, horizontal=True, key=f"vue_{label}")
     st.markdown("---")
 
+    # Helper SPLY pour barres côte à côte
+    def sply_bars(df_now, df_prev, x_col, y_col, title, color_now='#1565C0', color_prev='#90CAF9', top_n=20, fmt_fn=None):
+        df_n = df_now.head(top_n).copy()
+        fig = go.Figure()
+        if df_prev is not None and len(df_prev) > 0:
+            df_p = pd.DataFrame(df_prev)
+            if y_col.endswith('_t'): df_p['val'] = df_p['pds_kg'].astype(float)/1000
+            elif y_col == 'ca_k': df_p['val'] = df_p['ca'].astype(float)/1000
+            else: df_p['val'] = df_p[y_col.replace('_t','').replace('_k','')].astype(float) if y_col.replace('_t','').replace('_k','') in df_p.columns else 0
+            df_p_dict = dict(zip(df_p[x_col], df_p['val']))
+            prev_vals = [df_p_dict.get(x, 0) for x in df_n[x_col]]
+            t_p = [fmt_fn(v) if fmt_fn and v else '' for v in prev_vals]
+            fig.add_trace(go.Bar(x=df_n[x_col], y=prev_vals, name=f"N-1", marker_color=color_prev, text=t_p, textposition='outside', textfont_size=9))
+        texts = [fmt_fn(v) if fmt_fn else f"{float(v):,.0f}".replace(',', ' ') for v in df_n[y_col]]
+        fig.add_trace(go.Bar(x=df_n[x_col], y=df_n[y_col], name="Période", marker_color=color_now, text=texts, textposition='outside', textfont_size=10))
+        fig.update_layout(title=title, height=450, xaxis_tickangle=-45, barmode='group', legend=dict(orientation="h", yanchor="bottom", y=1.02))
+        st.plotly_chart(fig, use_container_width=True)
+
+    prev_data = lambda key: data_prev.get(key) if data_prev else None
+
     if vue == "📊 Vue d'ensemble":
-        if data['par_annee']:
-            df_a = pd.DataFrame(data['par_annee']); df_a['tonnes'] = df_a['pds_kg'].astype(float)/1000; df_a['ca_k'] = df_a['ca'].astype(float)/1000
-            ga1, ga2 = st.columns(2)
-            with ga1:
-                fig = go.Figure([go.Bar(x=df_a['annee'].astype(str), y=df_a['tonnes'], marker_color='#1565C0')])
-                fig.update_layout(title="Tonnage / année", height=350); st.plotly_chart(fig, use_container_width=True)
-            with ga2:
-                fig = go.Figure([go.Bar(x=df_a['annee'].astype(str), y=df_a['ca_k'], marker_color='#2E7D32')])
-                fig.update_layout(title="CA / année (k€)", height=350); st.plotly_chart(fig, use_container_width=True)
         if data['par_mois']:
             df_m = pd.DataFrame(data['par_mois']); df_m['tonnes'] = df_m['pds_kg'].astype(float)/1000
             df_m['label'] = df_m.apply(lambda r: f"{int(r['mois']):02d}/{int(r['annee'])}", axis=1)
-            fig = go.Figure([go.Scatter(x=df_m['label'], y=df_m['tonnes'], mode='lines+markers', line=dict(color='#1565C0', width=2), fill='tozeroy')])
-            fig.update_layout(title="Tonnage mensuel", height=400, xaxis=dict(tickangle=-45)); st.plotly_chart(fig, use_container_width=True)
+            fig = go.Figure()
+            if data_prev and data_prev.get('par_mois'):
+                df_mp = pd.DataFrame(data_prev['par_mois']); df_mp['tonnes'] = df_mp['pds_kg'].astype(float)/1000
+                df_mp['label'] = df_mp.apply(lambda r: f"{int(r['mois']):02d}/{int(r['annee'])}", axis=1)
+                fig.add_trace(go.Scatter(x=df_mp['label'], y=df_mp['tonnes'], mode='lines+markers+text', name='N-1',
+                    line=dict(color='#BBDEFB', width=2, dash='dot'), text=[fmt_t(v) for v in df_mp['tonnes']], textposition='top center', textfont_size=9))
+            fig.add_trace(go.Scatter(x=df_m['label'], y=df_m['tonnes'], mode='lines+markers+text', name='Période',
+                line=dict(color='#1565C0', width=3), fill='tozeroy', text=[fmt_t(v) for v in df_m['tonnes']], textposition='top center', textfont_size=10))
+            fig.update_layout(title="Tonnage mensuel", height=400, xaxis=dict(tickangle=-45), legend=dict(orientation="h"))
+            st.plotly_chart(fig, use_container_width=True)
         if data['par_semaine']:
             df_s = pd.DataFrame(data['par_semaine']).tail(52); df_s['tonnes'] = df_s['pds_kg'].astype(float)/1000
-            df_s['label'] = df_s.apply(lambda r: f"S{int(r['semaine']):02d}/{int(r['annee'])}", axis=1)
-            fig = go.Figure([go.Bar(x=df_s['label'], y=df_s['tonnes'], marker_color='#42A5F5')])
-            fig.update_layout(title="Expéditions / semaine (T)", height=400, xaxis=dict(tickangle=-45)); st.plotly_chart(fig, use_container_width=True)
+            df_s['label'] = df_s.apply(lambda r: f"S{int(r['semaine']):02d}", axis=1)
+            texts = [fmt_t(v) for v in df_s['tonnes']]
+            fig = go.Figure([go.Bar(x=df_s['label'], y=df_s['tonnes'], marker_color='#42A5F5', text=texts, textposition='outside', textfont_size=8)])
+            fig.update_layout(title="Tonnage hebdo", height=400, xaxis=dict(tickangle=-45))
+            st.plotly_chart(fig, use_container_width=True)
 
-    elif vue == "👥 Clients" and data['par_client']:
+    elif vue == "👥 Clients":
         df = pd.DataFrame(data['par_client']); df['tonnes'] = df['pds_kg'].astype(float)/1000; df['ca_k'] = df['ca'].astype(float)/1000
         st.markdown(f"##### {len(df)} clients")
-        gc1, gc2 = st.columns(2)
-        with gc1:
-            fig = px.bar(df.head(20), x='client', y='tonnes', title="Top 20 (T)", color='tonnes', color_continuous_scale='blues')
-            fig.update_layout(height=450, xaxis_tickangle=-45, showlegend=False); st.plotly_chart(fig, use_container_width=True)
-        with gc2:
-            fig = px.bar(df.head(20), x='client', y='ca_k', title="Top 20 (k€)", color='ca_k', color_continuous_scale='greens')
-            fig.update_layout(height=450, xaxis_tickangle=-45, showlegend=False); st.plotly_chart(fig, use_container_width=True)
+        sply_bars(df, prev_data('par_client'), 'client', 'tonnes', "Top 20 Clients (T)", fmt_fn=fmt_t)
+        # Pareto
         df_s = df.sort_values('ca', ascending=False).copy()
-        df_s['pct_cumul'] = df_s['ca'].astype(float).cumsum() / max(df_s['ca'].astype(float).sum(), 1) * 100
-        nb_80 = len(df_s[df_s['pct_cumul'] <= 80]) + 1
-        st.info(f"📊 **Pareto** : {nb_80} clients = 80% du CA ({nb_80*100//max(len(df),1)}% du portefeuille)")
-        st.dataframe(df[['client','tonnes','ca_k','prix_moy','premiere','derniere']].head(50).rename(columns={
-            'client':'Client','tonnes':'Tonnes','ca_k':'CA (k€)','prix_moy':'Prix moy','premiere':'1ère','derniere':'Dernière'
-        }), use_container_width=True, hide_index=True, column_config={
-            'Prix moy': st.column_config.NumberColumn(format="%.0f"),
-            '1ère': st.column_config.DateColumn(format='DD/MM/YYYY'),
-            'Dernière': st.column_config.DateColumn(format='DD/MM/YYYY')})
+        df_s['pct'] = df_s['ca'].astype(float).cumsum()/max(df_s['ca'].astype(float).sum(),1)*100
+        nb80 = len(df_s[df_s['pct']<=80])+1
+        st.info(f"📊 **Pareto** : {nb80} clients = 80% du CA ({nb80*100//max(len(df),1)}% du portefeuille)")
+        # Tableau avec évolution SPLY
+        df_show = df[['client','tonnes','ca_k','prix_moy','premiere','derniere']].head(50).copy()
+        if data_prev and data_prev.get('par_client'):
+            dfp = pd.DataFrame(data_prev['par_client']); dfp['tonnes_prev'] = dfp['pds_kg'].astype(float)/1000
+            dfp_dict = dict(zip(dfp['client'], dfp['tonnes_prev']))
+            df_show['N-1 (T)'] = df_show['client'].map(dfp_dict)
+            df_show['Evol %'] = df_show.apply(lambda r: f"{pct_evol(r['tonnes'], r.get('N-1 (T)')):.0f}%" if r.get('N-1 (T)') and pct_evol(r['tonnes'], r.get('N-1 (T)')) is not None else "—", axis=1)
+        st.dataframe(df_show.rename(columns={'client':'Client','tonnes':'Tonnes','ca_k':'CA (k€)','prix_moy':'Prix moy','premiere':'1ère','derniere':'Dernière'}),
+            use_container_width=True, hide_index=True, column_config={
+                'Prix moy':st.column_config.NumberColumn(format="%.0f"),
+                '1ère':st.column_config.DateColumn(format='DD/MM/YYYY'), 'Dernière':st.column_config.DateColumn(format='DD/MM/YYYY')})
         buf = io.BytesIO(); df.to_excel(buf, index=False, engine='openpyxl')
-        st.download_button(f"📥 Export clients {label}", buf.getvalue(), f"clients_{label}_{datetime.now().strftime('%Y%m%d')}.xlsx", use_container_width=True)
+        st.download_button(f"📥 Export {label}", buf.getvalue(), f"clients_{label}.xlsx", use_container_width=True)
 
     elif vue == "🥔 Variétés" and data['par_variete']:
         df = pd.DataFrame(data['par_variete']); df['tonnes'] = df['pds_kg'].astype(float)/1000
         st.markdown(f"##### {len(df)} variétés")
-        gv1, gv2 = st.columns(2)
-        with gv1:
+        gc1, gc2 = st.columns(2)
+        with gc1:
             fig = px.pie(df.head(15), names='variete', values='tonnes', title="Top 15 (T)")
+            fig.update_traces(textinfo='label+value+percent', texttemplate='%{label}<br>%{value:,.0f}T<br>%{percent}')
             fig.update_layout(height=450); st.plotly_chart(fig, use_container_width=True)
-        with gv2:
-            fig = px.bar(df.head(15), x='variete', y='prix_moy', title="Prix moy / variété", color='prix_moy', color_continuous_scale='YlOrRd')
-            fig.update_layout(height=450, showlegend=False); st.plotly_chart(fig, use_container_width=True)
+        with gc2:
+            sply_bars(df, prev_data('par_variete'), 'variete', 'tonnes', "Tonnage / variété", top_n=15, fmt_fn=fmt_t)
         st.dataframe(df[['variete','tonnes','nb_clients','prix_moy','nb']].head(30).rename(columns={
-            'variete':'Variété','tonnes':'Tonnes','nb_clients':'Clients','prix_moy':'Prix moy','nb':'Lignes'
-        }), use_container_width=True, hide_index=True, column_config={'Prix moy': st.column_config.NumberColumn(format="%.0f")})
+            'variete':'Variété','tonnes':'Tonnes','nb_clients':'Clients','prix_moy':'Prix moy','nb':'Lignes'}),
+            use_container_width=True, hide_index=True, column_config={'Prix moy':st.column_config.NumberColumn(format="%.0f")})
 
     elif vue == "🏷️ Produits" and show_produit and data.get('par_produit'):
         df = pd.DataFrame(data['par_produit']); df['tonnes'] = df['pds_kg'].astype(float)/1000; df['ca_k'] = df['ca'].astype(float)/1000
-        fig = px.bar(df, x='produit', y='tonnes', title="Tonnage / produit", color='tonnes', color_continuous_scale='blues')
-        fig.update_layout(height=400, xaxis_tickangle=-45, showlegend=False); st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(df[['produit','tonnes','ca_k','nb']].rename(columns={'produit':'Produit','tonnes':'Tonnes','ca_k':'CA (k€)','nb':'Lignes'}), use_container_width=True, hide_index=True)
+        sply_bars(df, prev_data('par_produit'), 'produit', 'tonnes', "Tonnage / produit", fmt_fn=fmt_t)
+        st.dataframe(df[['produit','tonnes','ca_k','nb']].rename(columns={'produit':'Produit','tonnes':'Tonnes','ca_k':'CA (k€)','nb':'Lignes'}),
+            use_container_width=True, hide_index=True)
 
     elif vue == "📦 Emballages" and data.get('par_emballage'):
         df = pd.DataFrame(data['par_emballage']); df['tonnes'] = df['pds_kg'].astype(float)/1000
         fig = px.pie(df.head(10), names='emballage', values='tonnes', title="Répartition emballages")
+        fig.update_traces(textinfo='label+value+percent', texttemplate='%{label}<br>%{value:,.0f}T<br>%{percent}')
         fig.update_layout(height=400); st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(df[['emballage','tonnes','nb']].rename(columns={'emballage':'Emballage','tonnes':'Tonnes','nb':'Lignes'}), use_container_width=True, hide_index=True)
+        st.dataframe(df[['emballage','tonnes','nb']].rename(columns={'emballage':'Emballage','tonnes':'Tonnes','nb':'Lignes'}),
+            use_container_width=True, hide_index=True)
 
     elif vue == "📏 Calibres" and data.get('par_calibre'):
         df = pd.DataFrame(data['par_calibre']); df['tonnes'] = df['pds_kg'].astype(float)/1000
-        fig = px.bar(df, x='calibre', y='tonnes', title="Tonnage / calibre", color='tonnes', color_continuous_scale='purples')
-        fig.update_layout(height=400, showlegend=False); st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(df[['calibre','tonnes','nb_clients','nb']].rename(columns={'calibre':'Calibre','tonnes':'Tonnes','nb_clients':'Clients','nb':'Lignes'}), use_container_width=True, hide_index=True)
+        sply_bars(df, prev_data('par_calibre'), 'calibre', 'tonnes', "Tonnage / calibre", color_now='#7B1FA2', color_prev='#CE93D8', fmt_fn=fmt_t)
+        st.dataframe(df[['calibre','tonnes','nb_clients','nb']].rename(columns={'calibre':'Calibre','tonnes':'Tonnes','nb_clients':'Clients','nb':'Lignes'}),
+            use_container_width=True, hide_index=True)
 
     elif vue == "👤 Vendeurs" and data.get('par_vendeur'):
         df = pd.DataFrame(data['par_vendeur']); df['tonnes'] = df['pds_kg'].astype(float)/1000; df['ca_k'] = df['ca'].astype(float)/1000
-        fig = px.bar(df, x='vendeur', y='ca_k', title="CA / vendeur (k€)", color='ca_k', color_continuous_scale='greens')
-        fig.update_layout(height=400, showlegend=False); st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(df[['vendeur','tonnes','ca_k','nb_clients']].rename(columns={'vendeur':'Vendeur','tonnes':'Tonnes','ca_k':'CA (k€)','nb_clients':'Clients'}), use_container_width=True, hide_index=True)
+        sply_bars(df, prev_data('par_vendeur'), 'vendeur', 'ca_k', "CA / vendeur (k€)", color_now='#2E7D32', color_prev='#A5D6A7', fmt_fn=fmt_k)
+        st.dataframe(df[['vendeur','tonnes','ca_k','nb_clients']].rename(columns={'vendeur':'Vendeur','tonnes':'Tonnes','ca_k':'CA (k€)','nb_clients':'Clients'}),
+            use_container_width=True, hide_index=True)
 
 
-def render_analyse_achat(data):
-    if not data or not data.get('kpis') or not data['kpis'] or data['kpis']['total'] == 0:
-        st.info("📭 Aucune donnée Achat" + (" pour cette campagne" if sel_camp else ""))
+def render_analyse_achat(data, data_prev, label_prev):
+    if not data or not data.get('kpis') or data['kpis']['total'] == 0:
+        st.info("📭 Aucune donnée Achat pour cette période")
         return
-    k = data['kpis']
-    c1, c2, c3, c4, c5 = st.columns(5)
-    with c1: st.metric("📋 Lignes", f"{k['total']:,}".replace(',', ' '))
-    with c2: st.metric("⚖️ Tonnage", f"{float(k['pds_kg'])/1000:,.0f} T".replace(',', ' '))
-    with c3: st.metric("💰 Montant", f"{float(k['ca'])/1000:,.0f} k€".replace(',', ' '))
-    with c4: st.metric("🏭 Fournisseurs", k['nb_fournisseurs'])
-    with c5: st.metric("🥔 Variétés", k['nb_varietes'])
-    if k['date_min'] and k['date_max']:
-        st.caption(f"📅 {k['date_min'].strftime('%d/%m/%Y')} → {k['date_max'].strftime('%d/%m/%Y')} — Prix achat moy : {float(k['prix_moy']):,.0f} €/T".replace(',', ' '))
+    k = data['kpis']; kp = data_prev['kpis'] if data_prev and data_prev.get('kpis') and data_prev['kpis']['total']>0 else None
+    render_kpis_sply(k, kp, label_prev, is_achat=True)
     st.markdown("---")
-    vue = st.radio("Analyser par :", ["📊 Vue d'ensemble", "🏭 Fournisseurs", "🥔 Variétés", "🏢 Dépôts"], horizontal=True, key="vue_achat")
+    vue = st.radio("Analyser :", ["📊 Vue d'ensemble","🏭 Fournisseurs","🥔 Variétés","🏢 Dépôts"], horizontal=True, key="vue_achat")
     st.markdown("---")
+
+    prev_data = lambda key: data_prev.get(key) if data_prev else None
+
+    def sply_bars_a(df_now, df_prev_list, x_col, y_col, title, color_now='#E65100', color_prev='#FFCC80', top_n=20, fmt_fn=None):
+        df_n = df_now.head(top_n).copy()
+        fig = go.Figure()
+        if df_prev_list and len(df_prev_list) > 0:
+            dfp = pd.DataFrame(df_prev_list)
+            if 'pds_kg' in dfp.columns: dfp['val'] = dfp['pds_kg'].astype(float)/1000
+            elif 'ca' in dfp.columns: dfp['val'] = dfp['ca'].astype(float)/1000
+            else: dfp['val'] = 0
+            pdict = dict(zip(dfp[x_col], dfp['val']))
+            pv = [pdict.get(x,0) for x in df_n[x_col]]
+            fig.add_trace(go.Bar(x=df_n[x_col], y=pv, name="N-1", marker_color=color_prev,
+                text=[fmt_fn(v) if fmt_fn and v else '' for v in pv], textposition='outside', textfont_size=9))
+        texts = [fmt_fn(v) if fmt_fn else f"{float(v):,.0f}".replace(',', ' ') for v in df_n[y_col]]
+        fig.add_trace(go.Bar(x=df_n[x_col], y=df_n[y_col], name="Période", marker_color=color_now, text=texts, textposition='outside', textfont_size=10))
+        fig.update_layout(title=title, height=450, xaxis_tickangle=-45, barmode='group', legend=dict(orientation="h", yanchor="bottom", y=1.02))
+        st.plotly_chart(fig, use_container_width=True)
 
     if vue == "📊 Vue d'ensemble":
-        if data['par_annee']:
-            df_a = pd.DataFrame(data['par_annee']); df_a['tonnes'] = df_a['pds_kg'].astype(float)/1000; df_a['ca_k'] = df_a['ca'].astype(float)/1000
-            ga1, ga2 = st.columns(2)
-            with ga1:
-                fig = go.Figure([go.Bar(x=df_a['annee'].astype(str), y=df_a['tonnes'], marker_color='#E65100')])
-                fig.update_layout(title="Tonnage / année", height=350); st.plotly_chart(fig, use_container_width=True)
-            with ga2:
-                fig = go.Figure([go.Bar(x=df_a['annee'].astype(str), y=df_a['ca_k'], marker_color='#BF360C')])
-                fig.update_layout(title="Montant / année (k€)", height=350); st.plotly_chart(fig, use_container_width=True)
         if data['par_mois']:
             df_m = pd.DataFrame(data['par_mois']); df_m['tonnes'] = df_m['pds_kg'].astype(float)/1000
             df_m['label'] = df_m.apply(lambda r: f"{int(r['mois']):02d}/{int(r['annee'])}", axis=1)
-            fig = go.Figure([go.Scatter(x=df_m['label'], y=df_m['tonnes'], mode='lines+markers', line=dict(color='#E65100', width=2), fill='tozeroy')])
-            fig.update_layout(title="Tonnage mensuel", height=400, xaxis=dict(tickangle=-45)); st.plotly_chart(fig, use_container_width=True)
+            fig = go.Figure()
+            if data_prev and data_prev.get('par_mois'):
+                dfmp = pd.DataFrame(data_prev['par_mois']); dfmp['tonnes'] = dfmp['pds_kg'].astype(float)/1000
+                dfmp['label'] = dfmp.apply(lambda r: f"{int(r['mois']):02d}/{int(r['annee'])}", axis=1)
+                fig.add_trace(go.Scatter(x=dfmp['label'], y=dfmp['tonnes'], mode='lines+markers+text', name='N-1',
+                    line=dict(color='#FFCC80', width=2, dash='dot'), text=[fmt_t(v) for v in dfmp['tonnes']], textposition='top center', textfont_size=9))
+            fig.add_trace(go.Scatter(x=df_m['label'], y=df_m['tonnes'], mode='lines+markers+text', name='Période',
+                line=dict(color='#E65100', width=3), fill='tozeroy', text=[fmt_t(v) for v in df_m['tonnes']], textposition='top center', textfont_size=10))
+            fig.update_layout(title="Tonnage mensuel", height=400, xaxis=dict(tickangle=-45))
+            st.plotly_chart(fig, use_container_width=True)
 
     elif vue == "🏭 Fournisseurs" and data.get('par_fournisseur'):
         df = pd.DataFrame(data['par_fournisseur']); df['tonnes'] = df['pds_kg'].astype(float)/1000; df['ca_k'] = df['ca'].astype(float)/1000
         st.markdown(f"##### {len(df)} fournisseurs")
-        gf1, gf2 = st.columns(2)
-        with gf1:
-            fig = px.bar(df.head(20), x='apporteur', y='tonnes', title="Top 20 (T)", color='tonnes', color_continuous_scale='oranges')
-            fig.update_layout(height=450, xaxis_tickangle=-45, showlegend=False); st.plotly_chart(fig, use_container_width=True)
-        with gf2:
-            fig = px.bar(df.head(20), x='apporteur', y='prix_moy', title="Prix moy (€/T)", color='prix_moy', color_continuous_scale='YlOrRd')
-            fig.update_layout(height=450, xaxis_tickangle=-45, showlegend=False); st.plotly_chart(fig, use_container_width=True)
+        sply_bars_a(df, prev_data('par_fournisseur'), 'apporteur', 'tonnes', "Top 20 Fournisseurs (T)", fmt_fn=fmt_t)
         st.dataframe(df[['apporteur','tonnes','ca_k','prix_moy','nb_varietes','nb']].head(50).rename(columns={
-            'apporteur':'Fournisseur','tonnes':'Tonnes','ca_k':'Montant (k€)','prix_moy':'Prix moy','nb_varietes':'Variétés','nb':'Lignes'
-        }), use_container_width=True, hide_index=True, column_config={'Prix moy': st.column_config.NumberColumn(format="%.0f")})
+            'apporteur':'Fournisseur','tonnes':'Tonnes','ca_k':'Montant (k€)','prix_moy':'Prix moy','nb_varietes':'Variétés','nb':'Lignes'}),
+            use_container_width=True, hide_index=True, column_config={'Prix moy':st.column_config.NumberColumn(format="%.0f")})
         buf = io.BytesIO(); df.to_excel(buf, index=False, engine='openpyxl')
-        st.download_button("📥 Export fournisseurs", buf.getvalue(), f"fournisseurs_{datetime.now().strftime('%Y%m%d')}.xlsx", use_container_width=True)
+        st.download_button("📥 Export", buf.getvalue(), f"fournisseurs.xlsx", use_container_width=True)
 
     elif vue == "🥔 Variétés" and data.get('par_variete'):
         df = pd.DataFrame(data['par_variete']); df['tonnes'] = df['pds_kg'].astype(float)/1000
         st.markdown(f"##### {len(df)} variétés")
-        gv1, gv2 = st.columns(2)
-        with gv1:
-            fig = px.pie(df.head(15), names='variete', values='tonnes', title="Top 15 (T)")
-            fig.update_layout(height=450); st.plotly_chart(fig, use_container_width=True)
-        with gv2:
-            fig = px.bar(df.head(15), x='variete', y='prix_moy', title="Prix moy / variété", color='prix_moy', color_continuous_scale='YlOrRd')
-            fig.update_layout(height=450, showlegend=False); st.plotly_chart(fig, use_container_width=True)
+        sply_bars_a(df, prev_data('par_variete'), 'variete', 'tonnes', "Top 15 Variétés (T)", top_n=15, fmt_fn=fmt_t)
         st.dataframe(df[['variete','tonnes','nb_fournisseurs','prix_moy','nb']].head(30).rename(columns={
-            'variete':'Variété','tonnes':'Tonnes','nb_fournisseurs':'Fournisseurs','prix_moy':'Prix moy','nb':'Lignes'
-        }), use_container_width=True, hide_index=True, column_config={'Prix moy': st.column_config.NumberColumn(format="%.0f")})
+            'variete':'Variété','tonnes':'Tonnes','nb_fournisseurs':'Fourn.','prix_moy':'Prix moy','nb':'Lignes'}),
+            use_container_width=True, hide_index=True, column_config={'Prix moy':st.column_config.NumberColumn(format="%.0f")})
 
     elif vue == "🏢 Dépôts" and data.get('par_depot'):
         df = pd.DataFrame(data['par_depot']); df['tonnes'] = df['pds_kg'].astype(float)/1000; df['ca_k'] = df['ca'].astype(float)/1000
-        st.markdown(f"##### {len(df)} dépôts")
-        fig = px.bar(df.head(20), x='depot', y='tonnes', title="Top 20 (T)", color='tonnes', color_continuous_scale='oranges')
-        fig.update_layout(height=400, xaxis_tickangle=-45, showlegend=False); st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(df[['depot','tonnes','ca_k','nb']].head(30).rename(columns={'depot':'Dépôt','tonnes':'Tonnes','ca_k':'Montant (k€)','nb':'Lignes'}), use_container_width=True, hide_index=True)
+        sply_bars_a(df, prev_data('par_depot'), 'depot', 'tonnes', "Top 20 Dépôts (T)", fmt_fn=fmt_t)
+        st.dataframe(df[['depot','tonnes','ca_k','nb']].head(30).rename(columns={'depot':'Dépôt','tonnes':'Tonnes','ca_k':'Montant (k€)','nb':'Lignes'}),
+            use_container_width=True, hide_index=True)
 
 
 # ============================================================================
@@ -708,234 +734,227 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # ============================================================================
 # TAB 1 : IMPORT
 # ============================================================================
-
 with tab1:
-    imp_type = st.radio("Type d'import :", ["📈 Ventes Condi", "🏪 Ventes Négoce", "🛒 Achats"], horizontal=True, key="imp_type")
+    imp_type = st.radio("Type :", ["📈 Condi", "🏪 Négoce", "🛒 Achats"], horizontal=True, key="imp_type")
     st.markdown("---")
 
-    if imp_type == "📈 Ventes Condi":
-        st.subheader("📈 Import Ventes Conditionnement")
+    if imp_type == "📈 Condi":
         up = st.file_uploader("Fichier Excel Ventes Condi", type=['xlsx','xls'], key="up_condi")
         if up:
             try:
-                up.seek(0); df_count = pd.read_excel(up, sheet_name=0)
-                c1, c2, c3 = st.columns(3)
-                nb_e = len(df_count[df_count['Type']=='E']) if 'Type' in df_count.columns else 0
-                nb_a = len(df_count[df_count['Type']=='A']) if 'Type' in df_count.columns else 0
-                with c1: st.metric("Lignes total", len(df_count))
-                with c2: st.metric("Expéditions (E)", nb_e)
-                with c3: st.metric("Avoirs (A)", nb_a)
-                st.dataframe(df_count.head(3), use_container_width=True, hide_index=True)
+                up.seek(0); dfc = pd.read_excel(up, sheet_name=0)
+                c1,c2,c3 = st.columns(3)
+                with c1: st.metric("Lignes", len(dfc))
+                with c2: st.metric("E", len(dfc[dfc['Type']=='E']) if 'Type' in dfc.columns else 0)
+                with c3: st.metric("A", len(dfc[dfc['Type']=='A']) if 'Type' in dfc.columns else 0)
+                st.dataframe(dfc.head(3), use_container_width=True, hide_index=True)
                 if st.button("🚀 Importer CONDI", type="primary", use_container_width=True):
                     up.seek(0)
-                    with st.spinner("Import CONDI..."): ok, msg = importer_ventes(up, 'CONDI', st.session_state.get('username','inconnu'))
+                    with st.spinner("Import..."): ok, msg = importer_ventes(up, 'CONDI', st.session_state.get('username','?'))
                     if ok: st.success(f"✅ {msg}"); st.rerun()
                     else: st.error(f"❌ {msg}")
-            except Exception as e: st.error(f"Erreur : {str(e)}")
+            except Exception as e: st.error(str(e))
 
-    elif imp_type == "🏪 Ventes Négoce":
-        st.subheader("🏪 Import Ventes Négoce")
+    elif imp_type == "🏪 Négoce":
         up = st.file_uploader("Fichier Excel Ventes Négoce", type=['xlsx','xls'], key="up_negoce")
         if up:
             try:
-                up.seek(0); df_count = pd.read_excel(up, sheet_name=0)
-                c1, c2 = st.columns(2)
-                nb_e = len(df_count[df_count['Type']=='E']) if 'Type' in df_count.columns else 0
-                with c1: st.metric("Lignes total", len(df_count))
-                with c2: st.metric("Expéditions (E)", nb_e)
-                st.dataframe(df_count.head(3), use_container_width=True, hide_index=True)
+                up.seek(0); dfc = pd.read_excel(up, sheet_name=0)
+                c1,c2 = st.columns(2)
+                with c1: st.metric("Lignes", len(dfc))
+                with c2: st.metric("E", len(dfc[dfc['Type']=='E']) if 'Type' in dfc.columns else 0)
+                st.dataframe(dfc.head(3), use_container_width=True, hide_index=True)
                 if st.button("🚀 Importer NÉGOCE", type="primary", use_container_width=True):
                     up.seek(0)
-                    with st.spinner("Import NÉGOCE..."): ok, msg = importer_ventes(up, 'NEGOCE', st.session_state.get('username','inconnu'))
+                    with st.spinner("Import..."): ok, msg = importer_ventes(up, 'NEGOCE', st.session_state.get('username','?'))
                     if ok: st.success(f"✅ {msg}"); st.rerun()
                     else: st.error(f"❌ {msg}")
-            except Exception as e: st.error(f"Erreur : {str(e)}")
+            except Exception as e: st.error(str(e))
 
     else:
-        st.subheader("🛒 Import Achats")
         up = st.file_uploader("Fichier Excel Achats", type=['xlsx','xls'], key="up_achat")
         if up:
             try:
-                up.seek(0); df_count = pd.read_excel(up, sheet_name=0)
-                c1, c2, c3 = st.columns(3)
-                nb_s = len(df_count[df_count['Type']=='S']) if 'Type' in df_count.columns else 0
-                nb_a = len(df_count[df_count['Type']=='A']) if 'Type' in df_count.columns else 0
-                with c1: st.metric("Lignes total", len(df_count))
-                with c2: st.metric("Achats (S)", nb_s)
-                with c3: st.metric("Avoirs (A)", nb_a)
-                st.dataframe(df_count.head(3), use_container_width=True, hide_index=True)
+                up.seek(0); dfc = pd.read_excel(up, sheet_name=0)
+                c1,c2,c3 = st.columns(3)
+                with c1: st.metric("Lignes", len(dfc))
+                with c2: st.metric("S", len(dfc[dfc['Type']=='S']) if 'Type' in dfc.columns else 0)
+                with c3: st.metric("A", len(dfc[dfc['Type']=='A']) if 'Type' in dfc.columns else 0)
+                st.dataframe(dfc.head(3), use_container_width=True, hide_index=True)
                 if st.button("🚀 Importer ACHATS", type="primary", use_container_width=True):
                     up.seek(0)
-                    with st.spinner("Import ACHATS..."): ok, msg = importer_achat(up, st.session_state.get('username','inconnu'))
+                    with st.spinner("Import..."): ok, msg = importer_achat(up, st.session_state.get('username','?'))
                     if ok: st.success(f"✅ {msg}"); st.rerun()
                     else: st.error(f"❌ {msg}")
-            except Exception as e: st.error(f"Erreur : {str(e)}")
+            except Exception as e: st.error(str(e))
 
     st.markdown("---")
-    st.markdown("##### 📋 Historique des imports")
-    df_imp = get_imports()
-    if not df_imp.empty:
-        cols_show = [c for c in ['id','source','nom_fichier','date_import','nb_lignes_total','nb_lignes_type_e','nb_lignes_type_a','date_debut','date_fin','created_by'] if c in df_imp.columns]
-        st.dataframe(df_imp[cols_show].rename(columns={
-            'id':'ID','source':'Type','nom_fichier':'Fichier','date_import':'Date','nb_lignes_total':'Lignes',
-            'nb_lignes_type_e':'E/S','nb_lignes_type_a':'Avoirs','date_debut':'Début','date_fin':'Fin','created_by':'Par'
-        }), use_container_width=True, hide_index=True)
+    st.markdown("##### 📋 Historique")
+    dfi = get_imports()
+    if not dfi.empty:
+        cols_show = [c for c in ['id','source','nom_fichier','date_import','nb_lignes_total','nb_lignes_type_e','nb_lignes_type_a','date_debut','date_fin'] if c in dfi.columns]
+        st.dataframe(dfi[cols_show].rename(columns={'id':'ID','source':'Type','nom_fichier':'Fichier','date_import':'Date',
+            'nb_lignes_total':'Lignes','nb_lignes_type_e':'E/S','nb_lignes_type_a':'Avoirs','date_debut':'Début','date_fin':'Fin'}),
+            use_container_width=True, hide_index=True)
 
 # ============================================================================
-# TAB 2 : MAPPING PRODUITS — INLINE
+# TAB 2 : MAPPING PRODUITS (INLINE)
 # ============================================================================
-
 with tab2:
-    st.subheader("🔗 Mapping Emballage + Marque → Produit Commercial")
-    st.caption("*Applicable aux données Condi — sélectionnez une ligne pour mapper*")
-
-    df_nm = get_combinaisons_non_mappees_produit()
+    st.subheader("🔗 Mapping Emballage + Marque → Produit")
+    st.caption("*Condi — cliquez une ligne pour mapper*")
+    df_nm = get_combinaisons_non_mappees()
     produits = get_produits_commerciaux()
-
     if not df_nm.empty:
-        st.markdown(f"##### ⚠️ {len(df_nm)} combinaison(s) sans mapping")
+        st.markdown(f"##### ⚠️ {len(df_nm)} combinaison(s) non mappée(s)")
         event = st.dataframe(
-            df_nm.rename(columns={
-                'emballage':'Emballage','marque':'Marque','nb_lignes':'Nb lignes',
-                'pds_total_kg':'Pds total (kg)','nb_clients':'Nb clients'
-            }),
-            use_container_width=True, hide_index=True,
-            on_select="rerun", selection_mode="single-row", key="table_nm"
-        )
-
+            df_nm.rename(columns={'emballage':'Emballage','marque':'Marque','nb_lignes':'Lignes','tonnes':'Tonnes','nb_clients':'Clients'}),
+            use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="tbl_nm",
+            column_config={'Tonnes':st.column_config.NumberColumn(format="%.1f")})
         sel = event.selection.rows if hasattr(event, 'selection') else []
         if sel and produits:
-            row_sel = df_nm.iloc[sel[0]]
-            st.markdown("---")
-            st.markdown(f"**Mapper : `{row_sel['emballage']}` | `{row_sel.get('marque', '(vide)')}`** ({row_sel['nb_lignes']} lignes, {row_sel['nb_clients']} clients)")
-            prod_labels = [f"{p['code_produit']} — {p['marque']} {p['libelle']}" for p in produits]
-            prod_idx = st.selectbox("→ Produit POMI", range(len(prod_labels)),
-                                   format_func=lambda i: prod_labels[i], key="mp_prod_inline")
-            if st.button("💾 Enregistrer le mapping", type="primary", key="btn_mp_inline"):
-                ok, msg = sauver_mapping_produit(row_sel['emballage'], row_sel.get('marque'), produits[prod_idx]['code_produit'])
+            r = df_nm.iloc[sel[0]]
+            st.markdown(f"**→ `{r['emballage']}` | `{r.get('marque','(vide)')}`** — {r['nb_lignes']} lignes, {float(r['tonnes']):.1f} T")
+            pl = [f"{p['code_produit']} — {p['marque']} {p['libelle']}" for p in produits]
+            pi = st.selectbox("Produit POMI", range(len(pl)), format_func=lambda i: pl[i], key="mp_sel")
+            if st.button("💾 Enregistrer", type="primary", key="btn_mp"):
+                ok, msg = sauver_mapping_produit(r['emballage'], r.get('marque'), produits[pi]['code_produit'])
                 if ok: st.success(f"✅ {msg}"); st.rerun()
                 else: st.error(f"❌ {msg}")
     else:
-        st.success("✅ Toutes les combinaisons sont mappées" + (" pour cette campagne" if sel_camp else ""))
-
+        st.success("✅ Tout est mappé pour cette période")
     st.markdown("---")
     st.markdown("##### 📋 Mappings existants")
-    df_mp = get_mapping_produit()
-    if not df_mp.empty:
-        st.dataframe(df_mp[['emballage','marque','code_produit_commercial','libelle_produit']].rename(columns={
-            'emballage':'Emballage','marque':'Marque','code_produit_commercial':'Code Produit','libelle_produit':'Libellé'
-        }), use_container_width=True, hide_index=True)
+    dfm = get_mapping_produit()
+    if not dfm.empty:
+        st.dataframe(dfm[['emballage','marque','code_produit_commercial','libelle_produit']].rename(columns={
+            'emballage':'Emballage','marque':'Marque','code_produit_commercial':'Code','libelle_produit':'Libellé'}),
+            use_container_width=True, hide_index=True)
 
 # ============================================================================
-# TAB 3 : MAPPING SUR-EMBALLAGES — INLINE
+# TAB 3 : MAPPING SUR-EMBALLAGES (INLINE)
 # ============================================================================
-
 with tab3:
-    st.subheader("📦 Mapping Code Emballage → Sur-Emballage")
-    st.caption("*Applicable aux données Condi — sélectionnez une ligne pour mapper*")
-
-    df_nm_se = get_emballages_non_mappes_se()
+    st.subheader("📦 Mapping Emballage → Sur-Emballage")
+    st.caption("*Condi — cliquez une ligne pour mapper*")
+    df_nse = get_emballages_non_mappes_se()
     sur_embs = get_sur_emballages()
-
-    if not df_nm_se.empty:
-        st.markdown(f"##### ⚠️ {len(df_nm_se)} code(s) sans sur-emballage")
-        event_se = st.dataframe(
-            df_nm_se.rename(columns={'code_emballage':'Code Emballage','nb_lignes':'Nb lignes','nb_col_total':'Nb colis'}),
-            use_container_width=True, hide_index=True,
-            on_select="rerun", selection_mode="single-row", key="table_nm_se"
-        )
-
-        sel_se = event_se.selection.rows if hasattr(event_se, 'selection') else []
-        if sel_se and sur_embs:
-            row_se = df_nm_se.iloc[sel_se[0]]
-            st.markdown("---")
-            st.markdown(f"**Mapper : `{row_se['code_emballage']}`** ({row_se['nb_lignes']} lignes)")
-            se_labels = [f"{se['libelle']} ({se['nb_uvc']} UVC)" for se in sur_embs]
-            se_idx = st.selectbox("→ Sur-emballage POMI", range(len(se_labels)),
-                                 format_func=lambda i: se_labels[i], key="mse_se_inline")
-            if st.button("💾 Enregistrer", type="primary", key="btn_mse_inline"):
-                ok, msg = sauver_mapping_suremballage(row_se['code_emballage'], int(sur_embs[se_idx]['id']))
+    if not df_nse.empty:
+        st.markdown(f"##### ⚠️ {len(df_nse)} code(s) non associé(s)")
+        ev = st.dataframe(
+            df_nse.rename(columns={'code_emballage':'Code','nb_lignes':'Lignes','nb_col_total':'Colis'}),
+            use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="tbl_se")
+        ss = ev.selection.rows if hasattr(ev, 'selection') else []
+        if ss and sur_embs:
+            rs = df_nse.iloc[ss[0]]
+            st.markdown(f"**→ `{rs['code_emballage']}`** — {rs['nb_lignes']} lignes")
+            sl = [f"{s['libelle']} ({s['nb_uvc']} UVC)" for s in sur_embs]
+            si = st.selectbox("Sur-emballage POMI", range(len(sl)), format_func=lambda i: sl[i], key="mse_sel")
+            if st.button("💾 Enregistrer", type="primary", key="btn_se"):
+                ok, msg = sauver_mapping_se(rs['code_emballage'], int(sur_embs[si]['id']))
                 if ok: st.success(f"✅ {msg}"); st.rerun()
                 else: st.error(f"❌ {msg}")
     else:
-        st.success("✅ Tous les codes sont associés" + (" pour cette campagne" if sel_camp else ""))
-
+        st.success("✅ Tout est associé pour cette période")
     st.markdown("---")
-    st.markdown("##### 📋 Associations existantes")
-    df_mse = get_mapping_suremballage()
-    if not df_mse.empty:
-        st.dataframe(df_mse[['code_emballage','libelle_se','nb_uvc','description']].rename(columns={
-            'code_emballage':'Code','libelle_se':'Sur-Emballage','nb_uvc':'UVC','description':'Description'
-        }), use_container_width=True, hide_index=True)
+    st.markdown("##### 📋 Associations")
+    dfse = get_mapping_suremballage()
+    if not dfse.empty:
+        st.dataframe(dfse[['code_emballage','libelle_se','nb_uvc']].rename(columns={
+            'code_emballage':'Code','libelle_se':'Sur-Emballage','nb_uvc':'UVC'}),
+            use_container_width=True, hide_index=True)
 
 # ============================================================================
 # TAB 4 : CONDI
 # ============================================================================
-
 with tab4:
-    st.subheader("📈 Analyse Conditionnement")
-    sous = st.radio("", ["📊 Analyse", "🎯 Prévu vs Réel"], horizontal=True, key="condi_sous")
+    st.subheader("📈 Conditionnement")
+    sous = st.radio("", ["📊 Analyse","🎯 Prévu vs Réel"], horizontal=True, key="csous")
     st.markdown("---")
-
     if sous == "📊 Analyse":
-        data_condi = get_analyse_ventes('frulog_lignes_condi')
-        render_analyse_ventes(data_condi, "condi", show_produit=True)
+        # Mode comparaison ?
+        if COMP_DATES:
+            la, d1a, d1b, lb, d2a, d2b = COMP_DATES
+            st.info(f"🔀 Comparaison : **{la}** vs **{lb}**")
+            data_a = get_analyse_ventes('frulog_lignes_condi', d1a, d1b)
+            data_b = get_analyse_ventes('frulog_lignes_condi', d2a, d2b)
+            render_analyse_ventes(data_a, data_b, lb, "condi", show_produit=True)
+        else:
+            # SPLY automatique
+            sp1, sp2 = sply_dates()
+            data_now = get_analyse_ventes('frulog_lignes_condi')
+            data_prev = get_analyse_ventes('frulog_lignes_condi', sp1, sp2) if sp1 else None
+            label_prev = f"{sp1.strftime('%d/%m/%Y')}→{sp2.strftime('%d/%m/%Y')}" if sp1 else "N-1"
+            render_analyse_ventes(data_now, data_prev, label_prev, "condi", show_produit=True)
     else:
         df_comp = get_comparaison_previsions()
         if not df_comp.empty:
-            df_avec = df_comp[df_comp['prevu_t'].astype(float) > 0]
-            taux_g = (df_avec['expedie_t'].astype(float).sum() / max(df_avec['prevu_t'].astype(float).sum(), 0.001) * 100) if not df_avec.empty else 0
-            tot_p = df_comp['prevu_t'].astype(float).sum(); tot_e = df_comp['expedie_t'].astype(float).sum()
-            k1, k2, k3, k4 = st.columns(4)
-            with k1: st.metric("📊 Prévu", f"{tot_p:.1f} T")
-            with k2: st.metric("🚚 Expédié", f"{tot_e:.1f} T")
-            with k3: st.metric("📐 Écart", f"{tot_e-tot_p:+.1f} T")
-            with k4: st.metric("🎯 Réalisation", f"{taux_g:.0f}%")
+            da = df_comp[df_comp['prevu_t'].astype(float)>0]
+            tg = da['expedie_t'].astype(float).sum()/max(da['prevu_t'].astype(float).sum(),0.001)*100 if not da.empty else 0
+            tp = df_comp['prevu_t'].astype(float).sum(); te = df_comp['expedie_t'].astype(float).sum()
+            k1,k2,k3,k4 = st.columns(4)
+            with k1: st.metric("Prévu", f"{tp:.1f} T")
+            with k2: st.metric("Expédié", f"{te:.1f} T")
+            with k3: st.metric("Écart", f"{te-tp:+.1f} T")
+            with k4: st.metric("Réalisation", f"{tg:.0f}%")
             st.markdown("---")
-            df_sem = df_comp.groupby(['annee','semaine']).agg(
-                prevu=('prevu_t', lambda x: x.astype(float).sum()),
-                expedie=('expedie_t', lambda x: x.astype(float).sum())).reset_index()
-            df_sem['label'] = df_sem.apply(lambda r: f"S{int(r['semaine']):02d}/{int(r['annee'])}", axis=1)
+            ds = df_comp.groupby(['annee','semaine']).agg(prevu=('prevu_t',lambda x:x.astype(float).sum()),expedie=('expedie_t',lambda x:x.astype(float).sum())).reset_index()
+            ds['label'] = ds.apply(lambda r: f"S{int(r['semaine']):02d}", axis=1)
             fig = go.Figure()
-            fig.add_trace(go.Bar(x=df_sem['label'], y=df_sem['prevu'], name='Prévu', marker_color='#90CAF9'))
-            fig.add_trace(go.Bar(x=df_sem['label'], y=df_sem['expedie'], name='Expédié', marker_color='#1565C0'))
+            fig.add_trace(go.Bar(x=ds['label'], y=ds['prevu'], name='Prévu', marker_color='#90CAF9',
+                text=[f"{v:.0f}" for v in ds['prevu']], textposition='outside', textfont_size=9))
+            fig.add_trace(go.Bar(x=ds['label'], y=ds['expedie'], name='Expédié', marker_color='#1565C0',
+                text=[f"{v:.0f}" for v in ds['expedie']], textposition='outside', textfont_size=9))
             fig.update_layout(barmode='group', title="Prévu vs Expédié (T)", height=400)
             st.plotly_chart(fig, use_container_width=True)
-            df_sem['taux'] = df_sem.apply(lambda r: (r['expedie']/r['prevu']*100) if r['prevu']>0 else None, axis=1)
-            if df_sem['taux'].notna().any():
-                colors = ['#4CAF50' if t and 80<=t<=120 else '#FF9800' if t and (60<=t<80 or 120<t<=150) else '#F44336' for t in df_sem['taux']]
-                fig_t = go.Figure([go.Bar(x=df_sem['label'], y=df_sem['taux'], marker_color=colors)])
-                fig_t.add_hline(y=100, line_dash="dash", line_color="black")
-                fig_t.update_layout(title="Taux réalisation / semaine (%)", height=350)
-                st.plotly_chart(fig_t, use_container_width=True)
-            st.markdown("---")
-            df_pr = df_comp.groupby('produit').agg(prevu=('prevu_t', lambda x: x.astype(float).sum()), expedie=('expedie_t', lambda x: x.astype(float).sum())).reset_index()
-            df_pr['ecart'] = df_pr['expedie'] - df_pr['prevu']
-            df_pr['taux'] = df_pr.apply(lambda r: f"{r['expedie']/r['prevu']*100:.0f}%" if r['prevu']>0 else "—", axis=1)
-            st.dataframe(df_pr.sort_values('prevu', ascending=False).rename(columns={'produit':'Produit','prevu':'Prévu (T)','expedie':'Expédié (T)','ecart':'Écart (T)','taux':'Taux'}), use_container_width=True, hide_index=True)
+            ds['taux'] = ds.apply(lambda r: r['expedie']/r['prevu']*100 if r['prevu']>0 else None, axis=1)
+            if ds['taux'].notna().any():
+                colors = ['#4CAF50' if t and 80<=t<=120 else '#FF9800' if t and (60<=t<80 or 120<t<=150) else '#F44336' for t in ds['taux']]
+                ft = go.Figure([go.Bar(x=ds['label'], y=ds['taux'], marker_color=colors,
+                    text=[f"{v:.0f}%" if v else "" for v in ds['taux']], textposition='outside', textfont_size=10)])
+                ft.add_hline(y=100, line_dash="dash"); ft.update_layout(title="Taux réalisation (%)", height=350)
+                st.plotly_chart(ft, use_container_width=True)
             buf = io.BytesIO()
             with pd.ExcelWriter(buf, engine='openpyxl') as w:
-                df_comp.to_excel(w, index=False, sheet_name='Détail'); df_sem.to_excel(w, index=False, sheet_name='Par Semaine'); df_pr.to_excel(w, index=False, sheet_name='Par Produit')
-            st.download_button("📥 Export Excel", buf.getvalue(), f"prevu_vs_reel_{datetime.now().strftime('%Y%m%d')}.xlsx", use_container_width=True)
+                df_comp.to_excel(w, index=False, sheet_name='Détail'); ds.to_excel(w, index=False, sheet_name='Semaine')
+            st.download_button("📥 Export", buf.getvalue(), "prevu_vs_reel.xlsx", use_container_width=True)
         else:
-            st.info("📭 Aucune donnée. Importez des données Condi et/ou saisissez des prévisions.")
+            st.info("📭 Aucune donnée prévision")
 
 # ============================================================================
 # TAB 5 : NÉGOCE
 # ============================================================================
-
 with tab5:
-    st.subheader("🏪 Analyse Négoce")
-    data_negoce = get_analyse_ventes('frulog_lignes_negoce')
-    render_analyse_ventes(data_negoce, "negoce", show_produit=False)
+    st.subheader("🏪 Négoce")
+    if COMP_DATES:
+        la, d1a, d1b, lb, d2a, d2b = COMP_DATES
+        st.info(f"🔀 Comparaison : **{la}** vs **{lb}**")
+        da = get_analyse_ventes('frulog_lignes_negoce', d1a, d1b)
+        db = get_analyse_ventes('frulog_lignes_negoce', d2a, d2b)
+        render_analyse_ventes(da, db, lb, "negoce")
+    else:
+        sp1, sp2 = sply_dates()
+        dn = get_analyse_ventes('frulog_lignes_negoce')
+        dp = get_analyse_ventes('frulog_lignes_negoce', sp1, sp2) if sp1 else None
+        lp = f"{sp1.strftime('%d/%m/%Y')}→{sp2.strftime('%d/%m/%Y')}" if sp1 else "N-1"
+        render_analyse_ventes(dn, dp, lp, "negoce")
 
 # ============================================================================
 # TAB 6 : ACHATS
 # ============================================================================
-
 with tab6:
-    st.subheader("🛒 Analyse Achats")
-    data_achat = get_analyse_achat()
-    render_analyse_achat(data_achat)
+    st.subheader("🛒 Achats")
+    if COMP_DATES:
+        la, d1a, d1b, lb, d2a, d2b = COMP_DATES
+        st.info(f"🔀 Comparaison : **{la}** vs **{lb}**")
+        da = get_analyse_achat(d1a, d1b)
+        db = get_analyse_achat(d2a, d2b)
+        render_analyse_achat(da, db, lb)
+    else:
+        sp1, sp2 = sply_dates()
+        dn = get_analyse_achat()
+        dp = get_analyse_achat(sp1, sp2) if sp1 else None
+        lp = f"{sp1.strftime('%d/%m/%Y')}→{sp2.strftime('%d/%m/%Y')}" if sp1 else "N-1"
+        render_analyse_achat(dn, dp, lp)
 
 show_footer()
