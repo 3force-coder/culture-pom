@@ -94,7 +94,7 @@ def normaliser_poids_kg(poids, unite):
 # ============================================================================
 
 def get_stock_actuel():
-    """Calcule le stock actuel par produit (somme des mouvements) avec fraîcheur"""
+    """Calcule le stock actuel par produit ET date de production"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -104,6 +104,7 @@ def get_stock_actuel():
                 COALESCE(pc.marque, '') as marque,
                 COALESCE(pc.libelle, m.code_produit_commercial) as libelle,
                 COALESCE(pc.code_variete, '') as variete,
+                m.date_production,
                 SUM(m.quantite_tonnes) as stock_tonnes,
                 SUM(m.poids_total_kg) as stock_kg,
                 SUM(m.nb_sur_emballages) as total_sur_emb,
@@ -112,14 +113,12 @@ def get_stock_actuel():
                 COUNT(*) FILTER (WHERE m.quantite_tonnes < 0) as nb_sorties,
                 COALESCE(SUM(m.quantite_tonnes) FILTER (WHERE m.quantite_tonnes > 0), 0) as total_entrees_t,
                 COALESCE(ABS(SUM(m.quantite_tonnes) FILTER (WHERE m.quantite_tonnes < 0)), 0) as total_sorties_t,
-                MAX(m.date_mouvement) as dernier_mouvement,
-                MIN(m.date_production) FILTER (WHERE m.quantite_tonnes > 0) as date_prod_plus_ancienne,
-                MAX(m.date_production) FILTER (WHERE m.quantite_tonnes > 0) as date_prod_plus_recente
+                MAX(m.date_mouvement) as dernier_mouvement
             FROM mouvements_produits_finis m
             LEFT JOIN ref_produits_commerciaux pc 
                 ON m.code_produit_commercial = pc.code_produit
-            GROUP BY m.code_produit_commercial, pc.marque, pc.libelle, pc.code_variete
-            ORDER BY SUM(m.quantite_tonnes) DESC
+            GROUP BY m.code_produit_commercial, pc.marque, pc.libelle, pc.code_variete, m.date_production
+            ORDER BY m.date_production ASC NULLS LAST, SUM(m.quantite_tonnes) DESC
         """)
         rows = cursor.fetchall()
         cursor.close()
@@ -132,9 +131,8 @@ def get_stock_actuel():
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
-            # Calculer l'âge en jours depuis la date de prod la plus ancienne
             today = date.today()
-            df['age_jours'] = df['date_prod_plus_ancienne'].apply(
+            df['age_jours'] = df['date_production'].apply(
                 lambda d: (today - d).days if pd.notna(d) and d is not None else None
             )
             
@@ -467,66 +465,86 @@ with tab1:
     df_stock = get_stock_actuel()
     
     if not df_stock.empty:
-        # ⚠️ Alertes fraîcheur globales
+        # Compteurs fraîcheur (neutre, juste les chiffres)
         if 'age_jours' in df_stock.columns:
-            stock_positif = df_stock[df_stock['stock_tonnes'] > 0]
-            alertes_orange = stock_positif[stock_positif['age_jours'] == 2]
-            alertes_rouge = stock_positif[stock_positif['age_jours'] >= 3]
+            sp = df_stock[df_stock['stock_tonnes'] > 0]
+            nb_rouge = len(sp[sp['age_jours'] >= 3])
+            nb_orange = len(sp[sp['age_jours'] == 2])
+            nb_vert = len(sp[sp['age_jours'] <= 1])
             
-            if not alertes_rouge.empty:
-                prods_rouge = ", ".join(alertes_rouge['code_produit_commercial'].tolist())
-                st.error(f"🔴 **{len(alertes_rouge)} produit(s) J+3 ou plus — refus client** : {prods_rouge}")
-            if not alertes_orange.empty:
-                prods_orange = ", ".join(alertes_orange['code_produit_commercial'].tolist())
-                st.warning(f"🟠 **{len(alertes_orange)} produit(s) J+2 — à expédier en priorité** : {prods_orange}")
+            fc1, fc2, fc3 = st.columns(3)
+            with fc1:
+                st.metric("🟢 J+0 / J+1", nb_vert)
+            with fc2:
+                st.metric("🟠 J+2", nb_orange)
+            with fc3:
+                st.metric("🔴 J+3+", nb_rouge)
         
-        col_f1, col_f2 = st.columns(2)
+        # Filtres
+        col_f1, col_f2, col_f3, col_f4 = st.columns(4)
         with col_f1:
             marques = ["Toutes"] + sorted(df_stock['marque'].unique().tolist())
             filtre_marque = st.selectbox("Marque", marques, key="stock_filtre_marque")
         with col_f2:
-            opts = ["Tous", "En stock (>0)", "Rupture (≤0)"]
-            filtre_stock = st.selectbox("Niveau", opts, key="stock_filtre_niveau")
+            opts_niv = ["Tous", "En stock (>0)", "Épuisé (≤0)"]
+            filtre_stock = st.selectbox("Niveau", opts_niv, key="stock_filtre_niveau")
+        with col_f3:
+            opts_fraich = ["Toutes", "🟢 J+0/J+1", "🟠 J+2", "🔴 J+3+"]
+            filtre_fraich = st.selectbox("Fraîcheur", opts_fraich, key="stock_filtre_fraich")
+        with col_f4:
+            opts_tri = ["Plus ancien d'abord", "Plus récent d'abord", "Stock décroissant", "Produit A→Z"]
+            filtre_tri = st.selectbox("Tri", opts_tri, key="stock_filtre_tri")
         
         df_f = df_stock.copy()
         if filtre_marque != "Toutes":
             df_f = df_f[df_f['marque'] == filtre_marque]
         if filtre_stock == "En stock (>0)":
             df_f = df_f[df_f['stock_tonnes'] > 0]
-        elif filtre_stock == "Rupture (≤0)":
+        elif filtre_stock == "Épuisé (≤0)":
             df_f = df_f[df_f['stock_tonnes'] <= 0]
+        if filtre_fraich == "🟢 J+0/J+1":
+            df_f = df_f[df_f['age_jours'] <= 1]
+        elif filtre_fraich == "🟠 J+2":
+            df_f = df_f[df_f['age_jours'] == 2]
+        elif filtre_fraich == "🔴 J+3+":
+            df_f = df_f[df_f['age_jours'] >= 3]
         
-        st.markdown(f"**{len(df_f)} produit(s)**")
+        # Tri
+        if filtre_tri == "Plus ancien d'abord":
+            df_f = df_f.sort_values('date_production', ascending=True, na_position='last')
+        elif filtre_tri == "Plus récent d'abord":
+            df_f = df_f.sort_values('date_production', ascending=False, na_position='last')
+        elif filtre_tri == "Stock décroissant":
+            df_f = df_f.sort_values('stock_tonnes', ascending=False)
+        elif filtre_tri == "Produit A→Z":
+            df_f = df_f.sort_values('code_produit_commercial')
         
+        st.markdown(f"**{len(df_f)} ligne(s)**")
+        
+        # Formatage
         df_d = df_f.copy()
-        df_d['Stock (T)'] = df_d['stock_tonnes'].apply(lambda x: f"{x:+.2f}")
-        df_d['Stock (kg)'] = df_d['stock_kg'].apply(lambda x: f"{x:+,.0f}".replace(',', ' ') if pd.notna(x) else "0")
-        df_d['UVC'] = df_d['total_uvc'].apply(lambda x: f"{int(x):,}".replace(',', ' ') if pd.notna(x) else "0")
+        df_d['Stock (T)'] = df_d['stock_tonnes'].apply(lambda x: f"{x:+.3f}")
         df_d['Sur-Emb.'] = df_d['total_sur_emb'].apply(lambda x: f"{int(x):+d}" if pd.notna(x) else "0")
-        df_d['Entrées (T)'] = df_d['total_entrees_t'].apply(lambda x: f"{x:.2f}" if x > 0 else "-")
-        df_d['Sorties (T)'] = df_d['total_sorties_t'].apply(lambda x: f"{x:.2f}" if x > 0 else "-")
+        df_d['UVC'] = df_d['total_uvc'].apply(lambda x: f"{int(x):,}".replace(',', ' ') if pd.notna(x) else "0")
         
-        # Fraîcheur : âge et alerte
-        def format_fraicheur(row):
-            age = row.get('age_jours')
+        def format_fraicheur(age):
             if age is None or pd.isna(age):
                 return "—"
             age = int(age)
             if age <= 1:
                 return f"🟢 J+{age}"
             elif age == 2:
-                return f"🟠 J+{age} ⚠️"
+                return f"🟠 J+{age}"
             else:
-                return f"🔴 J+{age} ❌"
+                return f"🔴 J+{age}"
         
-        df_d['Fraîcheur'] = df_d.apply(format_fraicheur, axis=1)
-        df_d['Date Prod.'] = df_d['date_prod_plus_ancienne'].apply(
+        df_d['Fraîcheur'] = df_d['age_jours'].apply(format_fraicheur)
+        df_d['Date Prod.'] = df_d['date_production'].apply(
             lambda d: d.strftime('%d/%m/%Y') if pd.notna(d) and d is not None else "—"
         )
         
-        cols_show = ['code_produit_commercial', 'marque', 'libelle', 'Stock (T)', 
-                     'Sur-Emb.', 'UVC', 'Date Prod.', 'Fraîcheur',
-                     'Entrées (T)', 'Sorties (T)', 'dernier_mouvement']
+        cols_show = ['code_produit_commercial', 'marque', 'libelle', 'Date Prod.', 'Fraîcheur',
+                     'Stock (T)', 'Sur-Emb.', 'UVC', 'dernier_mouvement']
         cols_show = [c for c in cols_show if c in df_d.columns]
         
         rename = {'code_produit_commercial': 'Code', 'marque': 'Marque', 'libelle': 'Libellé',
@@ -824,14 +842,14 @@ with tab3:
         with ic4:
             client = st.text_input("Client", key="s_client")
         
-        # Alerte fraîcheur en temps réel
+        # Indicateur fraîcheur en temps réel
         age_prod = (date.today() - date_prod).days
         if age_prod >= 3:
-            st.error(f"🔴 Date de production J+{age_prod} — produit refusé par les clients !")
+            st.error(f"🔴 Date de production : J+{age_prod}")
         elif age_prod == 2:
-            st.warning(f"🟠 Date de production J+{age_prod} — à expédier en priorité !")
+            st.warning(f"🟠 Date de production : J+{age_prod}")
         elif age_prod >= 0:
-            st.success(f"🟢 Fraîcheur OK : J+{age_prod}")
+            st.success(f"🟢 Date de production : J+{age_prod}")
         
         notes = st.text_area("Notes", height=68, key="s_notes")
         
