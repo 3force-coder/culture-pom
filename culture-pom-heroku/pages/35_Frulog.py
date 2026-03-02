@@ -171,12 +171,25 @@ def cw_achat(d1=None, d2=None):
     return f" AND dt_chargmt >= '{dd}' AND dt_chargmt <= '{df}'"
 
 def sply_dates():
-    """Retourne les dates de la même période l'année précédente"""
+    """SPLY dynamique : même période N-1 calée sur aujourd'hui.
+    Ex: si filtre = Camp 2026 (01/06/2025→31/05/2026) et aujourd'hui = 02/03/2026
+    → Période N  = 01/06/2025 → 02/03/2026 (tronquée à aujourd'hui)
+    → Période N-1 = 01/06/2024 → 02/03/2025 (même fenêtre, 1 an avant)
+    """
     try:
-        d1 = DATE_DEB.replace(year=DATE_DEB.year - 1)
-        d2 = DATE_FIN.replace(year=DATE_FIN.year - 1)
-        return d1, d2
-    except: return None, None
+        today = date.today()
+        # Tronquer la fin de période à aujourd'hui si dans le futur
+        actual_end = min(DATE_FIN, today)
+        # Calculer le décalage en jours depuis le début de période
+        delta_days = (actual_end - DATE_DEB).days
+        # Période N-1 : même début -1 an, même durée
+        try:
+            prev_start = DATE_DEB.replace(year=DATE_DEB.year - 1)
+        except ValueError:
+            prev_start = DATE_DEB.replace(year=DATE_DEB.year - 1, day=28)
+        prev_end = prev_start + timedelta(days=delta_days)
+        return prev_start, prev_end, DATE_DEB, actual_end
+    except: return None, None, None, None
 
 # ============================================================================
 # FONCTIONS BDD
@@ -568,25 +581,39 @@ def render_analyse_ventes(data, data_prev, label_prev, label, show_produit=False
     prev_data = lambda key: data_prev.get(key) if data_prev else None
 
     if vue == "📊 Vue d'ensemble":
+        mois_noms = {1:'Jan',2:'Fév',3:'Mar',4:'Avr',5:'Mai',6:'Jun',7:'Jul',8:'Aoû',9:'Sep',10:'Oct',11:'Nov',12:'Déc'}
         if data['par_mois']:
             df_m = pd.DataFrame(data['par_mois']); df_m['tonnes'] = df_m['pds_kg'].astype(float)/1000
-            df_m['label'] = df_m.apply(lambda r: f"{int(r['mois']):02d}/{int(r['annee'])}", axis=1)
+            # Axe = numéro de mois pour superposer N et N-1
+            df_m['mois_label'] = df_m['mois'].astype(int).map(mois_noms)
             fig = go.Figure()
             if data_prev and data_prev.get('par_mois'):
                 df_mp = pd.DataFrame(data_prev['par_mois']); df_mp['tonnes'] = df_mp['pds_kg'].astype(float)/1000
-                df_mp['label'] = df_mp.apply(lambda r: f"{int(r['mois']):02d}/{int(r['annee'])}", axis=1)
-                fig.add_trace(go.Scatter(x=df_mp['label'], y=df_mp['tonnes'], mode='lines+markers+text', name='N-1',
+                df_mp['mois_label'] = df_mp['mois'].astype(int).map(mois_noms)
+                fig.add_trace(go.Scatter(x=df_mp['mois_label'], y=df_mp['tonnes'], mode='lines+markers+text', name='N-1',
                     line=dict(color='#BBDEFB', width=2, dash='dot'), text=[fmt_t(v) for v in df_mp['tonnes']], textposition='top center', textfont_size=9))
-            fig.add_trace(go.Scatter(x=df_m['label'], y=df_m['tonnes'], mode='lines+markers+text', name='Période',
+            fig.add_trace(go.Scatter(x=df_m['mois_label'], y=df_m['tonnes'], mode='lines+markers+text', name='Période',
                 line=dict(color='#1565C0', width=3), fill='tozeroy', text=[fmt_t(v) for v in df_m['tonnes']], textposition='top center', textfont_size=10))
-            fig.update_layout(title="Tonnage mensuel", height=400, xaxis=dict(tickangle=-45), legend=dict(orientation="h"))
+            # Ordonner les mois dans l'ordre campagne (Jun→Mai)
+            ordre_mois = ['Jun','Jul','Aoû','Sep','Oct','Nov','Déc','Jan','Fév','Mar','Avr','Mai']
+            fig.update_layout(title="Tonnage mensuel — N vs N-1", height=400,
+                xaxis=dict(categoryorder='array', categoryarray=ordre_mois),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02))
             st.plotly_chart(fig, use_container_width=True)
         if data['par_semaine']:
-            df_s = pd.DataFrame(data['par_semaine']).tail(52); df_s['tonnes'] = df_s['pds_kg'].astype(float)/1000
-            df_s['label'] = df_s.apply(lambda r: f"S{int(r['semaine']):02d}", axis=1)
-            texts = [fmt_t(v) for v in df_s['tonnes']]
-            fig = go.Figure([go.Bar(x=df_s['label'], y=df_s['tonnes'], marker_color='#42A5F5', text=texts, textposition='outside', textfont_size=8)])
-            fig.update_layout(title="Tonnage hebdo", height=400, xaxis=dict(tickangle=-45))
+            df_s = pd.DataFrame(data['par_semaine']); df_s['tonnes'] = df_s['pds_kg'].astype(float)/1000
+            # Axe = numéro de semaine pour superposer
+            df_s['sem_label'] = df_s['semaine'].apply(lambda s: f"S{int(s):02d}")
+            fig = go.Figure()
+            if data_prev and data_prev.get('par_semaine'):
+                df_sp = pd.DataFrame(data_prev['par_semaine']); df_sp['tonnes'] = df_sp['pds_kg'].astype(float)/1000
+                df_sp['sem_label'] = df_sp['semaine'].apply(lambda s: f"S{int(s):02d}")
+                fig.add_trace(go.Bar(x=df_sp['sem_label'], y=df_sp['tonnes'], name='N-1', marker_color='#BBDEFB',
+                    text=[fmt_t(v) for v in df_sp['tonnes']], textposition='outside', textfont_size=8))
+            fig.add_trace(go.Bar(x=df_s['sem_label'], y=df_s['tonnes'], name='Période', marker_color='#1565C0',
+                text=[fmt_t(v) for v in df_s['tonnes']], textposition='outside', textfont_size=8))
+            fig.update_layout(title="Tonnage hebdo — N vs N-1", height=400, barmode='group',
+                xaxis=dict(tickangle=-45), legend=dict(orientation="h", yanchor="bottom", y=1.02))
             st.plotly_chart(fig, use_container_width=True)
 
     elif vue == "👥 Clients":
@@ -683,18 +710,22 @@ def render_analyse_achat(data, data_prev, label_prev):
         st.plotly_chart(fig, use_container_width=True)
 
     if vue == "📊 Vue d'ensemble":
+        mois_noms = {1:'Jan',2:'Fév',3:'Mar',4:'Avr',5:'Mai',6:'Jun',7:'Jul',8:'Aoû',9:'Sep',10:'Oct',11:'Nov',12:'Déc'}
         if data['par_mois']:
             df_m = pd.DataFrame(data['par_mois']); df_m['tonnes'] = df_m['pds_kg'].astype(float)/1000
-            df_m['label'] = df_m.apply(lambda r: f"{int(r['mois']):02d}/{int(r['annee'])}", axis=1)
+            df_m['mois_label'] = df_m['mois'].astype(int).map(mois_noms)
             fig = go.Figure()
             if data_prev and data_prev.get('par_mois'):
                 dfmp = pd.DataFrame(data_prev['par_mois']); dfmp['tonnes'] = dfmp['pds_kg'].astype(float)/1000
-                dfmp['label'] = dfmp.apply(lambda r: f"{int(r['mois']):02d}/{int(r['annee'])}", axis=1)
-                fig.add_trace(go.Scatter(x=dfmp['label'], y=dfmp['tonnes'], mode='lines+markers+text', name='N-1',
+                dfmp['mois_label'] = dfmp['mois'].astype(int).map(mois_noms)
+                fig.add_trace(go.Scatter(x=dfmp['mois_label'], y=dfmp['tonnes'], mode='lines+markers+text', name='N-1',
                     line=dict(color='#FFCC80', width=2, dash='dot'), text=[fmt_t(v) for v in dfmp['tonnes']], textposition='top center', textfont_size=9))
-            fig.add_trace(go.Scatter(x=df_m['label'], y=df_m['tonnes'], mode='lines+markers+text', name='Période',
+            fig.add_trace(go.Scatter(x=df_m['mois_label'], y=df_m['tonnes'], mode='lines+markers+text', name='Période',
                 line=dict(color='#E65100', width=3), fill='tozeroy', text=[fmt_t(v) for v in df_m['tonnes']], textposition='top center', textfont_size=10))
-            fig.update_layout(title="Tonnage mensuel", height=400, xaxis=dict(tickangle=-45))
+            ordre_mois = ['Jun','Jul','Aoû','Sep','Oct','Nov','Déc','Jan','Fév','Mar','Avr','Mai']
+            fig.update_layout(title="Tonnage mensuel — N vs N-1", height=400,
+                xaxis=dict(categoryorder='array', categoryarray=ordre_mois),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02))
             st.plotly_chart(fig, use_container_width=True)
 
     elif vue == "🏭 Fournisseurs" and data.get('par_fournisseur'):
@@ -880,9 +911,9 @@ with tab4:
             data_b = get_analyse_ventes('frulog_lignes_condi', d2a, d2b)
             render_analyse_ventes(data_a, data_b, lb, "condi", show_produit=True)
         else:
-            # SPLY automatique
-            sp1, sp2 = sply_dates()
-            data_now = get_analyse_ventes('frulog_lignes_condi')
+            # SPLY automatique — tronqué à aujourd'hui
+            sp1, sp2, now1, now2 = sply_dates()
+            data_now = get_analyse_ventes('frulog_lignes_condi', now1, now2) if now1 else get_analyse_ventes('frulog_lignes_condi')
             data_prev = get_analyse_ventes('frulog_lignes_condi', sp1, sp2) if sp1 else None
             label_prev = f"{sp1.strftime('%d/%m/%Y')}→{sp2.strftime('%d/%m/%Y')}" if sp1 else "N-1"
             render_analyse_ventes(data_now, data_prev, label_prev, "condi", show_produit=True)
@@ -933,8 +964,8 @@ with tab5:
         db = get_analyse_ventes('frulog_lignes_negoce', d2a, d2b)
         render_analyse_ventes(da, db, lb, "negoce")
     else:
-        sp1, sp2 = sply_dates()
-        dn = get_analyse_ventes('frulog_lignes_negoce')
+        sp1, sp2, now1, now2 = sply_dates()
+        dn = get_analyse_ventes('frulog_lignes_negoce', now1, now2) if now1 else get_analyse_ventes('frulog_lignes_negoce')
         dp = get_analyse_ventes('frulog_lignes_negoce', sp1, sp2) if sp1 else None
         lp = f"{sp1.strftime('%d/%m/%Y')}→{sp2.strftime('%d/%m/%Y')}" if sp1 else "N-1"
         render_analyse_ventes(dn, dp, lp, "negoce")
@@ -951,8 +982,8 @@ with tab6:
         db = get_analyse_achat(d2a, d2b)
         render_analyse_achat(da, db, lb)
     else:
-        sp1, sp2 = sply_dates()
-        dn = get_analyse_achat()
+        sp1, sp2, now1, now2 = sply_dates()
+        dn = get_analyse_achat(now1, now2) if now1 else get_analyse_achat()
         dp = get_analyse_achat(sp1, sp2) if sp1 else None
         lp = f"{sp1.strftime('%d/%m/%Y')}→{sp2.strftime('%d/%m/%Y')}" if sp1 else "N-1"
         render_analyse_achat(dn, dp, lp)
