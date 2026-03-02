@@ -105,19 +105,31 @@ def get_stock_actuel():
                 COALESCE(pc.libelle, m.code_produit_commercial) as libelle,
                 COALESCE(pc.code_variete, '') as variete,
                 m.date_production,
+                m.sur_emballage_id,
+                COALESCE(se.libelle, 'N/A') as sur_emballage_libelle,
                 SUM(m.quantite_tonnes) as stock_tonnes,
                 SUM(m.poids_total_kg) as stock_kg,
                 SUM(m.nb_sur_emballages) as total_sur_emb,
                 SUM(m.nb_uvc) as total_uvc,
-                COUNT(*) FILTER (WHERE m.quantite_tonnes > 0) as nb_entrees,
-                COUNT(*) FILTER (WHERE m.quantite_tonnes < 0) as nb_sorties,
-                COALESCE(SUM(m.quantite_tonnes) FILTER (WHERE m.quantite_tonnes > 0), 0) as total_entrees_t,
-                COALESCE(ABS(SUM(m.quantite_tonnes) FILTER (WHERE m.quantite_tonnes < 0)), 0) as total_sorties_t,
-                MAX(m.date_mouvement) as dernier_mouvement
+                MAX(m.date_mouvement) as dernier_mouvement,
+                -- Récupérer le poids unitaire et nb_uvc de la dernière entrée pour ce groupe
+                (SELECT mm.poids_unitaire_kg FROM mouvements_produits_finis mm 
+                 WHERE mm.code_produit_commercial = m.code_produit_commercial 
+                   AND (mm.date_production = m.date_production OR (mm.date_production IS NULL AND m.date_production IS NULL))
+                   AND mm.quantite_tonnes > 0
+                 ORDER BY mm.id DESC LIMIT 1) as poids_unitaire_kg,
+                (SELECT mm.nb_uvc / NULLIF(mm.nb_sur_emballages, 0) FROM mouvements_produits_finis mm 
+                 WHERE mm.code_produit_commercial = m.code_produit_commercial 
+                   AND (mm.date_production = m.date_production OR (mm.date_production IS NULL AND m.date_production IS NULL))
+                   AND mm.quantite_tonnes > 0
+                 ORDER BY mm.id DESC LIMIT 1) as uvc_par_suremb
             FROM mouvements_produits_finis m
             LEFT JOIN ref_produits_commerciaux pc 
                 ON m.code_produit_commercial = pc.code_produit
-            GROUP BY m.code_produit_commercial, pc.marque, pc.libelle, pc.code_variete, m.date_production
+            LEFT JOIN ref_sur_emballages se
+                ON m.sur_emballage_id = se.id
+            GROUP BY m.code_produit_commercial, pc.marque, pc.libelle, pc.code_variete, 
+                     m.date_production, m.sur_emballage_id, se.libelle
             ORDER BY m.date_production ASC NULLS LAST, SUM(m.quantite_tonnes) DESC
         """)
         rows = cursor.fetchall()
@@ -126,8 +138,7 @@ def get_stock_actuel():
         
         if rows:
             df = pd.DataFrame(rows)
-            for col in ['stock_tonnes', 'stock_kg', 'total_entrees_t', 'total_sorties_t', 
-                        'total_sur_emb', 'total_uvc']:
+            for col in ['stock_tonnes', 'stock_kg', 'total_sur_emb', 'total_uvc']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
@@ -452,7 +463,7 @@ st.markdown("---")
 # ============================================================================
 
 tab1, tab2, tab3, tab4 = st.tabs([
-    "📊 Stock Actuel", "📋 Historique", "➕ Saisie Mouvement", "📈 Évolution"
+    "📊 Stock Actuel", "📋 Historique", "📥 Entrée en Stock", "📈 Évolution"
 ])
 
 # ============================================================================
@@ -553,8 +564,110 @@ with tab1:
         st.dataframe(
             df_d[cols_show].rename(columns=rename),
             use_container_width=True, hide_index=True,
+            on_select="rerun", selection_mode="single-row", key="table_stock",
             column_config={'Dernier Mvt': st.column_config.DateColumn(format='DD/MM/YYYY')}
         )
+        
+        # ============================================================
+        # SORTIE DE STOCK depuis sélection
+        # ============================================================
+        selected_stock = st.session_state.get('table_stock', None)
+        sel_rows = selected_stock.selection.rows if selected_stock and hasattr(selected_stock, 'selection') else []
+        
+        if len(sel_rows) > 0:
+            sel_idx = sel_rows[0]
+            sel_row = df_f.iloc[sel_idx]
+            
+            code_sel = sel_row['code_produit_commercial']
+            marque_sel = sel_row.get('marque', '')
+            libelle_sel = sel_row.get('libelle', code_sel)
+            date_prod_sel = sel_row.get('date_production')
+            stock_se = int(sel_row.get('total_sur_emb', 0))
+            stock_uvc = int(sel_row.get('total_uvc', 0))
+            stock_t = float(sel_row.get('stock_tonnes', 0))
+            se_id_sel = sel_row.get('sur_emballage_id')
+            se_lib_sel = sel_row.get('sur_emballage_libelle', 'N/A')
+            poids_unit_sel = float(sel_row.get('poids_unitaire_kg', 0)) if sel_row.get('poids_unitaire_kg') else 0
+            uvc_par_se_sel = int(sel_row.get('uvc_par_suremb', 1)) if sel_row.get('uvc_par_suremb') else 1
+            
+            date_prod_str = date_prod_sel.strftime('%d/%m/%Y') if pd.notna(date_prod_sel) else "N/A"
+            
+            st.markdown("---")
+            st.markdown(f"##### 📤 Sortie de stock — {code_sel} (prod. {date_prod_str})")
+            st.markdown(f"**{marque_sel} {libelle_sel}** — "
+                       f"Stock actuel : **{stock_se} {se_lib_sel}(s)** / {stock_uvc} UVC / {stock_t:.3f} T")
+            
+            if stock_se <= 0:
+                st.warning("Stock à 0 — aucune sortie possible")
+            else:
+                sc1, sc2, sc3 = st.columns(3)
+                
+                with sc1:
+                    type_sortie = st.selectbox(
+                        "Type de sortie",
+                        ["🚚 Expédition", "📤 Correction Sortie"],
+                        key="sortie_type"
+                    )
+                    type_mvt_sortie = "EXPEDITION" if "Expédition" in type_sortie else "CORRECTION_SORTIE"
+                
+                with sc2:
+                    nb_sortie = st.number_input(
+                        f"Nb {se_lib_sel}(s) à sortir *",
+                        min_value=1,
+                        max_value=max(stock_se, 1),
+                        value=min(1, stock_se),
+                        step=1,
+                        key="sortie_nb"
+                    )
+                
+                with sc3:
+                    client_sortie = st.text_input("Client", key="sortie_client")
+                
+                sc4, sc5 = st.columns(2)
+                with sc4:
+                    ref_sortie = st.text_input("Référence (BL...)", key="sortie_ref")
+                with sc5:
+                    date_sortie = st.date_input("Date sortie", value=date.today(), key="sortie_date")
+                
+                # Calcul sortie
+                uvc_sortie = nb_sortie * uvc_par_se_sel
+                kg_sortie = uvc_sortie * poids_unit_sel
+                t_sortie = kg_sortie / 1000
+                
+                reste_se = stock_se - nb_sortie
+                reste_t = stock_t - t_sortie
+                
+                st.info(
+                    f"**Sortie** : -{nb_sortie} {se_lib_sel}(s) / -{uvc_sortie} UVC / -{t_sortie:.3f} T  →  "
+                    f"**Reste** : {reste_se} {se_lib_sel}(s) / {reste_t:.3f} T"
+                )
+                
+                if st.button("📤 Valider la sortie", type="primary", use_container_width=True, key="btn_sortie"):
+                    username = st.session_state.get('username', 'inconnu')
+                    
+                    ok, msg = ajouter_mouvement(
+                        code_produit=code_sel,
+                        type_mouvement=type_mvt_sortie,
+                        date_mouvement=date_sortie,
+                        sur_emballage_id=int(se_id_sel) if se_id_sel else None,
+                        nb_sur_emballages=nb_sortie,
+                        nb_uvc=uvc_sortie,
+                        poids_unitaire_kg=poids_unit_sel,
+                        poids_total_kg=kg_sortie,
+                        quantite_tonnes=t_sortie,
+                        date_production=date_prod_sel if pd.notna(date_prod_sel) else None,
+                        source='MANUEL',
+                        reference=ref_sortie if ref_sortie else None,
+                        client=client_sortie if client_sortie else None,
+                        notes=f"Sortie depuis stock actuel",
+                        created_by=username
+                    )
+                    
+                    if ok:
+                        st.success(f"✅ {msg}")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
         
         st.markdown("---")
         col_e1, col_e2 = st.columns(2)
@@ -680,7 +793,8 @@ with tab2:
 # ============================================================================
 
 with tab3:
-    st.subheader("➕ Saisir un Mouvement")
+    st.subheader("📥 Entrée en Stock")
+    st.caption("*Pour les sorties, sélectionnez une ligne dans Stock Actuel*")
     
     produits = get_produits_commerciaux_actifs()
     sur_emballages = get_sur_emballages_actifs()
@@ -691,26 +805,20 @@ with tab3:
         st.warning("Aucun sur-emballage actif dans ref_sur_emballages — "
                    "Ajoutez-en via Sources > Sur-Emballages")
     else:
-        # --- Type de mouvement ---
-        st.markdown("##### Type de mouvement")
+        # --- Type d'entrée ---
+        st.markdown("##### Type d'entrée")
         tc1, tc2 = st.columns(2)
         
         with tc1:
             type_opts = {
-                "🏭 Entrée Production": "PRODUCTION",
-                "🚚 Sortie Expédition": "EXPEDITION",
-                "📥 Correction Entrée (+)": "CORRECTION_ENTREE",
-                "📤 Correction Sortie (-)": "CORRECTION_SORTIE",
+                "🏭 Production": "PRODUCTION",
+                "📥 Correction Entrée": "CORRECTION_ENTREE",
             }
             type_sel = st.selectbox("Type *", list(type_opts.keys()), key="s_type")
             type_mvt = type_opts[type_sel]
         
         with tc2:
-            is_entree = type_mvt in ('PRODUCTION', 'CORRECTION_ENTREE')
-            if is_entree:
-                st.success("📥 Ce mouvement va **augmenter** le stock")
-            else:
-                st.error("📤 Ce mouvement va **diminuer** le stock")
+            st.success("📥 Ce mouvement va **augmenter** le stock")
         
         st.markdown("---")
         
@@ -854,11 +962,10 @@ with tab3:
         notes = st.text_area("Notes", height=68, key="s_notes")
         
         # --- Prévisualisation ---
-        signe = "+" if is_entree else "-"
         st.info(
             f"**Récapitulatif** : {type_sel} | {code_produit} | "
-            f"{signe}{nb_se} {sur_emb['libelle']}(s) | "
-            f"{signe}{total_uvc} UVC | {signe}{total_tonnes:.3f} T | "
+            f"+{nb_se} {sur_emb['libelle']}(s) | "
+            f"+{total_uvc} UVC | +{total_tonnes:.3f} T | "
             f"Prod: {date_prod.strftime('%d/%m/%Y')} | Mvt: {date_mvt.strftime('%d/%m/%Y')}"
         )
         
