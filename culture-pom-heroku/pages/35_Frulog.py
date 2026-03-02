@@ -561,20 +561,28 @@ def render_analyse_ventes(data, data_prev, label_prev, label, show_produit=False
     st.markdown("---")
 
     # Helper SPLY pour barres côte à côte
-    def sply_bars(df_now, df_prev, x_col, y_col, title, color_now='#1565C0', color_prev='#90CAF9', top_n=20, fmt_fn=None):
+    def sply_bars(df_now, df_prev, x_col, y_col, title, color_now='#1565C0', color_prev='#FF9800', top_n=20, fmt_fn=None):
         df_n = df_now.head(top_n).copy()
         fig = go.Figure()
         if df_prev is not None and len(df_prev) > 0:
             df_p = pd.DataFrame(df_prev)
-            if y_col.endswith('_t'): df_p['val'] = df_p['pds_kg'].astype(float)/1000
-            elif y_col == 'ca_k': df_p['val'] = df_p['ca'].astype(float)/1000
-            else: df_p['val'] = df_p[y_col.replace('_t','').replace('_k','')].astype(float) if y_col.replace('_t','').replace('_k','') in df_p.columns else 0
+            # Calculer la valeur N-1 selon le type de y_col
+            if y_col in ('tonnes', 'tonnes_t') or y_col.endswith('_t'):
+                df_p['val'] = df_p['pds_kg'].astype(float)/1000
+            elif y_col in ('ca_k',) or y_col.endswith('_k'):
+                df_p['val'] = df_p['ca'].astype(float)/1000
+            elif 'pds_kg' in df_p.columns:
+                df_p['val'] = df_p['pds_kg'].astype(float)/1000
+            else:
+                df_p['val'] = 0
             df_p_dict = dict(zip(df_p[x_col], df_p['val']))
             prev_vals = [df_p_dict.get(x, 0) for x in df_n[x_col]]
             t_p = [fmt_fn(v) if fmt_fn and v else '' for v in prev_vals]
-            fig.add_trace(go.Bar(x=df_n[x_col], y=prev_vals, name=f"N-1", marker_color=color_prev, text=t_p, textposition='outside', textfont_size=9))
+            fig.add_trace(go.Bar(x=df_n[x_col], y=prev_vals, name=f"N-1", marker_color=color_prev,
+                text=t_p, textposition='outside', textfont=dict(size=9, color='#E65100')))
         texts = [fmt_fn(v) if fmt_fn else f"{float(v):,.0f}".replace(',', ' ') for v in df_n[y_col]]
-        fig.add_trace(go.Bar(x=df_n[x_col], y=df_n[y_col], name="Période", marker_color=color_now, text=texts, textposition='outside', textfont_size=10))
+        fig.add_trace(go.Bar(x=df_n[x_col], y=df_n[y_col], name="Période", marker_color=color_now,
+            text=texts, textposition='outside', textfont=dict(size=10, color='#0D47A1')))
         fig.update_layout(title=title, height=450, xaxis_tickangle=-45, barmode='group', legend=dict(orientation="h", yanchor="bottom", y=1.02))
         st.plotly_chart(fig, use_container_width=True)
 
@@ -584,35 +592,40 @@ def render_analyse_ventes(data, data_prev, label_prev, label, show_produit=False
         mois_noms = {1:'Jan',2:'Fév',3:'Mar',4:'Avr',5:'Mai',6:'Jun',7:'Jul',8:'Aoû',9:'Sep',10:'Oct',11:'Nov',12:'Déc'}
         if data['par_mois']:
             df_m = pd.DataFrame(data['par_mois']); df_m['tonnes'] = df_m['pds_kg'].astype(float)/1000
-            # Axe = numéro de mois pour superposer N et N-1
+            # Agréger par mois (au cas où plusieurs années dans la période)
+            df_m = df_m.groupby('mois', as_index=False).agg({'tonnes':'sum'})
             df_m['mois_label'] = df_m['mois'].astype(int).map(mois_noms)
             fig = go.Figure()
             if data_prev and data_prev.get('par_mois'):
                 df_mp = pd.DataFrame(data_prev['par_mois']); df_mp['tonnes'] = df_mp['pds_kg'].astype(float)/1000
+                df_mp = df_mp.groupby('mois', as_index=False).agg({'tonnes':'sum'})
                 df_mp['mois_label'] = df_mp['mois'].astype(int).map(mois_noms)
                 fig.add_trace(go.Scatter(x=df_mp['mois_label'], y=df_mp['tonnes'], mode='lines+markers+text', name='N-1',
-                    line=dict(color='#BBDEFB', width=2, dash='dot'), text=[fmt_t(v) for v in df_mp['tonnes']], textposition='top center', textfont_size=9))
+                    line=dict(color='#FF9800', width=2, dash='dot'), marker=dict(color='#FF9800', size=8),
+                    text=[fmt_t(v) for v in df_mp['tonnes']], textposition='top center', textfont=dict(size=9, color='#E65100')))
             fig.add_trace(go.Scatter(x=df_m['mois_label'], y=df_m['tonnes'], mode='lines+markers+text', name='Période',
-                line=dict(color='#1565C0', width=3), fill='tozeroy', text=[fmt_t(v) for v in df_m['tonnes']], textposition='top center', textfont_size=10))
-            # Ordonner les mois dans l'ordre campagne (Jun→Mai)
+                line=dict(color='#1565C0', width=3), marker=dict(color='#1565C0', size=10), fill='tozeroy', fillcolor='rgba(21,101,192,0.1)',
+                text=[fmt_t(v) for v in df_m['tonnes']], textposition='bottom center', textfont=dict(size=10, color='#1565C0')))
             ordre_mois = ['Jun','Jul','Aoû','Sep','Oct','Nov','Déc','Jan','Fév','Mar','Avr','Mai']
-            fig.update_layout(title="Tonnage mensuel — N vs N-1", height=400,
+            fig.update_layout(title="Tonnage mensuel — N vs N-1", height=420,
                 xaxis=dict(categoryorder='array', categoryarray=ordre_mois),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02))
             st.plotly_chart(fig, use_container_width=True)
         if data['par_semaine']:
             df_s = pd.DataFrame(data['par_semaine']); df_s['tonnes'] = df_s['pds_kg'].astype(float)/1000
-            # Axe = numéro de semaine pour superposer
+            # Agréger par semaine
+            df_s = df_s.groupby('semaine', as_index=False).agg({'tonnes':'sum'}).sort_values('semaine')
             df_s['sem_label'] = df_s['semaine'].apply(lambda s: f"S{int(s):02d}")
             fig = go.Figure()
             if data_prev and data_prev.get('par_semaine'):
                 df_sp = pd.DataFrame(data_prev['par_semaine']); df_sp['tonnes'] = df_sp['pds_kg'].astype(float)/1000
+                df_sp = df_sp.groupby('semaine', as_index=False).agg({'tonnes':'sum'}).sort_values('semaine')
                 df_sp['sem_label'] = df_sp['semaine'].apply(lambda s: f"S{int(s):02d}")
-                fig.add_trace(go.Bar(x=df_sp['sem_label'], y=df_sp['tonnes'], name='N-1', marker_color='#BBDEFB',
-                    text=[fmt_t(v) for v in df_sp['tonnes']], textposition='outside', textfont_size=8))
+                fig.add_trace(go.Bar(x=df_sp['sem_label'], y=df_sp['tonnes'], name='N-1', marker_color='#FFB74D',
+                    text=[fmt_t(v) for v in df_sp['tonnes']], textposition='outside', textfont=dict(size=7, color='#E65100')))
             fig.add_trace(go.Bar(x=df_s['sem_label'], y=df_s['tonnes'], name='Période', marker_color='#1565C0',
-                text=[fmt_t(v) for v in df_s['tonnes']], textposition='outside', textfont_size=8))
-            fig.update_layout(title="Tonnage hebdo — N vs N-1", height=400, barmode='group',
+                text=[fmt_t(v) for v in df_s['tonnes']], textposition='outside', textfont=dict(size=7, color='#0D47A1')))
+            fig.update_layout(title="Tonnage hebdo — N vs N-1", height=420, barmode='group',
                 xaxis=dict(tickangle=-45), legend=dict(orientation="h", yanchor="bottom", y=1.02))
             st.plotly_chart(fig, use_container_width=True)
 
@@ -669,13 +682,13 @@ def render_analyse_ventes(data, data_prev, label_prev, label, show_produit=False
 
     elif vue == "📏 Calibres" and data.get('par_calibre'):
         df = pd.DataFrame(data['par_calibre']); df['tonnes'] = df['pds_kg'].astype(float)/1000
-        sply_bars(df, prev_data('par_calibre'), 'calibre', 'tonnes', "Tonnage / calibre", color_now='#7B1FA2', color_prev='#CE93D8', fmt_fn=fmt_t)
+        sply_bars(df, prev_data('par_calibre'), 'calibre', 'tonnes', "Tonnage / calibre", color_now='#7B1FA2', color_prev='#FF9800', fmt_fn=fmt_t)
         st.dataframe(df[['calibre','tonnes','nb_clients','nb']].rename(columns={'calibre':'Calibre','tonnes':'Tonnes','nb_clients':'Clients','nb':'Lignes'}),
             use_container_width=True, hide_index=True)
 
     elif vue == "👤 Vendeurs" and data.get('par_vendeur'):
         df = pd.DataFrame(data['par_vendeur']); df['tonnes'] = df['pds_kg'].astype(float)/1000; df['ca_k'] = df['ca'].astype(float)/1000
-        sply_bars(df, prev_data('par_vendeur'), 'vendeur', 'ca_k', "CA / vendeur (k€)", color_now='#2E7D32', color_prev='#A5D6A7', fmt_fn=fmt_k)
+        sply_bars(df, prev_data('par_vendeur'), 'vendeur', 'ca_k', "CA / vendeur (k€)", color_now='#2E7D32', color_prev='#FF9800', fmt_fn=fmt_k)
         st.dataframe(df[['vendeur','tonnes','ca_k','nb_clients']].rename(columns={'vendeur':'Vendeur','tonnes':'Tonnes','ca_k':'CA (k€)','nb_clients':'Clients'}),
             use_container_width=True, hide_index=True)
 
@@ -692,20 +705,26 @@ def render_analyse_achat(data, data_prev, label_prev):
 
     prev_data = lambda key: data_prev.get(key) if data_prev else None
 
-    def sply_bars_a(df_now, df_prev_list, x_col, y_col, title, color_now='#E65100', color_prev='#FFCC80', top_n=20, fmt_fn=None):
+    def sply_bars_a(df_now, df_prev_list, x_col, y_col, title, color_now='#E65100', color_prev='#42A5F5', top_n=20, fmt_fn=None):
         df_n = df_now.head(top_n).copy()
         fig = go.Figure()
         if df_prev_list and len(df_prev_list) > 0:
             dfp = pd.DataFrame(df_prev_list)
-            if 'pds_kg' in dfp.columns: dfp['val'] = dfp['pds_kg'].astype(float)/1000
-            elif 'ca' in dfp.columns: dfp['val'] = dfp['ca'].astype(float)/1000
-            else: dfp['val'] = 0
+            if y_col in ('tonnes', 'tonnes_t') or y_col.endswith('_t'):
+                dfp['val'] = dfp['pds_kg'].astype(float)/1000 if 'pds_kg' in dfp.columns else 0
+            elif y_col in ('ca_k',) or y_col.endswith('_k'):
+                dfp['val'] = dfp['ca'].astype(float)/1000 if 'ca' in dfp.columns else 0
+            elif 'pds_kg' in dfp.columns:
+                dfp['val'] = dfp['pds_kg'].astype(float)/1000
+            else:
+                dfp['val'] = 0
             pdict = dict(zip(dfp[x_col], dfp['val']))
             pv = [pdict.get(x,0) for x in df_n[x_col]]
             fig.add_trace(go.Bar(x=df_n[x_col], y=pv, name="N-1", marker_color=color_prev,
-                text=[fmt_fn(v) if fmt_fn and v else '' for v in pv], textposition='outside', textfont_size=9))
+                text=[fmt_fn(v) if fmt_fn and v else '' for v in pv], textposition='outside', textfont=dict(size=9, color='#1565C0')))
         texts = [fmt_fn(v) if fmt_fn else f"{float(v):,.0f}".replace(',', ' ') for v in df_n[y_col]]
-        fig.add_trace(go.Bar(x=df_n[x_col], y=df_n[y_col], name="Période", marker_color=color_now, text=texts, textposition='outside', textfont_size=10))
+        fig.add_trace(go.Bar(x=df_n[x_col], y=df_n[y_col], name="Période", marker_color=color_now,
+            text=texts, textposition='outside', textfont=dict(size=10, color='#BF360C')))
         fig.update_layout(title=title, height=450, xaxis_tickangle=-45, barmode='group', legend=dict(orientation="h", yanchor="bottom", y=1.02))
         st.plotly_chart(fig, use_container_width=True)
 
@@ -713,17 +732,21 @@ def render_analyse_achat(data, data_prev, label_prev):
         mois_noms = {1:'Jan',2:'Fév',3:'Mar',4:'Avr',5:'Mai',6:'Jun',7:'Jul',8:'Aoû',9:'Sep',10:'Oct',11:'Nov',12:'Déc'}
         if data['par_mois']:
             df_m = pd.DataFrame(data['par_mois']); df_m['tonnes'] = df_m['pds_kg'].astype(float)/1000
+            df_m = df_m.groupby('mois', as_index=False).agg({'tonnes':'sum'})
             df_m['mois_label'] = df_m['mois'].astype(int).map(mois_noms)
             fig = go.Figure()
             if data_prev and data_prev.get('par_mois'):
                 dfmp = pd.DataFrame(data_prev['par_mois']); dfmp['tonnes'] = dfmp['pds_kg'].astype(float)/1000
+                dfmp = dfmp.groupby('mois', as_index=False).agg({'tonnes':'sum'})
                 dfmp['mois_label'] = dfmp['mois'].astype(int).map(mois_noms)
                 fig.add_trace(go.Scatter(x=dfmp['mois_label'], y=dfmp['tonnes'], mode='lines+markers+text', name='N-1',
-                    line=dict(color='#FFCC80', width=2, dash='dot'), text=[fmt_t(v) for v in dfmp['tonnes']], textposition='top center', textfont_size=9))
+                    line=dict(color='#42A5F5', width=2, dash='dot'), marker=dict(color='#42A5F5', size=8),
+                    text=[fmt_t(v) for v in dfmp['tonnes']], textposition='top center', textfont=dict(size=9, color='#1565C0')))
             fig.add_trace(go.Scatter(x=df_m['mois_label'], y=df_m['tonnes'], mode='lines+markers+text', name='Période',
-                line=dict(color='#E65100', width=3), fill='tozeroy', text=[fmt_t(v) for v in df_m['tonnes']], textposition='top center', textfont_size=10))
+                line=dict(color='#E65100', width=3), marker=dict(color='#E65100', size=10), fill='tozeroy', fillcolor='rgba(230,81,0,0.1)',
+                text=[fmt_t(v) for v in df_m['tonnes']], textposition='bottom center', textfont=dict(size=10, color='#E65100')))
             ordre_mois = ['Jun','Jul','Aoû','Sep','Oct','Nov','Déc','Jan','Fév','Mar','Avr','Mai']
-            fig.update_layout(title="Tonnage mensuel — N vs N-1", height=400,
+            fig.update_layout(title="Tonnage mensuel — N vs N-1", height=420,
                 xaxis=dict(categoryorder='array', categoryarray=ordre_mois),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02))
             st.plotly_chart(fig, use_container_width=True)
