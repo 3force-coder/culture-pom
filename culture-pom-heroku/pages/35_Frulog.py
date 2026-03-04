@@ -4,7 +4,7 @@ import numpy as np
 from datetime import datetime, date, timedelta
 from database import get_connection
 from components import show_footer
-from auth import require_access
+from auth import require_access, is_admin
 import plotly.express as px
 import plotly.graph_objects as go
 import io
@@ -241,10 +241,10 @@ def get_sur_emballages():
 def get_combinaisons_non_mappees():
     try:
         conn = get_connection(); cur = conn.cursor()
-        cur.execute(f"""SELECT fl.emballage, fl.marque, COUNT(*) as nb_lignes,
+        cur.execute(f"""SELECT fl.emballage, fl.marque, fl.depot, COUNT(*) as nb_lignes,
             SUM(ABS(COALESCE(fl.pds_net, 0)))/1000 as tonnes, COUNT(DISTINCT fl.client) as nb_clients
-            FROM frulog_lignes_condi fl WHERE fl.type='E' AND fl.code_produit_commercial IS NULL
-            AND fl.emballage IS NOT NULL {cw_ventes()} GROUP BY fl.emballage, fl.marque ORDER BY nb_lignes DESC""")
+            FROM frulog_lignes_condi fl WHERE fl.type IN ('E','C') AND fl.code_produit_commercial IS NULL
+            AND fl.emballage IS NOT NULL {cw_ventes()} GROUP BY fl.emballage, fl.marque, fl.depot ORDER BY nb_lignes DESC""")
         rows = cur.fetchall(); cur.close(); conn.close()
         return pd.DataFrame(rows) if rows else pd.DataFrame()
     except: return pd.DataFrame()
@@ -253,7 +253,7 @@ def get_emballages_non_mappes_se():
     try:
         conn = get_connection(); cur = conn.cursor()
         cur.execute(f"""SELECT fl.emballage as code_emballage, COUNT(*) as nb_lignes, SUM(COALESCE(fl.nb_col,0)) as nb_col_total
-            FROM frulog_lignes_condi fl WHERE fl.type='E' AND fl.sur_emballage_id IS NULL
+            FROM frulog_lignes_condi fl WHERE fl.type IN ('E','C') AND fl.sur_emballage_id IS NULL
             AND fl.emballage IS NOT NULL {cw_ventes()} GROUP BY fl.emballage ORDER BY nb_lignes DESC""")
         rows = cur.fetchall(); cur.close(); conn.close()
         return pd.DataFrame(rows) if rows else pd.DataFrame()
@@ -289,6 +289,61 @@ def sauver_mapping_se(code, se_id):
         if 'conn' in locals(): conn.rollback()
         return False, str(e)
 
+def supprimer_mapping_produit(mapping_id, emballage, marque):
+    """Supprime un mapping produit et remet à NULL les lignes concernées"""
+    try:
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("UPDATE frulog_lignes_condi SET code_produit_commercial=NULL WHERE emballage=%s AND (marque=%s OR (%s IS NULL AND marque IS NULL))",
+                    (emballage, marque, marque))
+        n = cur.rowcount
+        cur.execute("DELETE FROM frulog_mapping_produit WHERE id=%s", (mapping_id,))
+        conn.commit(); cur.close(); conn.close()
+        return True, f"Mapping supprimé — {n} lignes remises à NULL"
+    except Exception as e:
+        if 'conn' in locals(): conn.rollback()
+        return False, str(e)
+
+def modifier_mapping_produit(mapping_id, emballage, marque, nouveau_code):
+    """Modifie le produit commercial d'un mapping existant"""
+    try:
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("UPDATE frulog_mapping_produit SET code_produit_commercial=%s, updated_at=CURRENT_TIMESTAMP WHERE id=%s",
+                    (nouveau_code, mapping_id))
+        cur.execute("UPDATE frulog_lignes_condi SET code_produit_commercial=%s WHERE emballage=%s AND (marque=%s OR (%s IS NULL AND marque IS NULL))",
+                    (nouveau_code, emballage, marque, marque))
+        n = cur.rowcount; conn.commit(); cur.close(); conn.close()
+        return True, f"Mapping modifié — {n} lignes mises à jour"
+    except Exception as e:
+        if 'conn' in locals(): conn.rollback()
+        return False, str(e)
+
+def supprimer_mapping_se(mapping_id, code_emballage):
+    """Supprime un mapping sur-emballage et remet à NULL les lignes concernées"""
+    try:
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("UPDATE frulog_lignes_condi SET sur_emballage_id=NULL WHERE emballage=%s", (code_emballage,))
+        n = cur.rowcount
+        cur.execute("DELETE FROM frulog_mapping_suremballage WHERE id=%s", (mapping_id,))
+        conn.commit(); cur.close(); conn.close()
+        return True, f"Mapping supprimé — {n} lignes remises à NULL"
+    except Exception as e:
+        if 'conn' in locals(): conn.rollback()
+        return False, str(e)
+
+def modifier_mapping_se(mapping_id, code_emballage, nouveau_se_id):
+    """Modifie le sur-emballage d'un mapping existant"""
+    try:
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("UPDATE frulog_mapping_suremballage SET sur_emballage_id=%s, updated_at=CURRENT_TIMESTAMP WHERE id=%s",
+                    (nouveau_se_id, mapping_id))
+        cur.execute("UPDATE frulog_lignes_condi SET sur_emballage_id=%s WHERE emballage=%s",
+                    (nouveau_se_id, code_emballage))
+        n = cur.rowcount; conn.commit(); cur.close(); conn.close()
+        return True, f"Mapping modifié — {n} lignes mises à jour"
+    except Exception as e:
+        if 'conn' in locals(): conn.rollback()
+        return False, str(e)
+
 # ============================================================================
 # IMPORT VENTES
 # ============================================================================
@@ -302,7 +357,7 @@ def importer_ventes(uploaded_file, source, username='inconnu'):
         cols_ok = [c for c in COLONNES_VENTES.values() if c in df_r.columns]
         df_c = df_r[cols_ok].copy()
         if 'no_de_bon' not in df_c.columns: return False, "Colonne 'No de bon' introuvable"
-        if 'type' in df_c.columns: df_c = df_c[df_c['type'].isin(['E','A'])].copy()
+        if 'type' in df_c.columns: df_c = df_c[df_c['type'].isin(['E','A','C'])].copy()
         for col in VENTES_DATE_COLS:
             if col in df_c.columns: df_c[col] = pd.to_datetime(df_c[col], errors='coerce').dt.date
         for col in VENTES_INT_COLS:
@@ -318,10 +373,11 @@ def importer_ventes(uploaded_file, source, username='inconnu'):
         nb_total = len(df_c)
         nb_e = len(df_c[df_c.get('type',pd.Series())=='E']) if 'type' in df_c.columns else 0
         nb_a = len(df_c[df_c.get('type',pd.Series())=='A']) if 'type' in df_c.columns else 0
+        nb_c = len(df_c[df_c.get('type',pd.Series())=='C']) if 'type' in df_c.columns else 0
         d_min = df_c['date_charg'].dropna().min() if 'date_charg' in df_c.columns else None
         d_max = df_c['date_charg'].dropna().max() if 'date_charg' in df_c.columns else None
         cur.execute("INSERT INTO frulog_imports (nom_fichier,source,nb_lignes_total,nb_lignes_type_e,nb_lignes_type_a,nb_lignes_sans_type,date_debut,date_fin,created_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-            (uploaded_file.name, source, nb_total, nb_e, nb_a, nb_total-nb_e-nb_a, d_min, d_max, username))
+            (uploaded_file.name, source, nb_total, nb_e+nb_c, nb_a, nb_total-nb_e-nb_a-nb_c, d_min, d_max, username))
         import_id = cur.fetchone()['id']
         mp = {}; mse = {}
         if source == 'CONDI':
@@ -416,30 +472,40 @@ def get_analyse_ventes(table, d1=None, d2=None):
     try:
         conn = get_connection(); cur = conn.cursor()
         w = cw_ventes(d1, d2); r = {}
-        cur.execute(f"""SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE type='E') as nb_exp,
-            COUNT(DISTINCT client) FILTER (WHERE type='E') as nb_clients,
-            COALESCE(SUM(pds_net) FILTER (WHERE type='E'),0) as pds_kg,
-            COALESCE(SUM(montant) FILTER (WHERE type='E'),0) as ca,
-            COALESCE(AVG(prix) FILTER (WHERE type='E' AND prix>0),0) as prix_moy,
-            COUNT(DISTINCT variete) FILTER (WHERE type='E') as nb_varietes,
-            MIN(date_charg) FILTER (WHERE type='E') as date_min,
-            MAX(date_charg) FILTER (WHERE type='E') as date_max,
-            COUNT(*) FILTER (WHERE code_produit_commercial IS NOT NULL AND type='E') as mappees,
-            COUNT(*) FILTER (WHERE code_produit_commercial IS NULL AND type='E') as non_mappees
+        cur.execute(f"""SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE type IN ('E','C')) as nb_exp,
+            COUNT(DISTINCT client) FILTER (WHERE type IN ('E','C')) as nb_clients,
+            COALESCE(SUM(pds_net) FILTER (WHERE type IN ('E','C')),0) as pds_kg,
+            COALESCE(SUM(montant) FILTER (WHERE type IN ('E','C')),0) as ca,
+            COALESCE(AVG(prix) FILTER (WHERE type IN ('E','C') AND prix>0),0) as prix_moy,
+            COUNT(DISTINCT variete) FILTER (WHERE type IN ('E','C')) as nb_varietes,
+            MIN(date_charg) FILTER (WHERE type IN ('E','C')) as date_min,
+            MAX(date_charg) FILTER (WHERE type IN ('E','C')) as date_max,
+            COUNT(*) FILTER (WHERE code_produit_commercial IS NOT NULL AND type IN ('E','C')) as mappees,
+            COUNT(*) FILTER (WHERE code_produit_commercial IS NULL AND type IN ('E','C')) as non_mappees
             FROM {table} WHERE 1=1 {w}""")
         r['kpis'] = cur.fetchone()
         queries = {
-            'par_client': f"SELECT client,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca,AVG(prix) FILTER (WHERE prix>0) as prix_moy,MIN(date_charg) as premiere,MAX(date_charg) as derniere FROM {table} WHERE type='E'{w} GROUP BY client ORDER BY pds_kg DESC",
-            'par_variete': f"SELECT variete,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca,COUNT(DISTINCT client) as nb_clients,AVG(prix) FILTER (WHERE prix>0) as prix_moy FROM {table} WHERE type='E' AND variete IS NOT NULL{w} GROUP BY variete ORDER BY pds_kg DESC",
-            'par_mois': f"SELECT EXTRACT(YEAR FROM date_charg)::int as annee,EXTRACT(MONTH FROM date_charg)::int as mois,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca FROM {table} WHERE type='E' AND date_charg IS NOT NULL{w} GROUP BY 1,2 ORDER BY annee,mois",
-            'par_semaine': f"SELECT annee,semaine,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca FROM {table} WHERE type='E' AND annee IS NOT NULL{w} GROUP BY annee,semaine ORDER BY annee,semaine",
-            'par_produit': f"SELECT COALESCE(code_produit_commercial,'❓ Non mappé') as produit,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca FROM {table} WHERE type='E'{w} GROUP BY 1 ORDER BY pds_kg DESC",
-            'par_emballage': f"SELECT emballage,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg FROM {table} WHERE type='E' AND emballage IS NOT NULL{w} GROUP BY emballage ORDER BY pds_kg DESC",
-            'par_calibre': f"SELECT calibre,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg,COUNT(DISTINCT client) as nb_clients FROM {table} WHERE type='E' AND calibre IS NOT NULL{w} GROUP BY calibre ORDER BY pds_kg DESC",
-            'par_vendeur': f"SELECT vendeur,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca,COUNT(DISTINCT client) as nb_clients FROM {table} WHERE type='E' AND vendeur IS NOT NULL{w} GROUP BY vendeur ORDER BY ca DESC",
+            'par_client': f"SELECT client,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca,AVG(prix) FILTER (WHERE prix>0) as prix_moy,MIN(date_charg) as premiere,MAX(date_charg) as derniere FROM {table} WHERE type IN ('E','C'){w} GROUP BY client ORDER BY pds_kg DESC",
+            'par_variete': f"SELECT variete,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca,COUNT(DISTINCT client) as nb_clients,AVG(prix) FILTER (WHERE prix>0) as prix_moy FROM {table} WHERE type IN ('E','C') AND variete IS NOT NULL{w} GROUP BY variete ORDER BY pds_kg DESC",
+            'par_mois': f"SELECT EXTRACT(YEAR FROM date_charg)::int as annee,EXTRACT(MONTH FROM date_charg)::int as mois,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca FROM {table} WHERE type IN ('E','C') AND date_charg IS NOT NULL{w} GROUP BY 1,2 ORDER BY annee,mois",
+            'par_semaine': f"SELECT annee,semaine,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca FROM {table} WHERE type IN ('E','C') AND annee IS NOT NULL{w} GROUP BY annee,semaine ORDER BY annee,semaine",
+            'par_produit': f"SELECT COALESCE(code_produit_commercial,'❓ Non mappé') as produit,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca FROM {table} WHERE type IN ('E','C'){w} GROUP BY 1 ORDER BY pds_kg DESC",
+            'par_emballage': f"SELECT emballage,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg FROM {table} WHERE type IN ('E','C') AND emballage IS NOT NULL{w} GROUP BY emballage ORDER BY pds_kg DESC",
+            'par_calibre': f"SELECT calibre,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg,COUNT(DISTINCT client) as nb_clients FROM {table} WHERE type IN ('E','C') AND calibre IS NOT NULL{w} GROUP BY calibre ORDER BY pds_kg DESC",
+            'par_vendeur': f"SELECT vendeur,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca,COUNT(DISTINCT client) as nb_clients FROM {table} WHERE type IN ('E','C') AND vendeur IS NOT NULL{w} GROUP BY vendeur ORDER BY ca DESC",
         }
         for k2,sql in queries.items():
             cur.execute(sql); r[k2] = cur.fetchall()
+        # Campagne N-1 COMPLETE (toutes semaines) pour graphique hebdo projection
+        try:
+            prev_start_full = DATE_DEB.replace(year=DATE_DEB.year - 1)
+            prev_end_full = DATE_FIN.replace(year=DATE_FIN.year - 1)
+            cur.execute(f"""SELECT annee,semaine,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca
+                FROM {table} WHERE type IN ('E','C') AND annee IS NOT NULL
+                AND date_charg >= %s AND date_charg <= %s
+                GROUP BY annee,semaine ORDER BY annee,semaine""", (prev_start_full, prev_end_full))
+            r['par_semaine_n1_full'] = cur.fetchall()
+        except: r['par_semaine_n1_full'] = []
         cur.close(); conn.close(); return r
     except Exception as e: st.error(str(e)); return None
 
@@ -467,7 +533,7 @@ def get_comparaison_previsions():
     try:
         conn = get_connection(); cur = conn.cursor()
         w = cw_ventes()
-        cur.execute(f"""WITH expedie AS (SELECT code_produit_commercial,annee,semaine,SUM(pds_net)/1000.0 as t FROM frulog_lignes_condi WHERE type='E' AND code_produit_commercial IS NOT NULL{w} GROUP BY 1,2,3),
+        cur.execute(f"""WITH expedie AS (SELECT code_produit_commercial,annee,semaine,SUM(pds_net)/1000.0 as t FROM frulog_lignes_condi WHERE type IN ('E','C') AND code_produit_commercial IS NOT NULL{w} GROUP BY 1,2,3),
             prevu AS (SELECT code_produit_commercial,annee::int,semaine::int,quantite_prevue_tonnes as t FROM previsions_ventes)
             SELECT COALESCE(e.code_produit_commercial,p.code_produit_commercial) as produit,COALESCE(e.annee,p.annee) as annee,COALESCE(e.semaine,p.semaine) as semaine,COALESCE(p.t,0) as prevu_t,COALESCE(e.t,0) as expedie_t
             FROM expedie e FULL OUTER JOIN prevu p ON e.code_produit_commercial=p.code_produit_commercial AND e.annee=p.annee AND e.semaine=p.semaine
@@ -622,8 +688,8 @@ def render_analyse_ventes(data, data_prev, label_prev, label, show_produit=False
             from datetime import date
             sem_courante = date.today().isocalendar()[1]
             sem_courante_label = f"S{sem_courante:02d}"
-            if data_prev and data_prev.get('par_semaine'):
-                df_sp = pd.DataFrame(data_prev['par_semaine']); df_sp['tonnes'] = df_sp['pds_kg'].astype(float)/1000
+            if data.get('par_semaine_n1_full'):
+                df_sp = pd.DataFrame(data['par_semaine_n1_full']); df_sp['tonnes'] = df_sp['pds_kg'].astype(float)/1000
                 df_sp = df_sp.groupby('semaine', as_index=False).agg({'tonnes':'sum'})
                 df_sp['sem_label'] = df_sp['semaine'].apply(lambda s: f"S{int(s):02d}")
                 fig.add_trace(go.Bar(x=df_sp['sem_label'], y=df_sp['tonnes'], name='N-1', marker_color='#FFB74D',
@@ -811,10 +877,11 @@ with tab1:
         if up:
             try:
                 up.seek(0); dfc = pd.read_excel(up, sheet_name=0)
-                c1,c2,c3 = st.columns(3)
+                c1,c2,c3,c4 = st.columns(4)
                 with c1: st.metric("Lignes", len(dfc))
                 with c2: st.metric("E", len(dfc[dfc['Type']=='E']) if 'Type' in dfc.columns else 0)
-                with c3: st.metric("A", len(dfc[dfc['Type']=='A']) if 'Type' in dfc.columns else 0)
+                with c3: st.metric("C", len(dfc[dfc['Type']=='C']) if 'Type' in dfc.columns else 0)
+                with c4: st.metric("A", len(dfc[dfc['Type']=='A']) if 'Type' in dfc.columns else 0)
                 st.dataframe(dfc.head(3), use_container_width=True, hide_index=True)
                 if st.button("🚀 Importer CONDI", type="primary", use_container_width=True):
                     up.seek(0)
@@ -876,7 +943,7 @@ with tab2:
     if not df_nm.empty:
         st.markdown(f"##### ⚠️ {len(df_nm)} combinaison(s) non mappée(s)")
         event = st.dataframe(
-            df_nm.rename(columns={'emballage':'Emballage','marque':'Marque','nb_lignes':'Lignes','tonnes':'Tonnes','nb_clients':'Clients'}),
+            df_nm.rename(columns={'emballage':'Emballage','marque':'Marque','depot':'Dépôt','nb_lignes':'Lignes','tonnes':'Tonnes','nb_clients':'Clients'}),
             use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="tbl_nm",
             column_config={'Tonnes':st.column_config.NumberColumn(format="%.1f")})
         sel = event.selection.rows if hasattr(event, 'selection') else []
@@ -895,9 +962,31 @@ with tab2:
     st.markdown("##### 📋 Mappings existants")
     dfm = get_mapping_produit()
     if not dfm.empty:
-        st.dataframe(dfm[['emballage','marque','code_produit_commercial','libelle_produit']].rename(columns={
+        cols_show = ['emballage','marque','code_produit_commercial','libelle_produit']
+        st.dataframe(dfm[cols_show].rename(columns={
             'emballage':'Emballage','marque':'Marque','code_produit_commercial':'Code','libelle_produit':'Libellé'}),
             use_container_width=True, hide_index=True)
+        if is_admin():
+            st.markdown("##### ✏️ Modifier / Supprimer un mapping (Admin)")
+            mapping_labels = [f"{r['emballage']} | {r.get('marque','(vide)')} → {r['code_produit_commercial']}" for _, r in dfm.iterrows()]
+            sel_idx = st.selectbox("Mapping à modifier", range(len(mapping_labels)), format_func=lambda i: mapping_labels[i], key="admin_mp_sel")
+            sel_row = dfm.iloc[sel_idx]
+            c_mod, c_del = st.columns(2)
+            with c_mod:
+                pl = [f"{p['code_produit']} — {p['marque']} {p['libelle']}" for p in produits] if produits else []
+                if pl:
+                    cur_idx = next((i for i, p in enumerate(produits) if p['code_produit'] == sel_row['code_produit_commercial']), 0)
+                    new_pi = st.selectbox("Nouveau produit", range(len(pl)), index=cur_idx, format_func=lambda i: pl[i], key="admin_mp_new")
+                    if st.button("✏️ Modifier", key="btn_mod_mp"):
+                        ok, msg = modifier_mapping_produit(int(sel_row['id']), sel_row['emballage'], sel_row.get('marque'), produits[new_pi]['code_produit'])
+                        if ok: st.success(f"✅ {msg}"); st.rerun()
+                        else: st.error(f"❌ {msg}")
+            with c_del:
+                st.warning(f"Supprimer : **{sel_row['emballage']}** | **{sel_row.get('marque','(vide)')}**")
+                if st.button("🗑️ Supprimer", type="secondary", key="btn_del_mp"):
+                    ok, msg = supprimer_mapping_produit(int(sel_row['id']), sel_row['emballage'], sel_row.get('marque'))
+                    if ok: st.success(f"✅ {msg}"); st.rerun()
+                    else: st.error(f"❌ {msg}")
 
 # ============================================================================
 # TAB 3 : MAPPING SUR-EMBALLAGES (INLINE)
@@ -931,6 +1020,27 @@ with tab3:
         st.dataframe(dfse[['code_emballage','libelle_se','nb_uvc']].rename(columns={
             'code_emballage':'Code','libelle_se':'Sur-Emballage','nb_uvc':'UVC'}),
             use_container_width=True, hide_index=True)
+        if is_admin():
+            st.markdown("##### ✏️ Modifier / Supprimer une association (Admin)")
+            se_labels = [f"{r['code_emballage']} → {r.get('libelle_se','?')}" for _, r in dfse.iterrows()]
+            sel_se_idx = st.selectbox("Association à modifier", range(len(se_labels)), format_func=lambda i: se_labels[i], key="admin_se_sel")
+            sel_se_row = dfse.iloc[sel_se_idx]
+            c_mod2, c_del2 = st.columns(2)
+            with c_mod2:
+                if sur_embs:
+                    sl2 = [f"{s['libelle']} ({s['nb_uvc']} UVC)" for s in sur_embs]
+                    cur_se_idx = next((i for i, s in enumerate(sur_embs) if int(s['id']) == int(sel_se_row['sur_emballage_id'])), 0)
+                    new_sei = st.selectbox("Nouveau sur-emballage", range(len(sl2)), index=cur_se_idx, format_func=lambda i: sl2[i], key="admin_se_new")
+                    if st.button("✏️ Modifier", key="btn_mod_se"):
+                        ok, msg = modifier_mapping_se(int(sel_se_row['id']), sel_se_row['code_emballage'], int(sur_embs[new_sei]['id']))
+                        if ok: st.success(f"✅ {msg}"); st.rerun()
+                        else: st.error(f"❌ {msg}")
+            with c_del2:
+                st.warning(f"Supprimer : **{sel_se_row['code_emballage']}**")
+                if st.button("🗑️ Supprimer", type="secondary", key="btn_del_se"):
+                    ok, msg = supprimer_mapping_se(int(sel_se_row['id']), sel_se_row['code_emballage'])
+                    if ok: st.success(f"✅ {msg}"); st.rerun()
+                    else: st.error(f"❌ {msg}")
 
 # ============================================================================
 # TAB 4 : CONDI
