@@ -333,8 +333,12 @@ def add_lot(data, varietes_dict, producteurs_dict):
                 data['code_producteur'] = producteurs_dict[data['nom_producteur']]
             del data['nom_producteur']
         
-        # ⚠️ poids_total_brut_kg = NULL (sera défini dans page 03 Détails Stock)
-        data['poids_total_brut_kg'] = None
+        # Poids estimé à la création (optionnel — 0 ou vide → NULL en base)
+        poids_saisi = data.get('poids_total_brut_kg', 0.0)
+        if poids_saisi is None or (isinstance(poids_saisi, float) and poids_saisi <= 0):
+            data['poids_total_brut_kg'] = None
+        else:
+            data['poids_total_brut_kg'] = float(poids_saisi)
         
         # Calcul valeur_lot (si poids défini plus tard)
         data['valeur_lot_euro'] = 0.0
@@ -742,6 +746,16 @@ with tab1:
                 options=STATUTS,
                 index=0,
                 key="add_statut"
+            )
+            
+            # Poids estimé (optionnel — service achat)
+            st.session_state.new_lot_data['poids_total_brut_kg'] = st.number_input(
+                "Poids estimé (kg) — optionnel",
+                min_value=0.0,
+                value=0.0,
+                step=100.0,
+                key="add_poids_estime",
+                help="💡 Estimation du service achat. Sera automatiquement remplacé par la somme des emplacements saisis dans Détails Stock."
             )
             
             # Tarification Définitive
