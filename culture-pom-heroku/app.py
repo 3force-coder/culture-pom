@@ -90,6 +90,7 @@ pages = {
     st.Page("pages/35_Frulog_Condi.py",  title="Stats Condi",            icon="📈"),
     st.Page("pages/35_Frulog_Negoce.py", title="Stats Négoce",           icon="🏪"),
     st.Page("pages/35_Frulog_Achats.py", title="Stats Achats",           icon="🛒"),
+    st.Page("pages/35_Frulog_ADV.py",    title="Stats ADV",              icon="🧾"),
 ],
     "📦 Stock": [
         st.Page("pages/02_Lots.py", title="Lots", icon="📦"),
