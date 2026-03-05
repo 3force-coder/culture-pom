@@ -319,7 +319,9 @@ def render_non_facturees(df_nfact, date_col, dim_col, dim_label, label_flux, tab
 # ============================================================================
 
 def get_achat_delais():
-    """Achats : dt_chargmt → date_facture. Bons sans /2 /3."""
+    """Achats : dt_chargmt → date_facture. Bons sans /2 /3.
+    EXTRACT(EPOCH...) évite de retourner un interval/timedelta non sérialisable.
+    """
     try:
         conn = get_connection(); cur = conn.cursor()
         cur.execute(f"""
@@ -329,7 +331,7 @@ def get_achat_delais():
                 montant_euro, montant_ht, pds_net, type,
                 CASE
                     WHEN date_facture IS NOT NULL AND dt_chargmt IS NOT NULL
-                    THEN (date_facture - dt_chargmt)
+                    THEN EXTRACT(EPOCH FROM (date_facture::timestamp - dt_chargmt::timestamp)) / 86400.0
                     ELSE NULL
                 END AS delai_jours
             FROM frulog_lignes_achat
@@ -341,7 +343,7 @@ def get_achat_delais():
         if not rows:
             return pd.DataFrame(), pd.DataFrame()
         df = pd.DataFrame(rows)
-        df['delai_jours'] = df['delai_jours'].apply(to_days)
+        df['delai_jours'] = pd.to_numeric(df['delai_jours'], errors='coerce')
         df_fact  = df[df['delai_jours'].notna() & (df['delai_jours'] >= 0)].copy()
         df_nfact = df[df['date_facture'].isna()].copy()
         return df_fact, df_nfact
@@ -356,6 +358,7 @@ def get_ventes_delais(table):
     """
     Ventes Condi/Négoce : date_charg → dt_fac_v.
     Toutes lignes (pas de filtre type). Bons sans /2 /3.
+    EXTRACT(EPOCH...) évite de retourner un interval/timedelta non sérialisable.
     """
     try:
         conn = get_connection(); cur = conn.cursor()
@@ -366,7 +369,7 @@ def get_ventes_delais(table):
                 montant, montant_euro, pds_net, type,
                 CASE
                     WHEN dt_fac_v IS NOT NULL AND date_charg IS NOT NULL
-                    THEN (dt_fac_v - date_charg)
+                    THEN EXTRACT(EPOCH FROM (dt_fac_v::timestamp - date_charg::timestamp)) / 86400.0
                     ELSE NULL
                 END AS delai_jours
             FROM {table}
@@ -378,7 +381,7 @@ def get_ventes_delais(table):
         if not rows:
             return pd.DataFrame(), pd.DataFrame()
         df = pd.DataFrame(rows)
-        df['delai_jours'] = df['delai_jours'].apply(to_days)
+        df['delai_jours'] = pd.to_numeric(df['delai_jours'], errors='coerce')
         df_fact  = df[df['delai_jours'].notna() & (df['delai_jours'] >= 0)].copy()
         df_nfact = df[df['dt_fac_v'].isna()].copy()
         return df_fact, df_nfact
