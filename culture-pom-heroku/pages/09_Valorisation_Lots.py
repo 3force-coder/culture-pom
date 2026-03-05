@@ -90,7 +90,11 @@ def get_lots_non_qualifies(filtre_nom=None, filtre_variete=None, filtre_producte
             l.calibre_min,
             l.calibre_max,
             l.date_entree_stock,
-            l.poids_total_brut_kg,
+            COALESCE(
+                (SELECT SUM(se.poids_total_kg) FROM stock_emplacements se
+                 WHERE se.lot_id = l.id AND se.is_active = TRUE),
+                l.poids_total_brut_kg
+            ) as poids_total_brut_kg,
             l.prix_achat_euro_tonne,
             l.tare_achat_pct,
             l.valeur_lot_euro
@@ -227,11 +231,27 @@ def update_lot_valorisation(lot_id, prix_achat, tare_achat):
         if not result:
             return False, "❌ Lot introuvable"
         
-        poids_brut = float(result['poids_total_brut_kg'])
-        
-        # Calculer valeur lot
-        poids_net_paye = poids_brut * (1 - tare_achat / 100)
-        valeur_lot = (poids_net_paye / 1000) * prix_achat
+        # Priorité 1 : somme des emplacements actifs
+        cursor.execute("""
+            SELECT COALESCE(SUM(poids_total_kg), 0) as poids_empl
+            FROM stock_emplacements
+            WHERE lot_id = %s AND is_active = TRUE
+        """, (lot_id,))
+        empl_result = cursor.fetchone()
+        poids_empl = float(empl_result['poids_empl']) if empl_result else 0.0
+
+        # Priorité 2 : poids saisi sur le lot
+        poids_lot_raw = result['poids_total_brut_kg']
+        poids_lot = float(poids_lot_raw) if poids_lot_raw is not None else 0.0
+
+        poids_brut = poids_empl if poids_empl > 0 else poids_lot
+
+        # Calculer valeur lot (0 si poids inconnu — sera recalculé à la saisie des emplacements)
+        if poids_brut > 0:
+            poids_net_paye = poids_brut * (1 - tare_achat / 100)
+            valeur_lot = (poids_net_paye / 1000) * prix_achat
+        else:
+            valeur_lot = 0.0
         
         # Update
         cursor.execute("""
@@ -773,7 +793,11 @@ with tab1:
                     with col1:
                         st.write(f"**Variété** : {lot['variete_nom']}")
                         st.write(f"**Producteur** : {lot['producteur_nom']}")
-                        st.write(f"**Poids brut** : {lot['poids_total_brut_kg']:,.0f} kg ({lot['poids_total_brut_kg']/1000:.1f} T)")
+                        poids_brut_affich = lot['poids_total_brut_kg']
+                        if pd.notna(poids_brut_affich) and float(poids_brut_affich) > 0:
+                            st.write(f"**Poids brut** : {float(poids_brut_affich):,.0f} kg ({float(poids_brut_affich)/1000:.1f} T)")
+                        else:
+                            st.write("**Poids brut** : *non défini — sera calculé depuis les emplacements*")
                         st.write(f"**Entrée stock** : {lot['date_entree_stock']}")
                     
                     with col2:
@@ -799,9 +823,13 @@ with tab1:
                         )
                         
                         if prix > 0 and tare > 0:
-                            poids_net = float(lot['poids_total_brut_kg']) * (1 - tare / 100)
-                            valeur = (poids_net / 1000) * prix
-                            st.info(f"💰 Valeur lot : **{valeur:,.2f} €**")
+                            poids_brut_val = lot['poids_total_brut_kg']
+                            if pd.notna(poids_brut_val) and float(poids_brut_val) > 0:
+                                poids_net = float(poids_brut_val) * (1 - tare / 100)
+                                valeur = (poids_net / 1000) * prix
+                                st.info(f"💰 Valeur lot : **{valeur:,.2f} €**")
+                            else:
+                                st.warning("⚠️ Valeur calculable après saisie des emplacements")
                         
                         if st.button("✅ Qualifier", key=f"qualify_{lot['id']}", type="primary", use_container_width=True):
                             if prix <= 0:
