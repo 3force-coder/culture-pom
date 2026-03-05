@@ -494,16 +494,14 @@ with tab1:
 
             cellules_estimation[col_name] = produits_estimes
 
-        # Colonne indicateur d'estimation (~) par semaine éditable
-        # On crée une colonne "~ Sxx" qui affiche "~" si estimation
-        # Ces colonnes sont disabled dans le data_editor
+        # Nommage dynamique des colonnes : "~ S11" si estimations présentes, "S11" sinon
+        # La colonne du DataFrame reste toujours "S{sem:02d}" (clé stable pour la sauvegarde)
+        # Seul le label affiché dans column_config change
+        labels_colonnes = {}
         for annee, sem in semaines_editables:
             col_name = f"S{sem:02d}"
-            col_ind = f"~ S{sem:02d}"
             estimes = cellules_estimation.get(col_name, set())
-            df_saisie[col_ind] = df_saisie['code_produit'].apply(
-                lambda cp: "~" if cp in estimes else ""
-            )
+            labels_colonnes[col_name] = f"~ S{sem:02d}" if estimes else f"S{sem:02d}"
 
         # ---- Filtres ----
         col_f1, col_f2, col_info = st.columns([2, 2, 2])
@@ -541,30 +539,28 @@ with tab1:
             ),
         }
 
-        # Colonnes éditables + indicateurs
+        # Colonnes éditables — label dynamique : "~ S11" si estimations présentes, "S11" sinon
         for annee, sem in semaines_editables:
             col_name = f"S{sem:02d}"
-            col_ind = f"~ S{sem:02d}"
+            label = labels_colonnes[col_name]
+            estimes = cellules_estimation.get(col_name, set())
+            help_text = (
+                f"~ Contient des estimations (moyenne 3 sem. précédentes). "
+                f"Modifiez et enregistrez pour confirmer."
+            ) if estimes else f"Prévision en tonnes — semaine {sem}/{annee}"
             column_config[col_name] = st.column_config.NumberColumn(
-                col_name,
+                label,
                 min_value=0.0,
                 max_value=9999.0,
                 step=0.5,
                 format="%.1f T",
-                help=f"Prévision en tonnes pour la semaine {sem}/{annee}"
-            )
-            column_config[col_ind] = st.column_config.TextColumn(
-                "~",
-                disabled=True,
-                width="small",
-                help="~ = estimation automatique (moyenne des 3 sem. précédentes). Disparaît après enregistrement."
+                help=help_text
             )
 
-        # Ordre des colonnes : code | marque | libelle | S_courante | [S+1, ~S+1, S+2, ~S+2, ...]
+        # Ordre des colonnes : code | marque | libelle | S_courante | S+1 … S+5
         cols_ordre = ["code_produit", "marque", "libelle", col_sc]
         for annee, sem in semaines_editables:
             cols_ordre.append(f"S{sem:02d}")
-            cols_ordre.append(f"~ S{sem:02d}")
 
         df_edit = df_edit[cols_ordre]
 
