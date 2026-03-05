@@ -85,6 +85,12 @@ pages = {
     "📋 Référentiels": [
         st.Page("pages/01_Sources.py", title="Sources", icon="📋"),
     ],
+    "📊 Statistiques": [
+    st.Page("pages/35_Frulog_Import.py", title="Import & Mapping", icon="📥"),
+    st.Page("pages/35_Frulog_Condi.py",  title="Stats Condi",            icon="📈"),
+    st.Page("pages/35_Frulog_Negoce.py", title="Stats Négoce",           icon="🏪"),
+    st.Page("pages/35_Frulog_Achats.py", title="Stats Achats",           icon="🛒"),
+],
     "📦 Stock": [
         st.Page("pages/02_Lots.py", title="Lots", icon="📦"),
         st.Page("pages/03_Détails stock.py", title="Détails Stock", icon="🗃️"),
@@ -100,7 +106,6 @@ pages = {
     "📈 Commercial": [
         st.Page("pages/06_Previsions_Ventes.py", title="Prévisions Ventes", icon="📈"),
         st.Page("pages/07_Affectation_Stock.py", title="Affectation Stock", icon="🔗"),
-        st.Page("pages/35_Frulog.py", title="Stats Frulog", icon="📊"),
     ],
         "📊 Prévisions": [
         st.Page("pages/31_Prev_Dashboard.py", title="Dashboard Prév.", icon="📊"),
