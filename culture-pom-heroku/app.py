@@ -86,7 +86,7 @@ pages = {
         st.Page("pages/01_Sources.py", title="Sources", icon="📋"),
     ],
     "📊 Statistiques": [
-    st.Page("pages/35_Frulog_Import.py", title="Import & Mapping", icon="📥"),
+    st.Page("pages/35_Frulog.py", title="Import & Mapping", icon="📥"),
     st.Page("pages/35_Frulog_Condi.py",  title="Stats Condi",            icon="📈"),
     st.Page("pages/35_Frulog_Negoce.py", title="Stats Négoce",           icon="🏪"),
     st.Page("pages/35_Frulog_Achats.py", title="Stats Achats",           icon="🛒"),
