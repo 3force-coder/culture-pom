@@ -58,7 +58,7 @@ DATE_FIN = date_fin
 # CAST TEXT obligatoire : no_de_bon peut être NUMERIC en base (condi/négoce)
 # ============================================================================
 
-FILTRE_BON = "(CAST(no_de_bon AS TEXT) NOT LIKE '%/%' OR CAST(no_de_bon AS TEXT) LIKE '%/1')"
+FILTRE_BON = "(CAST(no_de_bon AS TEXT) NOT LIKE '%%/%%' OR CAST(no_de_bon AS TEXT) LIKE '%%/1')"
 
 # ============================================================================
 # HELPERS COMMUNS
@@ -342,7 +342,7 @@ def get_achat_delais():
         rows = cur.fetchall(); cur.close(); conn.close()
         if not rows:
             return pd.DataFrame(), pd.DataFrame()
-        df = pd.DataFrame(rows)
+        df = pd.DataFrame([dict(r) for r in rows])
         df['delai_jours'] = pd.to_numeric(df['delai_jours'], errors='coerce')
         df_fact  = df[df['delai_jours'].notna() & (df['delai_jours'] >= 0)].copy()
         df_nfact = df[df['date_facture'].isna()].copy()
@@ -380,7 +380,7 @@ def get_ventes_delais(table):
         rows = cur.fetchall(); cur.close(); conn.close()
         if not rows:
             return pd.DataFrame(), pd.DataFrame()
-        df = pd.DataFrame(rows)
+        df = pd.DataFrame([dict(r) for r in rows])
         df['delai_jours'] = pd.to_numeric(df['delai_jours'], errors='coerce')
         df_fact  = df[df['delai_jours'].notna() & (df['delai_jours'] >= 0)].copy()
         df_nfact = df[df['dt_fac_v'].isna()].copy()
