@@ -55,9 +55,10 @@ DATE_FIN = date_fin
 # RÈGLE FILTRE no_de_bon
 # Garder : bons SANS '/' OU se terminant par '/1'
 # Exclure : /2, /3, ... (avoirs / refacturations)
+# CAST TEXT obligatoire : no_de_bon peut être NUMERIC en base (condi/négoce)
 # ============================================================================
 
-FILTRE_BON = "(no_de_bon NOT LIKE '%/%' OR no_de_bon LIKE '%/1')"
+FILTRE_BON = "(CAST(no_de_bon AS TEXT) NOT LIKE '%/%' OR CAST(no_de_bon AS TEXT) LIKE '%/1')"
 
 # ============================================================================
 # HELPERS COMMUNS
@@ -345,6 +346,9 @@ def get_achat_delais():
         df_nfact = df[df['date_facture'].isna()].copy()
         return df_fact, df_nfact
     except Exception as e:
+        try:
+            if 'conn' in locals() and conn: conn.rollback(); conn.close()
+        except: pass
         st.error(f"Erreur Achats : {e}"); return pd.DataFrame(), pd.DataFrame()
 
 
@@ -379,6 +383,9 @@ def get_ventes_delais(table):
         df_nfact = df[df['dt_fac_v'].isna()].copy()
         return df_fact, df_nfact
     except Exception as e:
+        try:
+            if 'conn' in locals() and conn: conn.rollback(); conn.close()
+        except: pass
         st.error(f"Erreur {table} : {e}"); return pd.DataFrame(), pd.DataFrame()
 
 # ============================================================================
