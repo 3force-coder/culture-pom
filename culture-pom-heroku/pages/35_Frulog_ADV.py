@@ -288,7 +288,11 @@ def render_non_facturees(df_nfact, date_col, dim_col, dim_label, label_flux, tab
     st.markdown("---")
     st.markdown("##### 📋 Détail des lignes non facturées")
     cols_base = ['no_de_bon', dim_col, date_col, 'jours_attente']
-    cols_opt  = ['variete','depot','type','client','montant','montant_euro','montant_ht','pds_net']
+    # Priorité : montant_ht > montant_euro > montant — on garde 1 seule colonne montant
+    montant_col = next((c for c in ['montant_ht','montant_euro','montant'] if c in df2.columns), None)
+    cols_opt  = ['variete','depot','type','client','pds_net']
+    if montant_col:
+        cols_opt.insert(0, montant_col)
     cols_show = cols_base + [c for c in cols_opt if c in df2.columns and c != dim_col]
     rename_map = {
         'no_de_bon':'Bon', dim_col: dim_label, date_col:'Date expé',
