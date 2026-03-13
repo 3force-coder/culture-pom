@@ -1334,17 +1334,19 @@ with tab_occup:
                 barmode='group',
                 title="Taux d'occupation par atelier et semaine (%)",
                 color_discrete_map=COULEURS,
-                text=df_occ['Taux (%)'].apply(lambda v: f"{v:.0f}%%"),
+                text=df_occ['Taux (%)'].apply(lambda v: f"{v:.0f}%"),
             )
             fig_occ.add_hline(y=100, line_dash='dash', line_color='#e53935',
-                              annotation_text='100%%', annotation_position='right')
+                              annotation_text='100%', annotation_position='right')
             fig_occ.add_hline(y=85, line_dash='dot', line_color='#FF9800',
-                              annotation_text='Objectif 85%%', annotation_position='right')
+                              annotation_text='Objectif 85%', annotation_position='right')
             fig_occ.update_traces(textposition='outside')
+            max_taux = df_occ['Taux (%)'].max()
+            y_max = max(130, max_taux * 1.15)
             fig_occ.update_layout(
                 plot_bgcolor='white', paper_bgcolor='white',
                 height=420, xaxis_tickangle=-45,
-                yaxis=dict(range=[0, 130], title='Taux (%)'),
+                yaxis=dict(range=[0, y_max], title='Taux (%)'),
                 legend=dict(orientation='h', y=1.1),
             )
             st.plotly_chart(fig_occ, use_container_width=True, key="occ_barres")
