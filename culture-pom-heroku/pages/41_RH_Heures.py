@@ -3,11 +3,11 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import date, datetime, timedelta
-import calendar
 
 from auth import require_access, is_admin
-from components import show_footer
-from database import get_connection
+from components.header import show_header
+from components.footer import show_footer
+from database.connection import get_connection
 
 # ============================================================
 # CONFIGURATION PAGE
@@ -18,84 +18,27 @@ st.set_page_config(
     layout="wide"
 )
 
-st.markdown("""<style>
-    .block-container {padding-top:2rem!important;padding-bottom:0.5rem!important;
-        padding-left:2rem!important;padding-right:2rem!important;}
-    h1,h2,h3,h4{margin-top:0.3rem!important;margin-bottom:0.3rem!important;}
-    [data-testid="stMetricValue"]{font-size:1.4rem!important;}
-    hr{margin-top:0.5rem!important;margin-bottom:0.5rem!important;}
-    .badge-hs  { background:#fff3cd; color:#856404; padding:2px 8px; border-radius:12px; font-size:0.8em; font-weight:600; }
-    .badge-abs { background:#f8d7da; color:#721c24; padding:2px 8px; border-radius:12px; font-size:0.8em; font-weight:600; }
-    .badge-ok  { background:#d4edda; color:#155724; padding:2px 8px; border-radius:12px; font-size:0.8em; font-weight:600; }
-    .info-box  { background:#e8f4f8; border:1px solid #bee5eb; border-radius:6px; padding:10px 14px; margin:8px 0; font-size:0.9em; }
-    .warn-box  { background:#fff3cd; border:1px solid #ffc107; border-radius:6px; padding:10px 14px; margin:8px 0; font-size:0.9em; }
-</style>""", unsafe_allow_html=True)
+# ============================================================
+# CSS
+# ============================================================
+st.markdown("""
+<style>
+.kpi-vert  { background:#f0faf0; border-left:4px solid #AFCA0A; border-radius:6px; padding:12px 16px; margin-bottom:8px; }
+.kpi-rouge { background:#fff0f0; border-left:4px solid #e53935; border-radius:6px; padding:12px 16px; margin-bottom:8px; }
+.kpi-jaune { background:#fffbe6; border-left:4px solid #FFEC00; border-radius:6px; padding:12px 16px; margin-bottom:8px; }
+.badge-hs  { background:#fff3cd; color:#856404; padding:2px 8px; border-radius:12px; font-size:0.8em; font-weight:600; }
+.badge-abs { background:#f8d7da; color:#721c24; padding:2px 8px; border-radius:12px; font-size:0.8em; font-weight:600; }
+.badge-ok  { background:#d4edda; color:#155724; padding:2px 8px; border-radius:12px; font-size:0.8em; font-weight:600; }
+.info-box  { background:#e8f4f8; border:1px solid #bee5eb; border-radius:6px; padding:10px 14px; margin:8px 0; font-size:0.9em; }
+.warn-box  { background:#fff3cd; border:1px solid #ffc107; border-radius:6px; padding:10px 14px; margin:8px 0; font-size:0.9em; }
+</style>
+""", unsafe_allow_html=True)
 
+# ============================================================
+# CONTRÔLE ACCÈS
+# ============================================================
 require_access("COMMERCIAL")
-st.title("👷 RH — Heures & Pointages Euroquartz")
-
-# ============================================================
-# FILTRES GLOBAUX + COMPARAISON (identique pattern Frulog)
-# ============================================================
-
-def campagne_dates(year):
-    return date(year - 1, 6, 1), date(year, 5, 31)
-
-def get_campagnes():
-    now = datetime.now()
-    cy = now.year + 1 if now.month >= 6 else now.year
-    return list(range(cy + 1, 2022, -1))
-
-campagnes = get_campagnes()
-
-with st.container():
-    fc1, fc2, fc3, fc4 = st.columns([2, 1.5, 1.5, 2])
-    with fc1:
-        camp_opts = [0] + campagnes
-        camp_labels_map = {0: "🔓 Toutes", **{y: f"Camp. {y} ({y-1}/06→{y}/05)" for y in campagnes}}
-        sel_camp = st.selectbox("🗓️ Campagne", camp_opts, format_func=lambda y: camp_labels_map[y], key="f_camp")
-    with fc2:
-        d_min_camp = campagne_dates(sel_camp)[0] if sel_camp else date(2022, 1, 1)
-        d_max_camp = campagne_dates(sel_camp)[1] if sel_camp else date(2027, 12, 31)
-        date_deb = st.date_input("📅 Du", value=d_min_camp, min_value=d_min_camp, max_value=d_max_camp, key="f_deb")
-    with fc3:
-        date_fin = st.date_input("📅 Au", value=d_max_camp, min_value=d_min_camp, max_value=d_max_camp, key="f_fin")
-    with fc4:
-        mode_compare = st.selectbox("🔀 Comparaison", [
-            "Aucune", "📅 Campagne vs Campagne", "📆 Mois vs Mois", "📆 Semaine vs Semaine"
-        ], key="f_compare")
-
-COMP_DATES = None
-if mode_compare == "📅 Campagne vs Campagne":
-    cc1, cc2 = st.columns(2)
-    with cc1: c1 = st.selectbox("Campagne A", campagnes, key="comp_c1")
-    with cc2: c2 = st.selectbox("Campagne B", [c for c in campagnes if c != c1], key="comp_c2")
-    d1a, d1b = campagne_dates(c1); d2a, d2b = campagne_dates(c2)
-    COMP_DATES = (f"Camp. {c1}", d1a, d1b, f"Camp. {c2}", d2a, d2b)
-elif mode_compare == "📆 Mois vs Mois":
-    mois_names = {1:'Janvier',2:'Février',3:'Mars',4:'Avril',5:'Mai',6:'Juin',
-                  7:'Juillet',8:'Août',9:'Septembre',10:'Octobre',11:'Novembre',12:'Décembre'}
-    cm1, cm2, cm3, cm4 = st.columns(4)
-    with cm1: ma = st.selectbox("Mois A", range(1,13), format_func=lambda m: mois_names[m], key="comp_ma")
-    with cm2: ya = st.number_input("Année A", 2022, 2027, datetime.now().year, key="comp_ya")
-    with cm3: mb = st.selectbox("Mois B", range(1,13), format_func=lambda m: mois_names[m], index=max(0, datetime.now().month-2), key="comp_mb")
-    with cm4: yb = st.number_input("Année B", 2022, 2027, datetime.now().year - 1, key="comp_yb")
-    d1a = date(int(ya), int(ma), 1); d1b = date(int(ya), int(ma), calendar.monthrange(int(ya), int(ma))[1])
-    d2a = date(int(yb), int(mb), 1); d2b = date(int(yb), int(mb), calendar.monthrange(int(yb), int(mb))[1])
-    COMP_DATES = (f"{mois_names[ma]} {ya}", d1a, d1b, f"{mois_names[mb]} {yb}", d2a, d2b)
-elif mode_compare == "📆 Semaine vs Semaine":
-    cs1, cs2, cs3, cs4 = st.columns(4)
-    with cs1: sa = st.number_input("Semaine A", 1, 53, max(1, datetime.now().isocalendar()[1]-1), key="comp_sa")
-    with cs2: ysa = st.number_input("Année A", 2022, 2027, datetime.now().year, key="comp_ysa")
-    with cs3: sb = st.number_input("Semaine B", 1, 53, max(1, datetime.now().isocalendar()[1]-1), key="comp_sb")
-    with cs4: ysb = st.number_input("Année B", 2022, 2027, datetime.now().year - 1, key="comp_ysb")
-    d1a = date.fromisocalendar(int(ysa), int(sa), 1); d1b = d1a + timedelta(days=6)
-    d2a = date.fromisocalendar(int(ysb), int(sb), 1); d2b = d2a + timedelta(days=6)
-    COMP_DATES = (f"S{sa}/{ysa}", d1a, d1b, f"S{sb}/{ysb}", d2a, d2b)
-
-st.markdown("---")
-DATE_DEB = date_deb
-DATE_FIN = date_fin
+show_header("Stats RH — Heures & Pointages", "👷")
 
 # ============================================================
 # CONSTANTES LÉGALES (France)
@@ -298,7 +241,10 @@ def get_pointages_semaine(annee_semaine: str) -> pd.DataFrame:
         cur.close(); conn.close()
         if not rows:
             return pd.DataFrame()
-        return pd.DataFrame([dict(r) for r in rows])
+        df = pd.DataFrame([dict(r) for r in rows])
+        if 'nb_heures' in df.columns:
+            df['nb_heures'] = pd.to_numeric(df['nb_heures'], errors='coerce').fillna(0.0)
+        return df
     except Exception:
         conn.close(); return pd.DataFrame()
 
@@ -321,7 +267,10 @@ def get_pointages_periode(date_debut: date, date_fin: date) -> pd.DataFrame:
         cur.close(); conn.close()
         if not rows:
             return pd.DataFrame()
-        return pd.DataFrame([dict(r) for r in rows])
+        df = pd.DataFrame([dict(r) for r in rows])
+        if 'nb_heures' in df.columns:
+            df['nb_heures'] = pd.to_numeric(df['nb_heures'], errors='coerce').fillna(0.0)
+        return df
     except Exception:
         conn.close(); return pd.DataFrame()
 
@@ -846,171 +795,139 @@ with tab_semaine:
 with tab_evolution:
     st.subheader("📈 Évolution dans le temps")
 
-    if COMP_DATES:
-        la, d1a, d1b, lb, d2a, d2b = COMP_DATES
-        st.info(f"🔀 Comparaison : **{la}** vs **{lb}**")
+    col_e1, col_e2 = st.columns(2)
+    with col_e1:
+        date_ev_debut = st.date_input(
+            "Depuis le", value=date.today() - timedelta(days=120), key="ev_debut"
+        )
+    with col_e2:
+        date_ev_fin = st.date_input(
+            "Jusqu'au", value=date.today(), key="ev_fin"
+        )
 
-        df_A = get_pointages_periode(d1a, d1b)
-        df_B = get_pointages_periode(d2a, d2b)
+    df_ev = get_pointages_periode(date_ev_debut, date_ev_fin)
 
-        def _render_periode_rh(df_p, label):
-            if df_p.empty:
-                st.info(f"Pas de données pour {label}.")
-                return
-            h_tot = float(df_p['nb_heures'].sum())
-            nb_sem = df_p['annee_semaine'].nunique()
-            nb_sal = df_p['matricule'].nunique()
-            h_heb  = calcul_hebdo(df_p)
-            hs_tot = float(h_heb['hs_total'].sum()) if not h_heb.empty else 0
-            nb_abs = int((h_heb['statut'].isin(['ABSENCE','SOUS_35H'])).sum()) if not h_heb.empty else 0
-            st.markdown(f"**{label}**")
-            c1,c2,c3,c4,c5 = st.columns(5)
-            c1.metric("⏱ Total heures",  f"{h_tot:.0f}h")
-            c2.metric("📅 Semaines",      nb_sem)
-            c3.metric("👷 Salariés",      nb_sal)
-            c4.metric("⬆ HS totales",    f"{hs_tot:.0f}h")
-            c5.metric("⚠ Absences",       nb_abs)
-            graphe_evolution_hebdo(df_p)
-
-        col_A, col_B = st.columns(2)
-        with col_A:
-            _render_periode_rh(df_A, la)
-        with col_B:
-            _render_periode_rh(df_B, lb)
-
+    if df_ev.empty:
+        st.info("Aucune donnée pour cette période.")
     else:
-        col_e1, col_e2 = st.columns(2)
-        with col_e1:
-            date_ev_debut = st.date_input(
-                "Depuis le", value=DATE_DEB, key="ev_debut"
+        # ── KPIs ──
+        nb_sems = df_ev['annee_semaine'].nunique()
+        total_h = float(df_ev['nb_heures'].sum())
+        moy_sem = total_h / nb_sems if nb_sems else 0
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("📅 Semaines", nb_sems)
+        c2.metric("⏱ Total heures", f"{total_h:.0f}h")
+        c3.metric("📊 Moy/semaine", f"{moy_sem:.0f}h")
+        c4.metric("👷 Salariés distincts", df_ev['matricule'].nunique())
+
+        st.markdown("---")
+        graphe_evolution_hebdo(df_ev)
+
+        # ── HS dans le temps ──
+        st.markdown("---")
+        st.subheader("⬆ Évolution des heures supplémentaires")
+
+        df_hebdo_ev = calcul_hebdo(df_ev)
+        if not df_hebdo_ev.empty:
+            hs_par_sem = (
+                df_hebdo_ev.groupby('annee_semaine')
+                .agg(hs_total=('hs_total', 'sum'),
+                     nb_sal_hs=('hs_total', lambda x: (x > 0).sum()),
+                     nb_sal_total=('matricule', 'count'))
+                .reset_index()
+                .sort_values('annee_semaine')
             )
-        with col_e2:
-            date_ev_fin = st.date_input(
-                "Jusqu'au", value=DATE_FIN, key="ev_fin"
+            hs_par_sem['pct_sal_hs'] = (hs_par_sem['nb_sal_hs'] / hs_par_sem['nb_sal_total'] * 100).round(1)
+
+            fig_hs = go.Figure()
+            fig_hs.add_trace(go.Bar(
+                x=hs_par_sem['annee_semaine'], y=hs_par_sem['hs_total'],
+                name='Total HS (h)', marker_color='#ff9800',
+                text=hs_par_sem['hs_total'].apply(lambda x: f"{x:.0f}h"),
+                textposition='outside',
+            ))
+            fig_hs.add_trace(go.Scatter(
+                x=hs_par_sem['annee_semaine'], y=hs_par_sem['pct_sal_hs'],
+                name='%% salariés en HS', line=dict(color='#e53935', width=2),
+                mode='lines+markers', yaxis='y2',
+            ))
+            fig_hs.update_layout(
+                barmode='group', plot_bgcolor='white', paper_bgcolor='white',
+                height=360, xaxis_tickangle=-45,
+                yaxis=dict(title='Heures supplémentaires'),
+                yaxis2=dict(title='%% salariés en HS', side='right', overlaying='y',
+                            ticksuffix='%%'),
+                legend=dict(orientation='h', yanchor='bottom', y=1.02),
+                margin=dict(t=60, b=60),
             )
+            st.plotly_chart(fig_hs, use_container_width=True)
 
-        df_ev = get_pointages_periode(date_ev_debut, date_ev_fin)
+        # ── Taux absentéisme dans le temps ──
+        st.markdown("---")
+        st.subheader("📉 Absentéisme hebdomadaire")
 
-        if df_ev.empty:
-            st.info("Aucune donnée pour cette période.")
-        else:
-            # ── KPIs ──
-            nb_sems = df_ev['annee_semaine'].nunique()
-            total_h = float(df_ev['nb_heures'].sum())
-            moy_sem = total_h / nb_sems if nb_sems else 0
+        if not df_hebdo_ev.empty:
+            abs_par_sem = (
+                df_hebdo_ev.groupby('annee_semaine')
+                .agg(nb_abs=('statut', lambda x: (x.isin(['ABSENCE', 'SOUS_35H'])).sum()),
+                     nb_total=('matricule', 'count'))
+                .reset_index()
+            )
+            abs_par_sem['taux_abs'] = (abs_par_sem['nb_abs'] / abs_par_sem['nb_total'] * 100).round(1)
+            abs_par_sem = abs_par_sem.sort_values('annee_semaine')
 
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("📅 Semaines", nb_sems)
-            c2.metric("⏱ Total heures", f"{total_h:.0f}h")
-            c3.metric("📊 Moy/semaine", f"{moy_sem:.0f}h")
-            c4.metric("👷 Salariés distincts", df_ev['matricule'].nunique())
+            fig_abs = px.area(
+                abs_par_sem, x='annee_semaine', y='taux_abs',
+                title="Taux d'absentéisme/sous-35H par semaine (%%)",
+                labels={'annee_semaine': 'Semaine', 'taux_abs': 'Taux (%%)'},
+                color_discrete_sequence=['#e53935'],
+            )
+            fig_abs.add_hline(y=5, line_dash='dash', line_color='#ff9800',
+                              annotation_text='Seuil alerte 5%%')
+            fig_abs.update_layout(
+                plot_bgcolor='white', paper_bgcolor='white',
+                height=320, xaxis_tickangle=-45, margin=dict(t=50, b=60),
+            )
+            st.plotly_chart(fig_abs, use_container_width=True)
 
-            st.markdown("---")
-            graphe_evolution_hebdo(df_ev)
+        # ── Comparaison N vs N-1 ──
+        st.markdown("---")
+        st.subheader("🔀 Comparaison N vs N-1")
 
-            # ── HS dans le temps ──
-            st.markdown("---")
-            st.subheader("⬆ Évolution des heures supplémentaires")
+        semaines_ev = sorted(df_ev['annee_semaine'].unique())
+        if semaines_ev:
+            sem_cmp = st.selectbox("Semaine de référence", semaines_ev, key="ev_cmp")
+            # Chercher la même semaine N-1
+            parts = sem_cmp.split('-S')
+            if len(parts) == 2:
+                sem_n1 = f"{int(parts[0]) - 1}-S{parts[1]}"
+                df_n1 = get_pointages_semaine(sem_n1)
+                df_n = get_pointages_semaine(sem_cmp)
+                if not df_n.empty:
+                    h_n  = float(df_n['nb_heures'].sum())
+                    sal_n = df_n['matricule'].nunique()
+                    hs_n  = calcul_hebdo(df_n)['hs_total'].sum() if not calcul_hebdo(df_n).empty else 0
+                    h_n1 = float(df_n1['nb_heures'].sum()) if not df_n1.empty else None
 
-            df_hebdo_ev = calcul_hebdo(df_ev)
-            if not df_hebdo_ev.empty:
-                hs_par_sem = (
-                    df_hebdo_ev.groupby('annee_semaine')
-                    .agg(hs_total=('hs_total', 'sum'),
-                         nb_sal_hs=('hs_total', lambda x: (x > 0).sum()),
-                         nb_sal_total=('matricule', 'count'))
-                    .reset_index()
-                    .sort_values('annee_semaine')
-                )
-                hs_par_sem['pct_sal_hs'] = (hs_par_sem['nb_sal_hs'] / hs_par_sem['nb_sal_total'] * 100).round(1)
-
-                fig_hs = go.Figure()
-                fig_hs.add_trace(go.Bar(
-                    x=hs_par_sem['annee_semaine'], y=hs_par_sem['hs_total'],
-                    name='Total HS (h)', marker_color='#ff9800',
-                    text=hs_par_sem['hs_total'].apply(lambda x: f"{x:.0f}h"),
-                    textposition='outside',
-                ))
-                fig_hs.add_trace(go.Scatter(
-                    x=hs_par_sem['annee_semaine'], y=hs_par_sem['pct_sal_hs'],
-                    name='%% salariés en HS', line=dict(color='#e53935', width=2),
-                    mode='lines+markers', yaxis='y2',
-                ))
-                fig_hs.update_layout(
-                    barmode='group', plot_bgcolor='white', paper_bgcolor='white',
-                    height=360, xaxis_tickangle=-45,
-                    yaxis=dict(title='Heures supplémentaires'),
-                    yaxis2=dict(title='%% salariés en HS', side='right', overlaying='y',
-                                ticksuffix='%%'),
-                    legend=dict(orientation='h', yanchor='bottom', y=1.02),
-                    margin=dict(t=60, b=60),
-                )
-                st.plotly_chart(fig_hs, use_container_width=True)
-
-            # ── Taux absentéisme dans le temps ──
-            st.markdown("---")
-            st.subheader("📉 Absentéisme hebdomadaire")
-
-            if not df_hebdo_ev.empty:
-                abs_par_sem = (
-                    df_hebdo_ev.groupby('annee_semaine')
-                    .agg(nb_abs=('statut', lambda x: (x.isin(['ABSENCE', 'SOUS_35H'])).sum()),
-                         nb_total=('matricule', 'count'))
-                    .reset_index()
-                )
-                abs_par_sem['taux_abs'] = (abs_par_sem['nb_abs'] / abs_par_sem['nb_total'] * 100).round(1)
-                abs_par_sem = abs_par_sem.sort_values('annee_semaine')
-
-                fig_abs = px.area(
-                    abs_par_sem, x='annee_semaine', y='taux_abs',
-                    title="Taux d'absentéisme/sous-35H par semaine (%%)",
-                    labels={'annee_semaine': 'Semaine', 'taux_abs': 'Taux (%%)'},
-                    color_discrete_sequence=['#e53935'],
-                )
-                fig_abs.add_hline(y=5, line_dash='dash', line_color='#ff9800',
-                                  annotation_text='Seuil alerte 5%%')
-                fig_abs.update_layout(
-                    plot_bgcolor='white', paper_bgcolor='white',
-                    height=320, xaxis_tickangle=-45, margin=dict(t=50, b=60),
-                )
-                st.plotly_chart(fig_abs, use_container_width=True)
-
-            # ── Comparaison N vs N-1 ──
-            st.markdown("---")
-            st.subheader("🔀 Comparaison N vs N-1")
-
-            semaines_ev = sorted(df_ev['annee_semaine'].unique())
-            if semaines_ev:
-                sem_cmp = st.selectbox("Semaine de référence", semaines_ev, key="ev_cmp")
-                parts = sem_cmp.split('-S')
-                if len(parts) == 2:
-                    sem_n1 = f"{int(parts[0]) - 1}-S{parts[1]}"
-                    df_n1 = get_pointages_semaine(sem_n1)
-                    df_n = get_pointages_semaine(sem_cmp)
-                    if not df_n.empty:
-                        h_n   = float(df_n['nb_heures'].sum())
-                        sal_n = df_n['matricule'].nunique()
-                        hs_n  = calcul_hebdo(df_n)['hs_total'].sum() if not calcul_hebdo(df_n).empty else 0
-                        h_n1  = float(df_n1['nb_heures'].sum()) if not df_n1.empty else None
-
-                        col_c1, col_c2 = st.columns(2)
-                        with col_c1:
-                            st.markdown(f"**{sem_cmp}**")
-                            st.metric("Total heures", f"{h_n:.0f}h",
-                                      delta=f"{h_n - h_n1:+.0f}h vs N-1" if h_n1 else "N-1 non dispo")
-                            st.metric("Salariés présents", sal_n)
-                            st.metric("Heures supp totales", f"{hs_n:.1f}h")
-                        with col_c2:
-                            if not df_n1.empty:
-                                st.markdown(f"**{sem_n1} (N-1)**")
-                                h1_n1  = float(df_n1['nb_heures'].sum())
-                                sal_n1 = df_n1['matricule'].nunique()
-                                hs_n1  = calcul_hebdo(df_n1)['hs_total'].sum() if not calcul_hebdo(df_n1).empty else 0
-                                st.metric("Total heures", f"{h1_n1:.0f}h")
-                                st.metric("Salariés présents", sal_n1)
-                                st.metric("Heures supp totales", f"{hs_n1:.1f}h")
-                            else:
-                                st.info(f"Pas de données pour {sem_n1}.")
+                    col_c1, col_c2 = st.columns(2)
+                    with col_c1:
+                        st.markdown(f"**{sem_cmp}**")
+                        st.metric("Total heures", f"{h_n:.0f}h",
+                                  delta=f"{h_n - h_n1:+.0f}h vs N-1" if h_n1 else "N-1 non dispo")
+                        st.metric("Salariés présents", sal_n)
+                        st.metric("Heures supp totales", f"{hs_n:.1f}h")
+                    with col_c2:
+                        if not df_n1.empty:
+                            st.markdown(f"**{sem_n1} (N-1)**")
+                            h1_n1 = float(df_n1['nb_heures'].sum())
+                            sal_n1 = df_n1['matricule'].nunique()
+                            hs_n1 = calcul_hebdo(df_n1)['hs_total'].sum() if not calcul_hebdo(df_n1).empty else 0
+                            st.metric("Total heures", f"{h1_n1:.0f}h")
+                            st.metric("Salariés présents", sal_n1)
+                            st.metric("Heures supp totales", f"{hs_n1:.1f}h")
+                        else:
+                            st.info(f"Pas de données pour {sem_n1}.")
 
 
 # ────────────────────────────────────────────────────────────
