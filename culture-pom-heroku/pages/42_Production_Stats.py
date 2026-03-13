@@ -657,11 +657,16 @@ with tab_vue:
                              'Cadence (T/h)': round(cad,3),
                              'Objectif (T/h)': obj,
                              'R/O (%%)': round(ro,1) if ro is not None else None})
+            df_rows = pd.DataFrame(rows)
+            df_rows['R/O (%%)'] = pd.to_numeric(df_rows['R/O (%%)'], errors='coerce')
             st.dataframe(
-                pd.DataFrame(rows).style.applymap(color_ro, subset=['R/O (%%)'])
-                                        .format({'Cadence (T/h)': '{:.3f}',
-                                                 'R/O (%%)': '{:+.1f}'}),
-                use_container_width=True, hide_index=True
+                df_rows,
+                use_container_width=True, hide_index=True,
+                column_config={
+                    'Cadence (T/h)':  st.column_config.NumberColumn(format="%.3f"),
+                    'Objectif (T/h)': st.column_config.NumberColumn(format="%.2f"),
+                    'R/O (%%)':       st.column_config.NumberColumn(format="%+.1f %%"),
+                }
             )
 
 
@@ -725,12 +730,13 @@ with tab_hebdo:
                 st.plotly_chart(fig_line, use_container_width=True)
             with col_t:
                 st.dataframe(
-                    total_sem.style.applymap(
-                        lambda v: color_ro(v) if not pd.isna(v) else '',
-                        subset=['Évol. (%%)']
-                    ).format({'Total (T)': '{:.1f}', 'Évol. (T)': '{:+.1f}',
-                               'Évol. (%%)': '{:+.1f}%%'}),
-                    use_container_width=True, hide_index=True
+                    total_sem,
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        'Total (T)':   st.column_config.NumberColumn(format="%.1f T"),
+                        'Évol. (T)':   st.column_config.NumberColumn(format="%+.1f T"),
+                        'Évol. (%%)':  st.column_config.NumberColumn(format="%+.1f %%"),
+                    }
                 )
 
             # Cadences hebdo par ligne
@@ -856,10 +862,13 @@ with tab_cadences:
                         })
                 if rows:
                     st.dataframe(
-                        pd.DataFrame(rows).style.applymap(color_ro, subset=['R/O (%%)'])
-                                               .format({'R/O (%%)': '{:+.1f}%%',
-                                                        'Cadence': '{:.2f}'}),
-                        use_container_width=True, hide_index=True
+                        pd.DataFrame(rows),
+                        use_container_width=True, hide_index=True,
+                        column_config={
+                            'Cadence':  st.column_config.NumberColumn(format="%.2f T/h"),
+                            'Objectif': st.column_config.NumberColumn(format="%.2f T/h"),
+                            'R/O (%%)': st.column_config.NumberColumn(format="%+.1f %%"),
+                        }
                     )
 
 
