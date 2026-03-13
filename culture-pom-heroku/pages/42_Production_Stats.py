@@ -120,10 +120,11 @@ def load_data():
             df['poids_tonne']     = pd.to_numeric(df['poids_tonne'],     errors='coerce')
             df['duree_h']         = pd.to_numeric(df['duree_h'],         errors='coerce')
             df['cadence']         = pd.to_numeric(df['cadence'],         errors='coerce')
-            # Recalcul des colonnes dérivées pour éviter KeyError si NULL en BDD
+            # Recalcul des colonnes dérivées — dropper NaT d'abord
+            df = df.dropna(subset=['date_production'])
             iso = df['date_production'].dt.isocalendar()
-            df['semaine']       = iso.week.astype('Int64')
-            df['annee']         = iso.year.astype('Int64')
+            df['semaine']       = iso.week.astype(int)
+            df['annee']         = iso.year.astype(int)
             df['annee_semaine'] = df['annee'].astype(str) + '-S' + df['semaine'].astype(str).str.zfill(2)
             df['jour_label']    = df['date_production'].dt.strftime('%d/%m')
             df['ligne']         = df['ligne'].fillna('').str.strip().str.upper()
@@ -301,7 +302,11 @@ def filter_df(df, d_from, d_to):
 def calc_semaine(df, semaine_col='semaine'):
     """KPIs agrégés par semaine + ligne, avec objectif valide à la date de la semaine."""
     rows = []
-    for (sem, ann), g in df.groupby([semaine_col, 'annee']):
+    df_c = df.dropna(subset=[semaine_col, 'annee'])
+    if df_c.empty:
+        return pd.DataFrame(columns=['semaine','annee','annee_semaine','ligne',
+                                     'tonnage','duree_h','cadence','objectif','ro_pct'])
+    for (sem, ann), g in df_c.groupby([semaine_col, 'annee']):
         # Date représentative = premier jour de la semaine dans le groupe
         date_ref = g['date_production'].dropna().min().date() if not g.empty else date.today()
         obj_sem  = get_objectifs_pour_date(date_ref, df_objectifs)
@@ -313,7 +318,7 @@ def calc_semaine(df, semaine_col='semaine'):
             obj = obj_sem.get(ligne, OBJECTIFS_DEFAUT[ligne])
             ro  = (cad - obj) / obj * 100 if obj > 0 and cad > 0 else None
             rows.append({'semaine': sem, 'annee': ann,
-                         'annee_semaine': f"{ann}-S{int(sem):02d}",
+                         'annee_semaine': f"{int(ann)}-S{int(sem):02d}",
                          'ligne': ligne, 'tonnage': t,
                          'duree_h': h, 'cadence': cad,
                          'objectif': obj, 'ro_pct': ro})
