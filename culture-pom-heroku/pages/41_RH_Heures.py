@@ -393,7 +393,7 @@ def graphe_heures_semaine(df_hebdo: pd.DataFrame, titre: str = "Heures totales /
         margin=dict(t=50, b=20, l=160, r=60),
         showlegend=False,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=f"rh_chart_1_{id(fig)}")
 
 
 def graphe_hs_detail(df_hebdo: pd.DataFrame):
@@ -427,7 +427,7 @@ def graphe_hs_detail(df_hebdo: pd.DataFrame):
         margin=dict(t=50, b=80),
         legend=dict(orientation='h', yanchor='bottom', y=1.02),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=f"rh_chart_2_{id(fig)}")
 
 
 def graphe_evolution_hebdo(df: pd.DataFrame):
@@ -467,7 +467,7 @@ def graphe_evolution_hebdo(df: pd.DataFrame):
         legend=dict(orientation='h', yanchor='bottom', y=1.02),
         margin=dict(t=60, b=60),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=f"rh_chart_3_{id(fig)}")
 
 
 def graphe_repartition_site(df: pd.DataFrame):
@@ -479,7 +479,7 @@ def graphe_repartition_site(df: pd.DataFrame):
     fig.update_traces(textinfo='label+percent+value',
                       texttemplate='%{label}<br>%{value:.0f}h (%{percent})')
     fig.update_layout(height=320, margin=dict(t=40, b=10))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=f"rh_chart_4_{id(fig)}")
 
 
 def graphe_repartition_atelier(df: pd.DataFrame):
@@ -495,7 +495,7 @@ def graphe_repartition_atelier(df: pd.DataFrame):
         margin=dict(t=40, b=20, l=120),
         xaxis_title='Heures',
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=f"rh_chart_5_{id(fig)}")
 
 
 def graphe_radar_salarie(df_hebdo: pd.DataFrame, matricule: str):
@@ -535,7 +535,7 @@ def graphe_radar_salarie(df_hebdo: pd.DataFrame, matricule: str):
         title=f"Profil semaine — {row['salarie']}",
         height=350, showlegend=True,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=f"rh_chart_6_{id(fig)}")
 
 
 def tableau_hs_synthetique(df_hebdo: pd.DataFrame):
@@ -861,7 +861,7 @@ with tab_evolution:
                 legend=dict(orientation='h', yanchor='bottom', y=1.02),
                 margin=dict(t=60, b=60),
             )
-            st.plotly_chart(fig_hs, use_container_width=True)
+            st.plotly_chart(fig_hs, use_container_width=True, key=f"rh_chart_7_{id(fig_hs)}")
 
         # ── Taux absentéisme dans le temps ──
         st.markdown("---")
@@ -889,7 +889,7 @@ with tab_evolution:
                 plot_bgcolor='white', paper_bgcolor='white',
                 height=320, xaxis_tickangle=-45, margin=dict(t=50, b=60),
             )
-            st.plotly_chart(fig_abs, use_container_width=True)
+            st.plotly_chart(fig_abs, use_container_width=True, key=f"rh_chart_8_{id(fig_abs)}")
 
         # ── Comparaison N vs N-1 ──
         st.markdown("---")
@@ -996,7 +996,7 @@ with tab_salarie:
                 height=300, margin=dict(t=40, b=40),
                 xaxis_title='', yaxis_title='Heures',
             )
-            st.plotly_chart(fig_j, use_container_width=True)
+            st.plotly_chart(fig_j, use_container_width=True, key=f"rh_chart_9_{id(fig_j)}")
 
             # Détail ateliers
             st.dataframe(
@@ -1037,7 +1037,7 @@ with tab_salarie:
                             plot_bgcolor='white', paper_bgcolor='white',
                             height=300, xaxis_tickangle=-45, margin=dict(t=50, b=60),
                         )
-                        st.plotly_chart(fig_hist, use_container_width=True)
+                        st.plotly_chart(fig_hist, use_container_width=True, key=f"rh_chart_10_{id(fig_hist)}")
 
 
 # ────────────────────────────────────────────────────────────
@@ -1091,7 +1091,7 @@ with tab_ateliers:
                 margin=dict(t=50, b=40, l=130),
                 coloraxis_colorbar_title='Heures',
             )
-            st.plotly_chart(fig_hm, use_container_width=True)
+            st.plotly_chart(fig_hm, use_container_width=True, key=f"rh_chart_11_{id(fig_hm)}")
 
             # Tableau récap
             st.markdown("---")
