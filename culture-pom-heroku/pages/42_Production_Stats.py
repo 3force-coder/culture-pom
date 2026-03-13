@@ -358,11 +358,14 @@ def upsert_production(df_import: pd.DataFrame, user: str) -> tuple:
     Retourne (nb_inserted, nb_updated, nb_errors)
     """
     conn = get_connection()
+    if not conn:
+        return 0, 0, 1
     cur  = conn.cursor()
     inserted = updated = errors = 0
 
     for _, row in df_import.iterrows():
         try:
+            cur.execute("SAVEPOINT sp_prod")
             cur.execute("""
                 INSERT INTO production_fiches
                     (date_production, ligne, heure_debut, heure_fin,
@@ -392,8 +395,8 @@ def upsert_production(df_import: pd.DataFrame, user: str) -> tuple:
             """, (
                 row.get('date_production'),
                 str(row.get('ligne', '')),
-                row.get('heure_debut'),
-                row.get('heure_fin'),
+                str(row.get('heure_debut', '')) if row.get('heure_debut') is not None else None,
+                str(row.get('heure_fin', ''))   if row.get('heure_fin')   is not None else None,
                 float(row['duree_h'])      if pd.notna(row.get('duree_h'))      else None,
                 float(row['poids_kg'])     if pd.notna(row.get('poids_kg'))     else None,
                 float(row['poids_tonne'])  if pd.notna(row.get('poids_tonne'))  else None,
@@ -411,13 +414,14 @@ def upsert_production(df_import: pd.DataFrame, user: str) -> tuple:
                 str(row.get('jour_label', '')),
                 user,
             ))
+            cur.execute("RELEASE SAVEPOINT sp_prod")
             if cur.rowcount == 1:
                 inserted += 1
             else:
                 updated += 1
         except Exception:
             errors += 1
-            conn.rollback()
+            cur.execute("ROLLBACK TO SAVEPOINT sp_prod")
             continue
 
     conn.commit()
