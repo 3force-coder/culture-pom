@@ -34,6 +34,11 @@ LIGNES    = ['SBU1', 'SBU2', 'BANC', 'CARTONS']
 # Valeurs par défaut si la table BDD n'existe pas encore
 OBJECTIFS_DEFAUT = {'SBU1': 3.20, 'SBU2': 3.16, 'BANC': 4.00, 'CARTONS': 0.88}
 
+# Équipes par défaut (1 équipe = 32.5H/semaine = 6.5H/jour)
+EQUIPES_DEFAUT   = {'SBU1': 2, 'SBU2': 1, 'BANC': 1, 'CARTONS': 1}
+HEURES_EQUIPE_SEM = 32.5
+HEURES_EQUIPE_JOUR = 6.5
+
 # ── GESTION OBJECTIFS BDD ─────────────────────────────────────
 @st.cache_data(ttl=60)
 def load_objectifs_historique():
@@ -106,6 +111,62 @@ def save_objectif(ligne: str, objectif: float, date_debut: date,
         return False
 
 # ── CHARGEMENT DONNÉES ────────────────────────────────────────
+# ── GESTION ÉQUIPES BDD ──────────────────────────────────────
+@st.cache_data(ttl=60)
+def load_equipes_historique() -> pd.DataFrame:
+    """Charge l'historique des équipes par ligne."""
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT ligne, nb_equipes, date_debut, created_by, created_at
+            FROM production_equipes
+            ORDER BY ligne, date_debut DESC
+        """)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame([dict(r) for r in rows])
+        df['date_debut'] = pd.to_datetime(df['date_debut']).dt.date
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+def get_equipes_pour_date(d: date, df_eq: pd.DataFrame) -> dict:
+    """Retourne le nb d'équipes valide à la date d pour chaque ligne."""
+    result = dict(EQUIPES_DEFAUT)
+    if df_eq.empty:
+        return result
+    for ligne in LIGNES:
+        sub = df_eq[(df_eq['ligne'] == ligne) & (df_eq['date_debut'] <= d)]
+        if not sub.empty:
+            result[ligne] = int(sub.sort_values('date_debut', ascending=False).iloc[0]['nb_equipes'])
+    return result
+
+def get_equipes_courants(df_eq: pd.DataFrame) -> dict:
+    return get_equipes_pour_date(date.today(), df_eq)
+
+def save_equipe(ligne: str, nb: int, date_deb: date, user: str) -> bool:
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO production_equipes (ligne, nb_equipes, date_debut, created_by)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (ligne, date_debut)
+            DO UPDATE SET nb_equipes = EXCLUDED.nb_equipes,
+                          created_by = EXCLUDED.created_by,
+                          created_at = CURRENT_TIMESTAMP
+        """, (ligne, nb, date_deb, user))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
 @st.cache_data(ttl=60)
 def load_data():
     try:
@@ -178,7 +239,9 @@ def load_from_excel(file):
 # ── IMPORT FICHIER OU BDD ─────────────────────────────────────
 # ── CHARGEMENT OBJECTIFS ─────────────────────────────────────
 df_objectifs = load_objectifs_historique()
-OBJECTIFS = get_objectifs_courants(df_objectifs)
+OBJECTIFS    = get_objectifs_courants(df_objectifs)
+df_equipes   = load_equipes_historique()
+EQUIPES      = get_equipes_courants(df_equipes)
 
 with st.sidebar:
     # ── Objectifs cadences actuels ──
@@ -220,6 +283,37 @@ with st.sidebar:
                         'ligne':'Atelier','objectif_cadence':'Obj (T/h)',
                         'date_debut':'Début','date_fin':'Fin','created_by':'Par'
                     }),
+                    use_container_width=True, hide_index=True
+                )
+
+        st.markdown("---")
+        st.markdown("### 👷 Équipes en production")
+        for ligne in LIGNES:
+            nb = EQUIPES.get(ligne, EQUIPES_DEFAUT[ligne])
+            st.markdown(f"- **{ligne}** : {nb} équipe(s) — {nb * HEURES_EQUIPE_SEM:.0f}H/sem")
+
+        with st.expander("⚙️ Modifier équipes (Admin)"):
+            sel_ligne_eq = st.selectbox("Atelier", LIGNES, key="eq_ligne")
+            nb_eq = st.number_input(
+                "Nb équipes",
+                min_value=1, max_value=5,
+                value=int(EQUIPES.get(sel_ligne_eq, EQUIPES_DEFAUT[sel_ligne_eq])),
+                step=1, key="eq_nb"
+            )
+            eq_debut = st.date_input("Valide à partir du", value=date.today(), key="eq_debut")
+            if st.button("💾 Enregistrer", key="eq_save"):
+                user = st.session_state.get('username', 'admin')
+                if save_equipe(sel_ligne_eq, nb_eq, eq_debut, user):
+                    st.success(f"✅ {sel_ligne_eq} : {nb_eq} équipe(s) dès le {eq_debut}")
+                    st.cache_data.clear()
+                    st.rerun()
+
+        if not df_equipes.empty:
+            with st.expander("📋 Historique équipes"):
+                st.dataframe(
+                    df_equipes[['ligne','nb_equipes','date_debut','created_by']]
+                    .rename(columns={'ligne':'Atelier','nb_equipes':'Équipes',
+                                     'date_debut':'Depuis','created_by':'Par'}),
                     use_container_width=True, hide_index=True
                 )
 
@@ -439,13 +533,15 @@ def upsert_production(df_import: pd.DataFrame, user: str) -> tuple:
 df_filt = filter_df(df, DATE_DEB, DATE_FIN)
 
 # ── ONGLETS ───────────────────────────────────────────────────
-tab_import, tab_vue, tab_hebdo, tab_cadences, tab_journalier, tab_recettes = st.tabs([
+tab_import, tab_vue, tab_hebdo, tab_cadences, tab_journalier, tab_recettes, tab_occup, tab_comparatif = st.tabs([
     "📥 Import",
     "📊 Vue globale",
     "📈 Évolution hebdo",
     "⚡ Cadences R/O",
     "📅 Journalier S10",
     "🥔 Mix recettes",
+    "⏱️ Taux occupation",
+    "📊 Comparatif J/J-1",
 ])
 
 # ═══════════════════════════════════════════════════════════════
@@ -1181,4 +1277,292 @@ with tab_recettes:
                     st.plotly_chart(fig_rec, use_container_width=True)
 
     # ── FOOTER ────────────────────────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════════
+# ONGLET : TAUX D'OCCUPATION
+# ═══════════════════════════════════════════════════════════════
+with tab_occup:
+    if df.empty:
+        st.info("📤 Aucune donnée en base. Utilisez l'onglet 📥 **Import** pour charger les fiches de production.")
+    else:
+        st.subheader("⏱️ Taux d'occupation — Heures réelles vs amplitude théorique")
+        st.caption(f"Base : 1 équipe = {HEURES_EQUIPE_SEM}H/semaine = {HEURES_EQUIPE_JOUR}H/jour")
+
+        # ── Tableau récap équipes actuelles ──
+        col_eq = st.columns(len(LIGNES))
+        for i, ligne in enumerate(LIGNES):
+            eq = get_equipes_pour_date(date.today(), df_equipes)
+            nb = eq.get(ligne, EQUIPES_DEFAUT[ligne])
+            col_eq[i].metric(
+                f"{ligne}",
+                f"{nb} équipe(s)",
+                f"{nb * HEURES_EQUIPE_SEM:.0f}H/sem théoriques"
+            )
+
+        st.markdown("---")
+
+        # ── Calcul taux par semaine et par ligne ──
+        rows_occ = []
+        semaines_occ = sorted(df_filt['annee_semaine'].dropna().unique())
+        for sem_label in semaines_occ:
+            df_s = df_filt[df_filt['annee_semaine'] == sem_label]
+            if df_s.empty:
+                continue
+            date_ref = df_s['date_production'].dropna().min().date()
+            eq_sem   = get_equipes_pour_date(date_ref, df_equipes)
+            for ligne in LIGNES:
+                ld = df_s[df_s['ligne'] == ligne]
+                h_reelle   = float(ld['duree_h'].sum())
+                nb_eq      = eq_sem.get(ligne, EQUIPES_DEFAUT[ligne])
+                h_theorie  = nb_eq * HEURES_EQUIPE_SEM
+                taux       = h_reelle / h_theorie * 100 if h_theorie > 0 else 0
+                rows_occ.append({
+                    'Semaine':      sem_label,
+                    'Atelier':      ligne,
+                    'H réelles':    round(h_reelle, 1),
+                    'H théoriques': h_theorie,
+                    'Nb équipes':   nb_eq,
+                    'Taux (%)':     round(taux, 1),
+                })
+
+        if rows_occ:
+            df_occ = pd.DataFrame(rows_occ)
+
+            # ── Graphe taux par semaine (barres groupées par atelier) ──
+            fig_occ = px.bar(
+                df_occ, x='Semaine', y='Taux (%)', color='Atelier',
+                barmode='group',
+                title="Taux d'occupation par atelier et semaine (%)",
+                color_discrete_map=COULEURS,
+                text=df_occ['Taux (%)'].apply(lambda v: f"{v:.0f}%%"),
+            )
+            fig_occ.add_hline(y=100, line_dash='dash', line_color='#e53935',
+                              annotation_text='100%%', annotation_position='right')
+            fig_occ.add_hline(y=85, line_dash='dot', line_color='#FF9800',
+                              annotation_text='Objectif 85%%', annotation_position='right')
+            fig_occ.update_traces(textposition='outside')
+            fig_occ.update_layout(
+                plot_bgcolor='white', paper_bgcolor='white',
+                height=420, xaxis_tickangle=-45,
+                yaxis=dict(range=[0, 130], title='Taux (%)'),
+                legend=dict(orientation='h', y=1.1),
+            )
+            st.plotly_chart(fig_occ, use_container_width=True, key="occ_barres")
+
+            st.markdown("---")
+
+            # ── Tableau pivot semaine × atelier ──
+            st.subheader("📋 Détail par semaine")
+            pivot = df_occ.pivot_table(
+                index='Semaine',
+                columns='Atelier',
+                values='Taux (%)',
+                aggfunc='first'
+            ).reset_index()
+            pivot.columns.name = None
+
+            # Colorier selon seuil
+            def style_taux(val):
+                if pd.isna(val):
+                    return ''
+                if val >= 95:
+                    return 'color:#e53935;font-weight:bold'
+                if val >= 85:
+                    return 'color:#AFCA0A;font-weight:bold'
+                return 'color:#7A7A7A'
+
+            styled = pivot.style.applymap(style_taux, subset=[c for c in LIGNES if c in pivot.columns])
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+
+            # ── Résumé dernière semaine ──
+            derniere_sem = df_occ['Semaine'].max()
+            st.subheader(f"📌 Résumé semaine {derniere_sem}")
+            df_dern = df_occ[df_occ['Semaine'] == derniere_sem]
+            cols_dern = st.columns(len(LIGNES))
+            for i, ligne in enumerate(LIGNES):
+                row = df_dern[df_dern['Atelier'] == ligne]
+                if not row.empty:
+                    taux = row.iloc[0]['Taux (%)']
+                    h_r  = row.iloc[0]['H réelles']
+                    h_t  = row.iloc[0]['H théoriques']
+                    delta_color = "normal" if taux < 95 else "inverse"
+                    cols_dern[i].metric(
+                        ligne,
+                        f"{taux:.0f}%%",
+                        f"{h_r:.1f}H / {h_t:.0f}H théo",
+                        delta_color=delta_color
+                    )
+
+
+# ═══════════════════════════════════════════════════════════════
+# ONGLET : COMPARATIF J vs J-1
+# ═══════════════════════════════════════════════════════════════
+with tab_comparatif:
+    if df.empty:
+        st.info("📤 Aucune donnée en base. Utilisez l'onglet 📥 **Import** pour charger les fiches de production.")
+    else:
+        # Trouver les 2 dernières dates distinctes en BDD (pas dans df_filt — on veut les vraies dernières)
+        dates_dispo = sorted(df['date_production'].dropna().dt.date.unique(), reverse=True)
+
+        if len(dates_dispo) < 2:
+            st.info("Il faut au moins 2 jours de données pour le comparatif.")
+        else:
+            j0 = dates_dispo[0]   # jour le plus récent
+            j1 = dates_dispo[1]   # jour précédent
+
+            st.subheader(f"📊 Comparatif {j0.strftime('%d/%m/%Y')} vs {j1.strftime('%d/%m/%Y')}")
+
+            df_j0 = df[df['date_production'].dt.date == j0]
+            df_j1 = df[df['date_production'].dt.date == j1]
+
+            # ── KPIs globaux ──
+            tot0 = df_j0['poids_tonne'].sum()
+            tot1 = df_j1['poids_tonne'].sum()
+            h0   = df_j0['duree_h'].sum()
+            h1   = df_j1['duree_h'].sum()
+            cad0 = tot0 / h0 if h0 > 0 else 0
+            cad1 = tot1 / h1 if h1 > 0 else 0
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("⚖️ Tonnage J",   f"{tot0:.1f} T",
+                      delta=f"{tot0-tot1:+.1f} T vs J-1")
+            c2.metric("⏱️ Heures J",    f"{h0:.1f}H",
+                      delta=f"{h0-h1:+.1f}H vs J-1")
+            c3.metric("⚡ Cadence J",   f"{cad0:.3f} T/h",
+                      delta=f"{cad0-cad1:+.3f} T/h vs J-1")
+
+            st.markdown("---")
+
+            # ── Tableau comparatif par atelier ──
+            rows_cmp = []
+            for ligne in LIGNES:
+                ld0 = df_j0[df_j0['ligne'] == ligne]
+                ld1 = df_j1[df_j1['ligne'] == ligne]
+                t0 = float(ld0['poids_tonne'].sum())
+                t1 = float(ld1['poids_tonne'].sum())
+                h0l = float(ld0['duree_h'].sum())
+                h1l = float(ld1['duree_h'].sum())
+                c0l = t0 / h0l if h0l > 0 else 0
+                c1l = t1 / h1l if h1l > 0 else 0
+                obj = get_objectifs_pour_date(j0, df_objectifs).get(ligne, OBJECTIFS_DEFAUT[ligne])
+                rows_cmp.append({
+                    'Atelier':          ligne,
+                    f'T {j0.strftime("%d/%m")} (T)':    round(t0, 2),
+                    f'T {j1.strftime("%d/%m")} (T)':    round(t1, 2),
+                    'Δ Tonnage':        round(t0 - t1, 2),
+                    'Δ%% Tonnage':      round((t0 - t1) / t1 * 100, 1) if t1 > 0 else None,
+                    f'Cad {j0.strftime("%d/%m")}':      round(c0l, 3),
+                    f'Cad {j1.strftime("%d/%m")}':      round(c1l, 3),
+                    'Δ Cadence':        round(c0l - c1l, 3),
+                    'Obj cadence':      obj,
+                    f'H {j0.strftime("%d/%m")}':        round(h0l, 1),
+                    f'H {j1.strftime("%d/%m")}':        round(h1l, 1),
+                })
+
+            df_cmp = pd.DataFrame(rows_cmp)
+            df_cmp['Δ%% Tonnage'] = pd.to_numeric(df_cmp['Δ%% Tonnage'], errors='coerce')
+
+            st.dataframe(
+                df_cmp,
+                use_container_width=True, hide_index=True,
+                column_config={
+                    'Δ Tonnage':    st.column_config.NumberColumn(format="%+.2f T"),
+                    'Δ%% Tonnage':  st.column_config.NumberColumn(format="%+.1f %%"),
+                    'Δ Cadence':    st.column_config.NumberColumn(format="%+.3f"),
+                }
+            )
+
+            st.markdown("---")
+
+            # ── Graphe barres groupées tonnage ──
+            col_g1, col_g2 = st.columns(2)
+
+            with col_g1:
+                labels_j = [j0.strftime('%d/%m'), j1.strftime('%d/%m')]
+                fig_t = go.Figure()
+                for ligne in LIGNES:
+                    row = df_cmp[df_cmp['Atelier'] == ligne].iloc[0]
+                    fig_t.add_trace(go.Bar(
+                        name=ligne,
+                        x=labels_j,
+                        y=[row[f'T {j0.strftime("%d/%m")} (T)'],
+                           row[f'T {j1.strftime("%d/%m")} (T)']],
+                        marker_color=COULEURS[ligne],
+                    ))
+                fig_t.update_layout(
+                    barmode='group', title='Tonnage J vs J-1 par atelier',
+                    plot_bgcolor='white', paper_bgcolor='white',
+                    height=350, legend=dict(orientation='h', y=1.1),
+                )
+                st.plotly_chart(fig_t, use_container_width=True, key="cmp_tonnage")
+
+            with col_g2:
+                fig_c = go.Figure()
+                for ligne in LIGNES:
+                    row = df_cmp[df_cmp['Atelier'] == ligne].iloc[0]
+                    fig_c.add_trace(go.Bar(
+                        name=ligne,
+                        x=labels_j,
+                        y=[row[f'Cad {j0.strftime("%d/%m")}'],
+                           row[f'Cad {j1.strftime("%d/%m")}']],
+                        marker_color=COULEURS[ligne],
+                    ))
+                    # Ligne objectif
+                    obj = row['Obj cadence']
+                    fig_c.add_shape(type='line',
+                        x0=-0.5, x1=1.5, y0=obj, y1=obj,
+                        line=dict(color=COULEURS[ligne], dash='dot', width=1))
+                fig_c.update_layout(
+                    barmode='group', title='Cadence J vs J-1 par atelier (T/h)',
+                    plot_bgcolor='white', paper_bgcolor='white',
+                    height=350, legend=dict(orientation='h', y=1.1),
+                )
+                st.plotly_chart(fig_c, use_container_width=True, key="cmp_cadence")
+
+            # ── Sélecteur dates manuels ──
+            st.markdown("---")
+            st.subheader("🔍 Comparer deux dates au choix")
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                date_a = st.selectbox("Date A", dates_dispo,
+                    format_func=lambda d: d.strftime('%d/%m/%Y'),
+                    index=0, key="cmp_date_a")
+            with col_d2:
+                date_b = st.selectbox("Date B", dates_dispo,
+                    format_func=lambda d: d.strftime('%d/%m/%Y'),
+                    index=min(1, len(dates_dispo)-1), key="cmp_date_b")
+
+            if date_a != date_b:
+                df_a = df[df['date_production'].dt.date == date_a]
+                df_b = df[df['date_production'].dt.date == date_b]
+                rows_custom = []
+                for ligne in LIGNES:
+                    la = df_a[df_a['ligne'] == ligne]
+                    lb = df_b[df_b['ligne'] == ligne]
+                    ta = float(la['poids_tonne'].sum())
+                    tb = float(lb['poids_tonne'].sum())
+                    ha = float(la['duree_h'].sum())
+                    hb = float(lb['duree_h'].sum())
+                    ca = ta / ha if ha > 0 else 0
+                    cb = tb / hb if hb > 0 else 0
+                    rows_custom.append({
+                        'Atelier': ligne,
+                        f'T {date_a.strftime("%d/%m")}': round(ta, 2),
+                        f'T {date_b.strftime("%d/%m")}': round(tb, 2),
+                        'Δ Tonnage': round(ta - tb, 2),
+                        f'Cad {date_a.strftime("%d/%m")}': round(ca, 3),
+                        f'Cad {date_b.strftime("%d/%m")}': round(cb, 3),
+                        'Δ Cadence': round(ca - cb, 3),
+                    })
+                st.dataframe(
+                    pd.DataFrame(rows_custom),
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        'Δ Tonnage':  st.column_config.NumberColumn(format="%+.2f T"),
+                        'Δ Cadence':  st.column_config.NumberColumn(format="%+.3f"),
+                    }
+                )
+
 show_footer()
