@@ -171,17 +171,16 @@ def normaliser_site(valeur_brute: str) -> str:
 # LOGIQUE DATE / STATUT
 # ============================================================
 
-def parser_date_statut(val_date, today: date):
+def parser_date_statut(val_date, today: date, val_jour=None):
     """
     Retourne (date_transport, semaine_text, statut, annee_semaine).
+    val_jour : contenu de la colonne JOUR, utilisé comme fallback quand DATE est vide.
+    Exemples : JOUR="S12" -> previsionnel, JOUR="VENDREDI" sans date -> conditionnel
     """
-    # Cas 1 : vraie date
+    # Cas 1 : vraie date dans la colonne DATE
     if isinstance(val_date, (datetime, pd.Timestamp)):
         d = val_date.date() if hasattr(val_date, 'date') else val_date
-        if d <= today:
-            statut = "realise"
-        else:
-            statut = "previsionnel"
+        statut = "realise" if d <= today else "previsionnel"
         iso = d.isocalendar()
         annee_sem = f"{iso[0]}-S{iso[1]:02d}"
         return d, None, statut, annee_sem
@@ -193,20 +192,28 @@ def parser_date_statut(val_date, today: date):
         annee_sem = f"{iso[0]}-S{iso[1]:02d}"
         return d, None, statut, annee_sem
 
-    # Cas 2 : texte type "S11", "S12", "S 11"
+    # Cas 2 : DATE est un texte "S11", "S12", "S 11"
     if isinstance(val_date, str):
         match = re.match(r'^S\s*(\d{1,2})$', val_date.strip().upper())
         if match:
             num_sem = int(match.group(1))
             annee = today.year
-            # Si num_sem < semaine courante → probablement année suivante
-            # (cas rare en pratique — on laisse l'année courante)
             sem_text = val_date.strip().upper()
             annee_sem = f"{annee}-S{num_sem:02d}"
             return None, sem_text, "previsionnel", annee_sem
-
-        # Cas 3 : autre texte
         return None, str(val_date), "conditionnel", None
+
+    # Cas 3 : DATE vide -> fallback sur la colonne JOUR
+    # JOUR="S12" -> previsionnel, JOUR="VENDREDI" sans date -> conditionnel
+    if val_jour:
+        val_jour_clean = str(val_jour).strip().upper()
+        match_jour = re.match(r'^S\s*(\d{1,2})$', val_jour_clean)
+        if match_jour:
+            num_sem = int(match_jour.group(1))
+            annee = today.year
+            sem_text = f"S{num_sem:02d}"
+            annee_sem = f"{annee}-S{num_sem:02d}"
+            return None, sem_text, "previsionnel", annee_sem
 
     return None, None, "conditionnel", None
 
@@ -254,7 +261,8 @@ def lire_onglet(df_raw: pd.DataFrame, today: date) -> pd.DataFrame:
     rows = []
     for _, row in df.iterrows():
         val_date = row.get('date_brute', None)
-        date_t, sem_text, statut, annee_sem = parser_date_statut(val_date, today)
+        val_jour = row.get('jour', None)
+        date_t, sem_text, statut, annee_sem = parser_date_statut(val_date, today, val_jour)
 
         site_brut = str(row.get('site_livraison_brut', '') or '').strip()
         site_norm = normaliser_site(site_brut)
@@ -680,29 +688,6 @@ def graphe_hebdo(df: pd.DataFrame, titre: str):
     st.plotly_chart(fig, use_container_width=True)
 
 
-def graphe_chauffeur(df: pd.DataFrame):
-    """Répartition par chauffeur."""
-    if df.empty or 'chauffeur' not in df.columns:
-        return
-
-    grp = df.groupby('chauffeur').size().reset_index(name='nb_voyages')
-    grp = grp.sort_values('nb_voyages', ascending=True)
-
-    fig = px.bar(
-        grp, x='nb_voyages', y='chauffeur', orientation='h',
-        title="Voyages par chauffeur",
-        labels={'nb_voyages': 'Nb voyages', 'chauffeur': 'Chauffeur'},
-        color_discrete_sequence=['#AFCA0A'],
-        text='nb_voyages',
-    )
-    fig.update_traces(textposition='outside')
-    fig.update_layout(
-        plot_bgcolor='white', paper_bgcolor='white',
-        height=max(250, len(grp) * 40 + 80),
-        margin=dict(t=40, b=20)
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
 
 def graphe_site_arrivee(df: pd.DataFrame):
     """Répartition par site de livraison normalisé."""
@@ -937,13 +922,11 @@ with tab_realise:
             st.markdown(f"### {la}")
             kpis_row(df_A, la)
             graphe_hebdo(df_A, f"Voyages / semaine — {la}")
-            graphe_chauffeur(df_A)
             graphe_site_arrivee(df_A)
         with col_B:
             st.markdown(f"### {lb}")
             kpis_row(df_B, lb)
             graphe_hebdo(df_B, f"Voyages / semaine — {lb}")
-            graphe_chauffeur(df_B)
             graphe_site_arrivee(df_B)
 
     else:
@@ -971,11 +954,7 @@ with tab_realise:
         kpis_row(df_real, f"{date_debut} → {date_fin}")
         st.markdown("---")
 
-        col_g1, col_g2 = st.columns([3, 2])
-        with col_g1:
-            graphe_hebdo(df_real, "📈 Évolution hebdomadaire des voyages")
-        with col_g2:
-            graphe_chauffeur(df_real)
+        graphe_hebdo(df_real, "📈 Évolution hebdomadaire des voyages")
 
         st.markdown("---")
         st.subheader("🏭 Analyse par site d'arrivée")
@@ -1103,11 +1082,7 @@ with tab_previ:
 
         # Graphe répartition site arrivée pour les prévis
         st.markdown("---")
-        col_p1, col_p2 = st.columns(2)
-        with col_p1:
-            graphe_site_arrivee(df_previ_f)
-        with col_p2:
-            graphe_chauffeur(df_previ_f)
+        graphe_site_arrivee(df_previ_f)
 
 # ============================================================
 # FOOTER
