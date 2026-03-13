@@ -123,6 +123,7 @@ def upsert_interventions(df: pd.DataFrame, username: str) -> tuple:
         cur = conn.cursor()
         for _, r in df.iterrows():
             try:
+                cur.execute("SAVEPOINT sp_maint")
                 cur.execute("""
                     INSERT INTO maintenance_interventions
                         (date_intervention, intervenants, machine, type_panne,
@@ -159,17 +160,18 @@ def upsert_interventions(df: pd.DataFrame, username: str) -> tuple:
                     username,
                 ))
                 res = cur.fetchone()
+                cur.execute("RELEASE SAVEPOINT sp_maint")
                 if res and res['is_insert']:
                     inserted += 1
                 else:
                     updated += 1
             except Exception:
                 errors += 1
-                conn.rollback()
+                cur.execute("ROLLBACK TO SAVEPOINT sp_maint")
         conn.commit()
         cur.close()
         conn.close()
-    except Exception as e:
+    except Exception:
         conn.rollback()
         conn.close()
         return inserted, updated, errors + 1
@@ -183,14 +185,20 @@ def upsert_interventions(df: pd.DataFrame, username: str) -> tuple:
 def load_interventions() -> pd.DataFrame:
     try:
         conn = get_connection()
-        df = pd.read_sql("""
+        cur = conn.cursor()
+        cur.execute("""
             SELECT id, date_intervention, intervenants, machine, type_panne,
                    analyse_panne, heure_debut, heure_fin, temps_arret_min,
                    operations, remarques, pieces_utilisees, etat, imported_at
             FROM maintenance_interventions
             ORDER BY date_intervention DESC, machine
-        """, conn)
+        """)
+        rows = cur.fetchall()
+        cur.close()
         conn.close()
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame([dict(r) for r in rows])
         if not df.empty:
             df['date_intervention'] = pd.to_datetime(df['date_intervention'], errors='coerce').dt.date
             df['temps_arret_min']   = pd.to_numeric(df['temps_arret_min'], errors='coerce').fillna(0).astype(int)
