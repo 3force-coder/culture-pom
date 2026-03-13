@@ -362,6 +362,7 @@ def upsert_production(df_import: pd.DataFrame, user: str) -> tuple:
         return 0, 0, 1
     cur  = conn.cursor()
     inserted = updated = errors = 0
+    last_error = None
 
     for _, row in df_import.iterrows():
         try:
@@ -392,6 +393,7 @@ def upsert_production(df_import: pd.DataFrame, user: str) -> tuple:
                     annee_semaine = EXCLUDED.annee_semaine,
                     jour_label    = EXCLUDED.jour_label,
                     imported_by   = EXCLUDED.imported_by
+                RETURNING (xmax = 0) AS is_insert
             """, (
                 row.get('date_production'),
                 str(row.get('ligne', '')),
@@ -414,20 +416,22 @@ def upsert_production(df_import: pd.DataFrame, user: str) -> tuple:
                 str(row.get('jour_label', '')),
                 user,
             ))
+            res = cur.fetchone()
             cur.execute("RELEASE SAVEPOINT sp_prod")
-            if cur.rowcount == 1:
+            if res and res['is_insert']:
                 inserted += 1
             else:
                 updated += 1
-        except Exception:
+        except Exception as e:
             errors += 1
+            last_error = str(e)
             cur.execute("ROLLBACK TO SAVEPOINT sp_prod")
             continue
 
     conn.commit()
     cur.close()
     conn.close()
-    return inserted, updated, errors
+    return inserted, updated, errors, last_error
 
 # ── FILTRAGE PRINCIPAL ────────────────────────────────────────
 df_filt = filter_df(df, DATE_DEB, DATE_FIN)
@@ -500,14 +504,21 @@ with tab_import:
             if st.button("⬆️ Importer en base de données", type="primary", key="prod_do_import"):
                 user = st.session_state.get('username', 'inconnu')
                 with st.spinner("Import en cours…"):
-                    ins, upd, err = upsert_production(df_preview, user)
-                if err == 0:
-                    st.success(f"✅ Import terminé — {ins} ajoutées, {upd} mises à jour, 0 erreur")
+                    ins, upd, err, last_err = upsert_production(df_preview, user)
+                total = ins + upd
+                if total > 0 and err == 0:
+                    st.success(f"✅ Import terminé — {ins} insérées, {upd} mises à jour")
                     st.cache_data.clear()
                     st.session_state.pop('prod_file_id', None)
                     st.rerun()
+                elif total > 0:
+                    st.warning(f"⚠️ Import partiel — {ins} insérées, {upd} mises à jour, {err} erreurs")
+                    if last_err:
+                        st.code(last_err)
                 else:
-                    st.warning(f"⚠️ Import partiel — {ins} ajoutées, {upd} mises à jour, {err} erreurs")
+                    st.error(f"❌ Aucune ligne importée — {err} erreurs")
+                    if last_err:
+                        st.code(last_err)
     else:
         st.info("Glissez-déposez le fichier Excel pour commencer.")
 
