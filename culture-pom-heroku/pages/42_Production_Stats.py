@@ -338,17 +338,164 @@ def color_ro(val):
     if pd.isna(val): return ''
     return f'color: {"#AFCA0A" if val >= 0 else "#e53935"}; font-weight:bold'
 
+# ── IMPORT BDD (upsert) ──────────────────────────────────────
+def upsert_production(df_import: pd.DataFrame, user: str) -> tuple:
+    """
+    Upsert des fiches de production en BDD.
+    Clé unique : (date_production, ligne, heure_debut, type_prod, variete)
+    Retourne (nb_inserted, nb_updated, nb_errors)
+    """
+    conn = get_connection()
+    cur  = conn.cursor()
+    inserted = updated = errors = 0
+
+    for _, row in df_import.iterrows():
+        try:
+            cur.execute("""
+                INSERT INTO production_fiches
+                    (date_production, ligne, heure_debut, heure_fin,
+                     duree_h, poids_kg, poids_tonne, cadence,
+                     marque, type_prod, poids_format, variete,
+                     operateur, equipe, heure_num,
+                     semaine, annee, annee_semaine, jour_label,
+                     imported_by)
+                VALUES (%s,%s,%s,%s, %s,%s,%s,%s, %s,%s,%s,%s, %s,%s,%s, %s,%s,%s,%s, %s)
+                ON CONFLICT (date_production, ligne, heure_debut, type_prod, variete)
+                DO UPDATE SET
+                    heure_fin     = EXCLUDED.heure_fin,
+                    duree_h       = EXCLUDED.duree_h,
+                    poids_kg      = EXCLUDED.poids_kg,
+                    poids_tonne   = EXCLUDED.poids_tonne,
+                    cadence       = EXCLUDED.cadence,
+                    marque        = EXCLUDED.marque,
+                    poids_format  = EXCLUDED.poids_format,
+                    operateur     = EXCLUDED.operateur,
+                    equipe        = EXCLUDED.equipe,
+                    heure_num     = EXCLUDED.heure_num,
+                    semaine       = EXCLUDED.semaine,
+                    annee         = EXCLUDED.annee,
+                    annee_semaine = EXCLUDED.annee_semaine,
+                    jour_label    = EXCLUDED.jour_label,
+                    imported_by   = EXCLUDED.imported_by
+            """, (
+                row.get('date_production'),
+                str(row.get('ligne', '')),
+                row.get('heure_debut'),
+                row.get('heure_fin'),
+                float(row['duree_h'])      if pd.notna(row.get('duree_h'))      else None,
+                float(row['poids_kg'])     if pd.notna(row.get('poids_kg'))     else None,
+                float(row['poids_tonne'])  if pd.notna(row.get('poids_tonne'))  else None,
+                float(row['cadence'])      if pd.notna(row.get('cadence'))      else None,
+                str(row.get('marque', '')),
+                str(row.get('type_prod', '')),
+                float(row['poids_format']) if pd.notna(row.get('poids_format')) else None,
+                str(row.get('variete', '')),
+                str(row.get('operateur', '')),
+                str(row.get('equipe', '')),
+                int(row['heure_num'])      if pd.notna(row.get('heure_num'))    else None,
+                int(row['semaine'])        if pd.notna(row.get('semaine'))      else None,
+                int(row['annee'])          if pd.notna(row.get('annee'))        else None,
+                str(row.get('annee_semaine', '')),
+                str(row.get('jour_label', '')),
+                user,
+            ))
+            if cur.rowcount == 1:
+                inserted += 1
+            else:
+                updated += 1
+        except Exception:
+            errors += 1
+            conn.rollback()
+            continue
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    return inserted, updated, errors
+
 # ── FILTRAGE PRINCIPAL ────────────────────────────────────────
 df_filt = filter_df(df, DATE_DEB, DATE_FIN)
 
 # ── ONGLETS ───────────────────────────────────────────────────
-tab_vue, tab_hebdo, tab_cadences, tab_journalier, tab_recettes = st.tabs([
+tab_import, tab_vue, tab_hebdo, tab_cadences, tab_journalier, tab_recettes = st.tabs([
+    "📥 Import",
     "📊 Vue globale",
     "📈 Évolution hebdo",
     "⚡ Cadences R/O",
     "📅 Journalier S10",
     "🥔 Mix recettes",
 ])
+
+# ═══════════════════════════════════════════════════════════════
+# ONGLET IMPORT
+# ═══════════════════════════════════════════════════════════════
+with tab_import:
+    st.subheader("📥 Import fichier Excel production")
+    st.caption("Fichier issu de l'onglet **Saisie** du classeur de fiches de production.")
+
+    file_import = st.file_uploader(
+        "Sélectionner le fichier Excel",
+        type=['xlsx'], key="prod_import_file"
+    )
+
+    if file_import:
+        df_preview = load_from_excel(file_import)
+        df_preview = df_preview.dropna(subset=['date_production','ligne','poids_tonne'])
+
+        # ── Aperçu avant import ──
+        st.markdown(f"**{len(df_preview)} lignes détectées** sur {df_preview['annee_semaine'].nunique()} semaine(s)")
+
+        sem_list = sorted(df_preview['annee_semaine'].dropna().unique())
+        col_k1, col_k2, col_k3, col_k4 = st.columns(4)
+        col_k1.metric("📅 Semaines", len(sem_list))
+        col_k2.metric("🏭 Lignes", df_preview['ligne'].nunique())
+        col_k3.metric("⚖️ Tonnage total", f"{df_preview['poids_tonne'].sum():.1f} T")
+        col_k4.metric("📋 Fiches", len(df_preview))
+
+        st.markdown("**Semaines dans le fichier :** " + " | ".join(sem_list))
+
+        with st.expander("🔍 Aperçu des données (10 premières lignes)"):
+            st.dataframe(
+                df_preview[['date_production','ligne','type_prod','variete',
+                             'poids_tonne','duree_h','cadence','marque','equipe']]
+                .head(10),
+                use_container_width=True, hide_index=True
+            )
+
+        st.markdown("---")
+        st.info(
+            "**Mode upsert** : les lignes existantes (même date + ligne + heure + type + variété) "
+            "sont **mises à jour**. Les nouvelles lignes sont **ajoutées**. "
+            "Aucune suppression de l'historique."
+        )
+
+        if st.button("⬆️ Importer en base de données", type="primary", key="prod_do_import"):
+            user = st.session_state.get('username', 'inconnu')
+            with st.spinner("Import en cours..."):
+                ins, upd, err = upsert_production(df_preview, user)
+            if err == 0:
+                st.success(f"✅ Import terminé — {ins} ajoutées, {upd} mises à jour, 0 erreur")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.warning(f"⚠️ Import partiel — {ins} ajoutées, {upd} mises à jour, {err} erreurs")
+    else:
+        st.info("Glissez-déposez le fichier Excel pour commencer.")
+
+    # ── Résumé de ce qui est déjà en BDD ──
+    st.markdown("---")
+    st.subheader("📊 Données actuellement en base")
+    if not df.empty:
+        bdd_sem = sorted(df['annee_semaine'].dropna().unique())
+        col_b1, col_b2, col_b3 = st.columns(3)
+        col_b1.metric("📅 Semaines en base", len(bdd_sem))
+        col_b2.metric("📋 Fiches totales",   len(df))
+        col_b3.metric("⚖️ Tonnage total",    f"{df['poids_tonne'].sum():.1f} T")
+        if bdd_sem:
+            st.markdown("**Semaines :** " + " | ".join(bdd_sem))
+    else:
+        st.info("Base vide — aucune fiche importée.")
+
 
 # ═══════════════════════════════════════════════════════════════
 # ONGLET 1 : VUE GLOBALE
