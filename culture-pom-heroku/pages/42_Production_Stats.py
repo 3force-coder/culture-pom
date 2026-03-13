@@ -281,11 +281,14 @@ DATE_FIN = date_fin
 def filter_df(df, d_from, d_to):
     if df.empty:
         return df
-    # Forcer datetime au cas où la colonne serait encore en type object
+    # Forcer datetime64 si nécessaire
     if not pd.api.types.is_datetime64_any_dtype(df['date_production']):
         df = df.copy()
         df['date_production'] = pd.to_datetime(df['date_production'], errors='coerce')
-    mask = (df['date_production'].dt.date >= d_from) & (df['date_production'].dt.date <= d_to)
+    # Comparer en Timestamp pour éviter TypeError datetime64 vs date
+    ts_from = pd.Timestamp(d_from)
+    ts_to   = pd.Timestamp(d_to) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    mask = (df['date_production'] >= ts_from) & (df['date_production'] <= ts_to)
     return df[mask].copy()
 
 def calc_semaine(df, semaine_col='semaine'):
