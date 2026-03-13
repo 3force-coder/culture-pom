@@ -166,10 +166,6 @@ df_objectifs = load_objectifs_historique()
 OBJECTIFS = get_objectifs_courants(df_objectifs)
 
 with st.sidebar:
-    st.markdown("### 📥 Source données")
-    uploaded = st.file_uploader("Fichier Excel production", type=['xlsx'], key="prod_upload")
-    st.markdown("---")
-
     # ── Objectifs cadences actuels ──
     st.markdown("### 🎯 Objectifs cadences (T/h)")
     for ligne in LIGNES:
@@ -212,19 +208,9 @@ with st.sidebar:
                     use_container_width=True, hide_index=True
                 )
 
-if uploaded:
-    df = load_from_excel(uploaded)
-else:
-    df = load_data()
-    if df.empty:
-        st.info("📤 Aucune donnée en base. Importez un fichier Excel via la barre latérale pour commencer.")
-        show_footer()
-        st.stop()
-
-if df.empty:
-    st.warning("Aucune donnée disponible.")
-    show_footer()
-    st.stop()
+# Chargement BDD — si vide, les onglets d'analyse afficheront un message
+# L'import se fait dans l'onglet 📥 Import
+df = load_data()
 
 # ── FILTRES GLOBAUX ───────────────────────────────────────────
 def campagne_dates(year):
@@ -439,58 +425,72 @@ with tab_import:
     )
 
     if file_import:
-        df_preview = load_from_excel(file_import)
-        df_preview = df_preview.dropna(subset=['date_production','ligne','poids_tonne'])
+        # ── Lecture unique avec openpyxl read_only + cache session_state ──
+        file_id = f"{file_import.name}_{file_import.size}"
+        if st.session_state.get('prod_file_id') != file_id:
+            with st.spinner("Lecture du fichier en cours…"):
+                try:
+                    file_bytes = file_import.read()
+                    import io as _io
+                    df_cache = load_from_excel(_io.BytesIO(file_bytes))
+                    df_cache = df_cache.dropna(subset=['date_production', 'ligne', 'poids_tonne'])
+                    st.session_state['prod_df_cache'] = df_cache
+                    st.session_state['prod_file_id']  = file_id
+                except Exception as e:
+                    st.error(f"Erreur lecture fichier : {e}")
+                    st.stop()
 
-        # ── Aperçu avant import ──
-        st.markdown(f"**{len(df_preview)} lignes détectées** sur {df_preview['annee_semaine'].nunique()} semaine(s)")
+        df_preview = st.session_state.get('prod_df_cache', pd.DataFrame())
 
-        sem_list = sorted(df_preview['annee_semaine'].dropna().unique())
-        col_k1, col_k2, col_k3, col_k4 = st.columns(4)
-        col_k1.metric("📅 Semaines", len(sem_list))
-        col_k2.metric("🏭 Lignes", df_preview['ligne'].nunique())
-        col_k3.metric("⚖️ Tonnage total", f"{df_preview['poids_tonne'].sum():.1f} T")
-        col_k4.metric("📋 Fiches", len(df_preview))
+        if not df_preview.empty:
+            sem_list = sorted(df_preview['annee_semaine'].dropna().unique())
+            col_k1, col_k2, col_k3, col_k4 = st.columns(4)
+            col_k1.metric("📅 Semaines", len(sem_list))
+            col_k2.metric("🏭 Lignes", df_preview['ligne'].nunique())
+            col_k3.metric("⚖️ Tonnage total", f"{df_preview['poids_tonne'].sum():.1f} T")
+            col_k4.metric("📋 Fiches", len(df_preview))
 
-        st.markdown("**Semaines dans le fichier :** " + " | ".join(sem_list))
+            st.markdown("**Semaines dans le fichier :** " + " | ".join(sem_list))
 
-        with st.expander("🔍 Aperçu des données (10 premières lignes)"):
-            st.dataframe(
-                df_preview[['date_production','ligne','type_prod','variete',
-                             'poids_tonne','duree_h','cadence','marque','equipe']]
-                .head(10),
-                use_container_width=True, hide_index=True
+            with st.expander("🔍 Aperçu des données (10 premières lignes)"):
+                st.dataframe(
+                    df_preview[['date_production','ligne','type_prod','variete',
+                                 'poids_tonne','duree_h','cadence','marque','equipe']]
+                    .head(10),
+                    use_container_width=True, hide_index=True
+                )
+
+            st.markdown("---")
+            st.info(
+                "**Mode upsert** : les lignes existantes (même date + ligne + heure + type + variété) "
+                "sont **mises à jour**. Les nouvelles lignes sont **ajoutées**. "
+                "Aucune suppression de l'historique."
             )
 
-        st.markdown("---")
-        st.info(
-            "**Mode upsert** : les lignes existantes (même date + ligne + heure + type + variété) "
-            "sont **mises à jour**. Les nouvelles lignes sont **ajoutées**. "
-            "Aucune suppression de l'historique."
-        )
-
-        if st.button("⬆️ Importer en base de données", type="primary", key="prod_do_import"):
-            user = st.session_state.get('username', 'inconnu')
-            with st.spinner("Import en cours..."):
-                ins, upd, err = upsert_production(df_preview, user)
-            if err == 0:
-                st.success(f"✅ Import terminé — {ins} ajoutées, {upd} mises à jour, 0 erreur")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.warning(f"⚠️ Import partiel — {ins} ajoutées, {upd} mises à jour, {err} erreurs")
+            if st.button("⬆️ Importer en base de données", type="primary", key="prod_do_import"):
+                user = st.session_state.get('username', 'inconnu')
+                with st.spinner("Import en cours…"):
+                    ins, upd, err = upsert_production(df_preview, user)
+                if err == 0:
+                    st.success(f"✅ Import terminé — {ins} ajoutées, {upd} mises à jour, 0 erreur")
+                    st.cache_data.clear()
+                    st.session_state.pop('prod_file_id', None)
+                    st.rerun()
+                else:
+                    st.warning(f"⚠️ Import partiel — {ins} ajoutées, {upd} mises à jour, {err} erreurs")
     else:
         st.info("Glissez-déposez le fichier Excel pour commencer.")
 
     # ── Résumé de ce qui est déjà en BDD ──
     st.markdown("---")
     st.subheader("📊 Données actuellement en base")
-    if not df.empty:
-        bdd_sem = sorted(df['annee_semaine'].dropna().unique())
+    df_bdd_info = load_data()
+    if not df_bdd_info.empty:
+        bdd_sem = sorted(df_bdd_info['annee_semaine'].dropna().unique())
         col_b1, col_b2, col_b3 = st.columns(3)
         col_b1.metric("📅 Semaines en base", len(bdd_sem))
-        col_b2.metric("📋 Fiches totales",   len(df))
-        col_b3.metric("⚖️ Tonnage total",    f"{df['poids_tonne'].sum():.1f} T")
+        col_b2.metric("📋 Fiches totales",   len(df_bdd_info))
+        col_b3.metric("⚖️ Tonnage total",    f"{df_bdd_info['poids_tonne'].sum():.1f} T")
         if bdd_sem:
             st.markdown("**Semaines :** " + " | ".join(bdd_sem))
     else:
@@ -501,616 +501,631 @@ with tab_import:
 # ONGLET 1 : VUE GLOBALE
 # ═══════════════════════════════════════════════════════════════
 with tab_vue:
+    if df.empty:
+        st.info("📤 Aucune donnée en base. Utilisez l'onglet 📥 **Import** pour charger les fiches de production.")
+    else:
 
-    if COMP_DATES:
-        la, d1a, d1b, lb, d2a, d2b = COMP_DATES
-        st.info(f"🔀 Comparaison : **{la}** vs **{lb}**")
-        dfA = filter_df(df, d1a, d1b)
-        dfB = filter_df(df, d2a, d2b)
+        if COMP_DATES:
+            la, d1a, d1b, lb, d2a, d2b = COMP_DATES
+            st.info(f"🔀 Comparaison : **{la}** vs **{lb}**")
+            dfA = filter_df(df, d1a, d1b)
+            dfB = filter_df(df, d2a, d2b)
 
-        def render_vue_globale(d, label):
-            st.markdown(f"### {label}")
-            tot = d['poids_tonne'].sum()
-            h_tot = d['duree_h'].sum()
+            def render_vue_globale(d, label):
+                st.markdown(f"### {label}")
+                tot = d['poids_tonne'].sum()
+                h_tot = d['duree_h'].sum()
+                cad_moy = tot/h_tot if h_tot > 0 else 0
+                nb_jours = d['date_production'].dt.date.nunique()
+                c1,c2,c3,c4 = st.columns(4)
+                c1.metric("🏭 Tonnage total", f"{tot:.1f} T")
+                c2.metric("⏱ Heures prod.", f"{h_tot:.1f} h")
+                c3.metric("⚡ Cadence moy.", f"{cad_moy:.2f} T/h")
+                c4.metric("📅 Jours", nb_jours)
+                # Par ligne
+                rows = []
+                for ligne in LIGNES:
+                    ld = d[d['ligne'] == ligne]
+                    t = ld['poids_tonne'].sum()
+                    h = ld['duree_h'].sum()
+                    cad = t/h if h > 0 else 0
+                    obj = OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne])
+                    ro  = (cad - obj)/obj*100 if obj > 0 and cad > 0 else None
+                    rows.append({'Ligne': ligne, 'Tonnage': round(t,1),
+                                 'Heures': round(h,1), 'Cadence': round(cad,2),
+                                 'Obj.': obj, 'R/O %%': round(ro,1) if ro is not None else None})
+                st_df = pd.DataFrame(rows)
+                st.dataframe(
+                    st_df.style.applymap(color_ro, subset=['R/O %%']),
+                    use_container_width=True, hide_index=True
+                )
+
+            colA, colB = st.columns(2)
+            with colA: render_vue_globale(dfA, la)
+            with colB: render_vue_globale(dfB, lb)
+
+        else:
+            # ── KPIs globaux ──
+            tot = df_filt['poids_tonne'].sum()
+            h_tot = df_filt['duree_h'].sum()
             cad_moy = tot/h_tot if h_tot > 0 else 0
-            nb_jours = d['date_production'].dt.date.nunique()
-            c1,c2,c3,c4 = st.columns(4)
-            c1.metric("🏭 Tonnage total", f"{tot:.1f} T")
-            c2.metric("⏱ Heures prod.", f"{h_tot:.1f} h")
-            c3.metric("⚡ Cadence moy.", f"{cad_moy:.2f} T/h")
-            c4.metric("📅 Jours", nb_jours)
-            # Par ligne
-            rows = []
-            for ligne in LIGNES:
-                ld = d[d['ligne'] == ligne]
-                t = ld['poids_tonne'].sum()
-                h = ld['duree_h'].sum()
+            nb_sem = df_filt['annee_semaine'].nunique()
+            nb_jours = df_filt['date_production'].dt.date.nunique()
+
+            c1,c2,c3,c4,c5 = st.columns(5)
+            c1.metric("🏭 Tonnage total",   f"{tot:.1f} T")
+            c2.metric("📅 Semaines",         nb_sem)
+            c3.metric("🗓 Jours prod.",       nb_jours)
+            c4.metric("⏱ Heures totales",   f"{h_tot:.0f} h")
+            c5.metric("⚡ Cadence moyenne",  f"{cad_moy:.2f} T/h")
+
+            st.markdown("---")
+
+            # ── KPIs par ligne ──
+            st.subheader("Vue par atelier")
+            cols = st.columns(4)
+            for i, ligne in enumerate(LIGNES):
+                ld = df_filt[df_filt['ligne'] == ligne]
+                t  = ld['poids_tonne'].sum()
+                h  = ld['duree_h'].sum()
                 cad = t/h if h > 0 else 0
                 obj = OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne])
                 ro  = (cad - obj)/obj*100 if obj > 0 and cad > 0 else None
-                rows.append({'Ligne': ligne, 'Tonnage': round(t,1),
-                             'Heures': round(h,1), 'Cadence': round(cad,2),
-                             'Obj.': obj, 'R/O %%': round(ro,1) if ro is not None else None})
-            st_df = pd.DataFrame(rows)
-            st.dataframe(
-                st_df.style.applymap(color_ro, subset=['R/O %%']),
-                use_container_width=True, hide_index=True
-            )
+                pct_tot = t/tot*100 if tot > 0 else 0
+                with cols[i]:
+                    sign = "+" if (ro or 0) >= 0 else ""
+                    delta_color = "normal" if (ro or 0) >= 0 else "inverse"
+                    st.metric(f"**{ligne}**",
+                              f"{t:.1f} T",
+                              delta=f"{sign}{ro:.1f}%% R/O" if ro is not None else None,
+                              delta_color=delta_color)
+                    st.caption(f"⚡ {cad:.2f} T/h (obj {obj}) | ⏱ {h:.0f}h | {pct_tot:.1f}%% du total")
 
-        colA, colB = st.columns(2)
-        with colA: render_vue_globale(dfA, la)
-        with colB: render_vue_globale(dfB, lb)
+            st.markdown("---")
 
-    else:
-        # ── KPIs globaux ──
-        tot = df_filt['poids_tonne'].sum()
-        h_tot = df_filt['duree_h'].sum()
-        cad_moy = tot/h_tot if h_tot > 0 else 0
-        nb_sem = df_filt['annee_semaine'].nunique()
-        nb_jours = df_filt['date_production'].dt.date.nunique()
+            # ── Graphe camembert tonnage par ligne ──
+            col_g1, col_g2 = st.columns(2)
 
-        c1,c2,c3,c4,c5 = st.columns(5)
-        c1.metric("🏭 Tonnage total",   f"{tot:.1f} T")
-        c2.metric("📅 Semaines",         nb_sem)
-        c3.metric("🗓 Jours prod.",       nb_jours)
-        c4.metric("⏱ Heures totales",   f"{h_tot:.0f} h")
-        c5.metric("⚡ Cadence moyenne",  f"{cad_moy:.2f} T/h")
+            with col_g1:
+                pie_data = []
+                for ligne in LIGNES:
+                    t = df_filt[df_filt['ligne'] == ligne]['poids_tonne'].sum()
+                    if t > 0:
+                        pie_data.append({'Ligne': ligne, 'Tonnage': t})
+                if pie_data:
+                    fig_pie = px.pie(pd.DataFrame(pie_data), names='Ligne', values='Tonnage',
+                                     title="Répartition tonnage par atelier",
+                                     color='Ligne',
+                                     color_discrete_map=COULEURS,
+                                     hole=0.4)
+                    fig_pie.update_layout(height=340, margin=dict(t=50,b=10),
+                                          paper_bgcolor='white')
+                    st.plotly_chart(fig_pie, use_container_width=True)
 
-        st.markdown("---")
+            with col_g2:
+                # Bar R/O par ligne
+                ro_data = []
+                for ligne in LIGNES:
+                    ld = df_filt[df_filt['ligne'] == ligne]
+                    t = ld['poids_tonne'].sum()
+                    h = ld['duree_h'].sum()
+                    cad = t/h if h > 0 else 0
+                    obj = OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne])
+                    ro  = (cad - obj)/obj*100 if obj > 0 and cad > 0 else 0
+                    ro_data.append({'Ligne': ligne, 'R/O (%%)': ro})
+                df_ro = pd.DataFrame(ro_data)
+                fig_ro = px.bar(df_ro, x='Ligne', y='R/O (%%)',
+                                title="R/O Cadence par atelier (%%)",
+                                color='R/O (%%)',
+                                color_continuous_scale=['#e53935','#f5f5f5','#AFCA0A'],
+                                color_continuous_midpoint=0,
+                                text='R/O (%%)')
+                fig_ro.update_traces(texttemplate='%%{text:.1f}%%', textposition='outside')
+                fig_ro.add_hline(y=0, line_dash='dash', line_color='#7A7A7A')
+                fig_ro.update_layout(height=340, margin=dict(t=50,b=10),
+                                     paper_bgcolor='white', plot_bgcolor='white',
+                                     coloraxis_showscale=False)
+                st.plotly_chart(fig_ro, use_container_width=True)
 
-        # ── KPIs par ligne ──
-        st.subheader("Vue par atelier")
-        cols = st.columns(4)
-        for i, ligne in enumerate(LIGNES):
-            ld = df_filt[df_filt['ligne'] == ligne]
-            t  = ld['poids_tonne'].sum()
-            h  = ld['duree_h'].sum()
-            cad = t/h if h > 0 else 0
-            obj = OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne])
-            ro  = (cad - obj)/obj*100 if obj > 0 and cad > 0 else None
-            pct_tot = t/tot*100 if tot > 0 else 0
-            with cols[i]:
-                sign = "+" if (ro or 0) >= 0 else ""
-                delta_color = "normal" if (ro or 0) >= 0 else "inverse"
-                st.metric(f"**{ligne}**",
-                          f"{t:.1f} T",
-                          delta=f"{sign}{ro:.1f}%% R/O" if ro is not None else None,
-                          delta_color=delta_color)
-                st.caption(f"⚡ {cad:.2f} T/h (obj {obj}) | ⏱ {h:.0f}h | {pct_tot:.1f}%% du total")
-
-        st.markdown("---")
-
-        # ── Graphe camembert tonnage par ligne ──
-        col_g1, col_g2 = st.columns(2)
-
-        with col_g1:
-            pie_data = []
-            for ligne in LIGNES:
-                t = df_filt[df_filt['ligne'] == ligne]['poids_tonne'].sum()
-                if t > 0:
-                    pie_data.append({'Ligne': ligne, 'Tonnage': t})
-            if pie_data:
-                fig_pie = px.pie(pd.DataFrame(pie_data), names='Ligne', values='Tonnage',
-                                 title="Répartition tonnage par atelier",
-                                 color='Ligne',
-                                 color_discrete_map=COULEURS,
-                                 hole=0.4)
-                fig_pie.update_layout(height=340, margin=dict(t=50,b=10),
-                                      paper_bgcolor='white')
-                st.plotly_chart(fig_pie, use_container_width=True)
-
-        with col_g2:
-            # Bar R/O par ligne
-            ro_data = []
+            # ── Tableau récap par ligne ──
+            st.markdown("---")
+            rows = []
             for ligne in LIGNES:
                 ld = df_filt[df_filt['ligne'] == ligne]
-                t = ld['poids_tonne'].sum()
-                h = ld['duree_h'].sum()
+                t   = ld['poids_tonne'].sum()
+                h   = ld['duree_h'].sum()
                 cad = t/h if h > 0 else 0
                 obj = OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne])
-                ro  = (cad - obj)/obj*100 if obj > 0 and cad > 0 else 0
-                ro_data.append({'Ligne': ligne, 'R/O (%%)': ro})
-            df_ro = pd.DataFrame(ro_data)
-            fig_ro = px.bar(df_ro, x='Ligne', y='R/O (%%)',
-                            title="R/O Cadence par atelier (%%)",
-                            color='R/O (%%)',
-                            color_continuous_scale=['#e53935','#f5f5f5','#AFCA0A'],
-                            color_continuous_midpoint=0,
-                            text='R/O (%%)')
-            fig_ro.update_traces(texttemplate='%%{text:.1f}%%', textposition='outside')
-            fig_ro.add_hline(y=0, line_dash='dash', line_color='#7A7A7A')
-            fig_ro.update_layout(height=340, margin=dict(t=50,b=10),
-                                 paper_bgcolor='white', plot_bgcolor='white',
-                                 coloraxis_showscale=False)
-            st.plotly_chart(fig_ro, use_container_width=True)
-
-        # ── Tableau récap par ligne ──
-        st.markdown("---")
-        rows = []
-        for ligne in LIGNES:
-            ld = df_filt[df_filt['ligne'] == ligne]
-            t   = ld['poids_tonne'].sum()
-            h   = ld['duree_h'].sum()
-            cad = t/h if h > 0 else 0
-            obj = OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne])
-            ro  = (cad - obj)/obj*100 if obj > 0 and cad > 0 else None
-            rows.append({'Atelier': ligne,
-                         'Tonnage (T)': round(t,1),
-                         'Heures': round(h,1),
-                         'Cadence (T/h)': round(cad,3),
-                         'Objectif (T/h)': obj,
-                         'R/O (%%)': round(ro,1) if ro is not None else None})
-        st.dataframe(
-            pd.DataFrame(rows).style.applymap(color_ro, subset=['R/O (%%)'])
-                                    .format({'Cadence (T/h)': '{:.3f}',
-                                             'R/O (%%)': '{:+.1f}'}),
-            use_container_width=True, hide_index=True
-        )
+                ro  = (cad - obj)/obj*100 if obj > 0 and cad > 0 else None
+                rows.append({'Atelier': ligne,
+                             'Tonnage (T)': round(t,1),
+                             'Heures': round(h,1),
+                             'Cadence (T/h)': round(cad,3),
+                             'Objectif (T/h)': obj,
+                             'R/O (%%)': round(ro,1) if ro is not None else None})
+            st.dataframe(
+                pd.DataFrame(rows).style.applymap(color_ro, subset=['R/O (%%)'])
+                                        .format({'Cadence (T/h)': '{:.3f}',
+                                                 'R/O (%%)': '{:+.1f}'}),
+                use_container_width=True, hide_index=True
+            )
 
 
 # ═══════════════════════════════════════════════════════════════
 # ONGLET 2 : ÉVOLUTION HEBDO
 # ═══════════════════════════════════════════════════════════════
 with tab_hebdo:
-    st.subheader("📈 Évolution hebdomadaire des tonnages")
-
-    df_sem = calc_semaine(df_filt)
-
-    if df_sem.empty:
-        st.info("Aucune donnée.")
+    if df.empty:
+        st.info("📤 Aucune donnée en base. Utilisez l'onglet 📥 **Import** pour charger les fiches de production.")
     else:
-        # Pivot tonnage par semaine × ligne
-        pivot_t = df_sem.pivot_table(index='annee_semaine', columns='ligne',
-                                     values='tonnage', aggfunc='sum').fillna(0)
-        pivot_t = pivot_t.reset_index().rename(columns={'annee_semaine': 'Semaine'})
+        st.subheader("📈 Évolution hebdomadaire des tonnages")
 
-        # Bar groupé tonnage
-        fig_t = go.Figure()
-        for ligne in LIGNES:
-            if ligne in pivot_t.columns:
-                fig_t.add_trace(go.Bar(
-                    name=ligne,
-                    x=pivot_t['Semaine'],
-                    y=pivot_t[ligne],
-                    marker_color=COULEURS[ligne],
-                    text=pivot_t[ligne].apply(lambda v: f"{v:.0f}T"),
-                    textposition='auto',
-                ))
-        fig_t.update_layout(
-            barmode='stack',
-            title="Tonnage réalisé par semaine & atelier",
-            xaxis_title="Semaine", yaxis_title="Tonnes",
-            plot_bgcolor='white', paper_bgcolor='white',
-            height=400, xaxis_tickangle=-30,
-            legend=dict(orientation='h', yanchor='bottom', y=1.02),
-            margin=dict(t=60, b=60),
-        )
-        st.plotly_chart(fig_t, use_container_width=True)
+        df_sem = calc_semaine(df_filt)
 
-        # Total hebdo avec évolution S vs S-1
-        st.markdown("---")
-        total_sem = df_sem.groupby('annee_semaine')['tonnage'].sum().reset_index()
-        total_sem.columns = ['Semaine', 'Total (T)']
-        total_sem['Évol. (T)'] = total_sem['Total (T)'].diff()
-        total_sem['Évol. (%%)'] = total_sem['Total (T)'].pct_change() * 100
+        if df_sem.empty:
+            st.info("Aucune donnée.")
+        else:
+            # Pivot tonnage par semaine × ligne
+            pivot_t = df_sem.pivot_table(index='annee_semaine', columns='ligne',
+                                         values='tonnage', aggfunc='sum').fillna(0)
+            pivot_t = pivot_t.reset_index().rename(columns={'annee_semaine': 'Semaine'})
 
-        col_g, col_t = st.columns([2, 1])
-        with col_g:
-            fig_line = px.line(total_sem, x='Semaine', y='Total (T)',
-                               markers=True, title="Tonnage total hebdomadaire",
-                               color_discrete_sequence=['#AFCA0A'])
-            fig_line.update_traces(line_width=3, marker_size=8)
-            fig_line.update_layout(plot_bgcolor='white', paper_bgcolor='white',
-                                   height=300, margin=dict(t=50,b=50))
-            st.plotly_chart(fig_line, use_container_width=True)
-        with col_t:
-            st.dataframe(
-                total_sem.style.applymap(
-                    lambda v: color_ro(v) if not pd.isna(v) else '',
-                    subset=['Évol. (%%)']
-                ).format({'Total (T)': '{:.1f}', 'Évol. (T)': '{:+.1f}',
-                           'Évol. (%%)': '{:+.1f}%%'}),
-                use_container_width=True, hide_index=True
+            # Bar groupé tonnage
+            fig_t = go.Figure()
+            for ligne in LIGNES:
+                if ligne in pivot_t.columns:
+                    fig_t.add_trace(go.Bar(
+                        name=ligne,
+                        x=pivot_t['Semaine'],
+                        y=pivot_t[ligne],
+                        marker_color=COULEURS[ligne],
+                        text=pivot_t[ligne].apply(lambda v: f"{v:.0f}T"),
+                        textposition='auto',
+                    ))
+            fig_t.update_layout(
+                barmode='stack',
+                title="Tonnage réalisé par semaine & atelier",
+                xaxis_title="Semaine", yaxis_title="Tonnes",
+                plot_bgcolor='white', paper_bgcolor='white',
+                height=400, xaxis_tickangle=-30,
+                legend=dict(orientation='h', yanchor='bottom', y=1.02),
+                margin=dict(t=60, b=60),
             )
+            st.plotly_chart(fig_t, use_container_width=True)
 
-        # Cadences hebdo par ligne
-        st.markdown("---")
-        st.subheader("⚡ Cadences hebdomadaires par atelier (T/h)")
-        fig_cad = go.Figure()
-        for ligne in LIGNES:
-            ld = df_sem[df_sem['ligne'] == ligne].sort_values('annee_semaine')
-            if ld.empty: continue
-            fig_cad.add_trace(go.Scatter(
-                name=ligne,
-                x=ld['annee_semaine'], y=ld['cadence'],
-                mode='lines+markers',
-                line=dict(color=COULEURS[ligne], width=2),
-                marker=dict(size=8),
-            ))
-            # Ligne objectif
-            fig_cad.add_hline(y=OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne]), line_dash='dot',
-                               line_color=COULEURS[ligne], opacity=0.5,
-                               annotation_text=f"Obj {ligne}: {OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne])}",
-                               annotation_position="right")
-        fig_cad.update_layout(
-            plot_bgcolor='white', paper_bgcolor='white', height=380,
-            xaxis_tickangle=-30, margin=dict(t=30,b=60,r=120),
-            legend=dict(orientation='h', yanchor='bottom', y=1.02),
-        )
-        st.plotly_chart(fig_cad, use_container_width=True)
+            # Total hebdo avec évolution S vs S-1
+            st.markdown("---")
+            total_sem = df_sem.groupby('annee_semaine')['tonnage'].sum().reset_index()
+            total_sem.columns = ['Semaine', 'Total (T)']
+            total_sem['Évol. (T)'] = total_sem['Total (T)'].diff()
+            total_sem['Évol. (%%)'] = total_sem['Total (T)'].pct_change() * 100
 
-        # Tableau R/O par ligne × semaine
-        st.markdown("---")
-        st.subheader("📋 Tableau R/O Cadence (%%)")
-        pivot_ro = df_sem.pivot_table(index='annee_semaine', columns='ligne',
-                                      values='ro_pct', aggfunc='mean')
-        st.dataframe(
-            pivot_ro.style.applymap(color_ro)
-                          .format('{:+.1f}%%', na_rep='—'),
-            use_container_width=True
-        )
+            col_g, col_t = st.columns([2, 1])
+            with col_g:
+                fig_line = px.line(total_sem, x='Semaine', y='Total (T)',
+                                   markers=True, title="Tonnage total hebdomadaire",
+                                   color_discrete_sequence=['#AFCA0A'])
+                fig_line.update_traces(line_width=3, marker_size=8)
+                fig_line.update_layout(plot_bgcolor='white', paper_bgcolor='white',
+                                       height=300, margin=dict(t=50,b=50))
+                st.plotly_chart(fig_line, use_container_width=True)
+            with col_t:
+                st.dataframe(
+                    total_sem.style.applymap(
+                        lambda v: color_ro(v) if not pd.isna(v) else '',
+                        subset=['Évol. (%%)']
+                    ).format({'Total (T)': '{:.1f}', 'Évol. (T)': '{:+.1f}',
+                               'Évol. (%%)': '{:+.1f}%%'}),
+                    use_container_width=True, hide_index=True
+                )
+
+            # Cadences hebdo par ligne
+            st.markdown("---")
+            st.subheader("⚡ Cadences hebdomadaires par atelier (T/h)")
+            fig_cad = go.Figure()
+            for ligne in LIGNES:
+                ld = df_sem[df_sem['ligne'] == ligne].sort_values('annee_semaine')
+                if ld.empty: continue
+                fig_cad.add_trace(go.Scatter(
+                    name=ligne,
+                    x=ld['annee_semaine'], y=ld['cadence'],
+                    mode='lines+markers',
+                    line=dict(color=COULEURS[ligne], width=2),
+                    marker=dict(size=8),
+                ))
+                # Ligne objectif
+                fig_cad.add_hline(y=OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne]), line_dash='dot',
+                                   line_color=COULEURS[ligne], opacity=0.5,
+                                   annotation_text=f"Obj {ligne}: {OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne])}",
+                                   annotation_position="right")
+            fig_cad.update_layout(
+                plot_bgcolor='white', paper_bgcolor='white', height=380,
+                xaxis_tickangle=-30, margin=dict(t=30,b=60,r=120),
+                legend=dict(orientation='h', yanchor='bottom', y=1.02),
+            )
+            st.plotly_chart(fig_cad, use_container_width=True)
+
+            # Tableau R/O par ligne × semaine
+            st.markdown("---")
+            st.subheader("📋 Tableau R/O Cadence (%%)")
+            pivot_ro = df_sem.pivot_table(index='annee_semaine', columns='ligne',
+                                          values='ro_pct', aggfunc='mean')
+            st.dataframe(
+                pivot_ro.style.applymap(color_ro)
+                              .format('{:+.1f}%%', na_rep='—'),
+                use_container_width=True
+            )
 
 
 # ═══════════════════════════════════════════════════════════════
 # ONGLET 3 : CADENCES R/O PAR LIGNE (vue détaillée)
 # ═══════════════════════════════════════════════════════════════
 with tab_cadences:
-    st.subheader("⚡ R/O Cadence — Semaines + Journalier semaine courante")
+    if df.empty:
+        st.info("📤 Aucune donnée en base. Utilisez l'onglet 📥 **Import** pour charger les fiches de production.")
+    else:
+        st.subheader("⚡ R/O Cadence — Semaines + Journalier semaine courante")
 
-    # Sélection semaine focus
-    semaines_dispo = sorted(df_filt['annee_semaine'].dropna().unique(), reverse=True)
-    sem_focus = st.selectbox("Semaine focus (journalier)", semaines_dispo, key="cad_sem") if semaines_dispo else None
+        # Sélection semaine focus
+        semaines_dispo = sorted(df_filt['annee_semaine'].dropna().unique(), reverse=True)
+        sem_focus = st.selectbox("Semaine focus (journalier)", semaines_dispo, key="cad_sem") if semaines_dispo else None
 
-    df_sem_all = calc_semaine(df_filt)
+        df_sem_all = calc_semaine(df_filt)
 
-    for ligne in LIGNES:
-        with st.expander(f"**{ligne}** — Obj : {OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne])} T/h", expanded=(ligne == 'SBU1')):
-            ld_sem = df_sem_all[df_sem_all['ligne'] == ligne].sort_values('annee_semaine')
-            ld_jour = calc_journalier(df_filt[
-                (df_filt['ligne'] == ligne) &
-                (df_filt['annee_semaine'] == sem_focus)
-            ]) if sem_focus else pd.DataFrame()
+        for ligne in LIGNES:
+            with st.expander(f"**{ligne}** — Obj : {OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne])} T/h", expanded=(ligne == 'SBU1')):
+                ld_sem = df_sem_all[df_sem_all['ligne'] == ligne].sort_values('annee_semaine')
+                ld_jour = calc_journalier(df_filt[
+                    (df_filt['ligne'] == ligne) &
+                    (df_filt['annee_semaine'] == sem_focus)
+                ]) if sem_focus else pd.DataFrame()
 
-            fig = go.Figure()
+                fig = go.Figure()
 
-            # Barres hebdo
-            if not ld_sem.empty:
-                colors = ['#AFCA0A' if r >= 0 else '#e53935'
-                          for r in ld_sem['ro_pct'].fillna(0)]
-                fig.add_trace(go.Bar(
-                    name='Cadence hebdo',
-                    x=ld_sem['annee_semaine'],
-                    y=ld_sem['cadence'],
-                    marker_color=colors,
-                    text=ld_sem['cadence'].apply(lambda v: f"{v:.2f}"),
-                    textposition='outside',
-                    opacity=0.85,
-                ))
+                # Barres hebdo
+                if not ld_sem.empty:
+                    colors = ['#AFCA0A' if r >= 0 else '#e53935'
+                              for r in ld_sem['ro_pct'].fillna(0)]
+                    fig.add_trace(go.Bar(
+                        name='Cadence hebdo',
+                        x=ld_sem['annee_semaine'],
+                        y=ld_sem['cadence'],
+                        marker_color=colors,
+                        text=ld_sem['cadence'].apply(lambda v: f"{v:.2f}"),
+                        textposition='outside',
+                        opacity=0.85,
+                    ))
 
-            # Points journaliers
-            if not ld_jour.empty:
-                fig.add_trace(go.Scatter(
-                    name=f'Journalier {sem_focus}',
-                    x=ld_jour['jour'],
-                    y=ld_jour['cadence'],
-                    mode='lines+markers',
-                    line=dict(color='#1976D2', width=2, dash='dot'),
-                    marker=dict(size=10, color='#1976D2'),
-                ))
+                # Points journaliers
+                if not ld_jour.empty:
+                    fig.add_trace(go.Scatter(
+                        name=f'Journalier {sem_focus}',
+                        x=ld_jour['jour'],
+                        y=ld_jour['cadence'],
+                        mode='lines+markers',
+                        line=dict(color='#1976D2', width=2, dash='dot'),
+                        marker=dict(size=10, color='#1976D2'),
+                    ))
 
-            # Ligne objectif
-            fig.add_hline(y=OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne]), line_dash='dash',
-                          line_color='#7A7A7A',
-                          annotation_text=f"Obj: {OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne])} T/h",
-                          annotation_position="right")
+                # Ligne objectif
+                fig.add_hline(y=OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne]), line_dash='dash',
+                              line_color='#7A7A7A',
+                              annotation_text=f"Obj: {OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne])} T/h",
+                              annotation_position="right")
 
-            fig.update_layout(
-                plot_bgcolor='white', paper_bgcolor='white',
-                height=320, margin=dict(t=20, b=50, r=100),
-                xaxis_tickangle=-30,
-                legend=dict(orientation='h', yanchor='bottom', y=1.02),
-            )
-            st.plotly_chart(fig, use_container_width=True)
+                fig.update_layout(
+                    plot_bgcolor='white', paper_bgcolor='white',
+                    height=320, margin=dict(t=20, b=50, r=100),
+                    xaxis_tickangle=-30,
+                    legend=dict(orientation='h', yanchor='bottom', y=1.02),
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
-            # Tableau récap
-            rows = []
-            for _, r in ld_sem.iterrows():
-                rows.append({
-                    'Période': r['annee_semaine'],
-                    'Cadence': round(r['cadence'], 2),
-                    'Tonnage': round(r['tonnage'], 1),
-                    'Heures': round(r['duree_h'], 1),
-                    'R/O (%%)': round(r['ro_pct'], 1) if pd.notna(r['ro_pct']) else None,
-                })
-            if not ld_jour.empty:
-                for _, r in ld_jour.iterrows():
+                # Tableau récap
+                rows = []
+                for _, r in ld_sem.iterrows():
                     rows.append({
-                        'Période': f"  {r['jour']} ↳",
+                        'Période': r['annee_semaine'],
                         'Cadence': round(r['cadence'], 2),
                         'Tonnage': round(r['tonnage'], 1),
                         'Heures': round(r['duree_h'], 1),
                         'R/O (%%)': round(r['ro_pct'], 1) if pd.notna(r['ro_pct']) else None,
                     })
-            if rows:
-                st.dataframe(
-                    pd.DataFrame(rows).style.applymap(color_ro, subset=['R/O (%%)'])
-                                           .format({'R/O (%%)': '{:+.1f}%%',
-                                                    'Cadence': '{:.2f}'}),
-                    use_container_width=True, hide_index=True
-                )
+                if not ld_jour.empty:
+                    for _, r in ld_jour.iterrows():
+                        rows.append({
+                            'Période': f"  {r['jour']} ↳",
+                            'Cadence': round(r['cadence'], 2),
+                            'Tonnage': round(r['tonnage'], 1),
+                            'Heures': round(r['duree_h'], 1),
+                            'R/O (%%)': round(r['ro_pct'], 1) if pd.notna(r['ro_pct']) else None,
+                        })
+                if rows:
+                    st.dataframe(
+                        pd.DataFrame(rows).style.applymap(color_ro, subset=['R/O (%%)'])
+                                               .format({'R/O (%%)': '{:+.1f}%%',
+                                                        'Cadence': '{:.2f}'}),
+                        use_container_width=True, hide_index=True
+                    )
 
 
 # ═══════════════════════════════════════════════════════════════
 # ONGLET 4 : JOURNALIER (semaine sélectionnée)
 # ═══════════════════════════════════════════════════════════════
 with tab_journalier:
-    semaines_j = sorted(df_filt['annee_semaine'].dropna().unique(), reverse=True)
-    if not semaines_j:
-        st.info("Aucune donnée.")
+    if df.empty:
+        st.info("📤 Aucune donnée en base. Utilisez l'onglet 📥 **Import** pour charger les fiches de production.")
     else:
-        sem_j = st.selectbox("Semaine", semaines_j, key="jour_sem")
-        df_j = df_filt[df_filt['annee_semaine'] == sem_j].copy()
-        df_jour = calc_journalier(df_j)
-
-        if df_jour.empty:
-            st.info("Pas de données pour cette semaine.")
+        semaines_j = sorted(df_filt['annee_semaine'].dropna().unique(), reverse=True)
+        if not semaines_j:
+            st.info("Aucune donnée.")
         else:
-            # KPIs semaine
-            tot_j = df_j['poids_tonne'].sum()
-            h_j   = df_j['duree_h'].sum()
-            cad_j = tot_j/h_j if h_j > 0 else 0
-            nb_j  = df_j['date_production'].dt.date.nunique()
+            sem_j = st.selectbox("Semaine", semaines_j, key="jour_sem")
+            df_j = df_filt[df_filt['annee_semaine'] == sem_j].copy()
+            df_jour = calc_journalier(df_j)
 
-            c1,c2,c3,c4 = st.columns(4)
-            c1.metric("🏭 Tonnage semaine", f"{tot_j:.1f} T")
-            c2.metric("📅 Jours actifs",    nb_j)
-            c3.metric("⏱ Heures totales",  f"{h_j:.0f} h")
-            c4.metric("⚡ Cadence moy.",    f"{cad_j:.2f} T/h")
+            if df_jour.empty:
+                st.info("Pas de données pour cette semaine.")
+            else:
+                # KPIs semaine
+                tot_j = df_j['poids_tonne'].sum()
+                h_j   = df_j['duree_h'].sum()
+                cad_j = tot_j/h_j if h_j > 0 else 0
+                nb_j  = df_j['date_production'].dt.date.nunique()
 
-            st.markdown("---")
+                c1,c2,c3,c4 = st.columns(4)
+                c1.metric("🏭 Tonnage semaine", f"{tot_j:.1f} T")
+                c2.metric("📅 Jours actifs",    nb_j)
+                c3.metric("⏱ Heures totales",  f"{h_j:.0f} h")
+                c4.metric("⚡ Cadence moy.",    f"{cad_j:.2f} T/h")
 
-            # KPIs par atelier
-            st.subheader(f"Vue par atelier — {sem_j}")
-            cols_a = st.columns(4)
-            for i, ligne in enumerate(LIGNES):
-                ld = df_j[df_j['ligne'] == ligne]
-                t  = ld['poids_tonne'].sum()
-                h  = ld['duree_h'].sum()
-                cad = t/h if h > 0 else 0
-                obj = OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne])
-                ro  = (cad - obj)/obj*100 if obj > 0 and cad > 0 else None
-                with cols_a[i]:
-                    sign = "+" if (ro or 0) >= 0 else ""
-                    delta_color = "normal" if (ro or 0) >= 0 else "inverse"
-                    st.metric(ligne, f"{t:.1f} T",
-                              delta=f"{sign}{ro:.1f}%% R/O" if ro is not None else None,
-                              delta_color=delta_color)
-                    st.caption(f"{cad:.2f} T/h | {h:.0f}h | obj {obj}")
+                st.markdown("---")
 
-            st.markdown("---")
+                # KPIs par atelier
+                st.subheader(f"Vue par atelier — {sem_j}")
+                cols_a = st.columns(4)
+                for i, ligne in enumerate(LIGNES):
+                    ld = df_j[df_j['ligne'] == ligne]
+                    t  = ld['poids_tonne'].sum()
+                    h  = ld['duree_h'].sum()
+                    cad = t/h if h > 0 else 0
+                    obj = OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne])
+                    ro  = (cad - obj)/obj*100 if obj > 0 and cad > 0 else None
+                    with cols_a[i]:
+                        sign = "+" if (ro or 0) >= 0 else ""
+                        delta_color = "normal" if (ro or 0) >= 0 else "inverse"
+                        st.metric(ligne, f"{t:.1f} T",
+                                  delta=f"{sign}{ro:.1f}%% R/O" if ro is not None else None,
+                                  delta_color=delta_color)
+                        st.caption(f"{cad:.2f} T/h | {h:.0f}h | obj {obj}")
 
-            # Graphe tonnages journaliers par ligne
-            pivot_j = df_jour.pivot_table(index='jour', columns='ligne',
-                                          values='tonnage', aggfunc='sum').fillna(0)
+                st.markdown("---")
 
-            # Réordonner par date
-            ordre_jours = df_j.drop_duplicates('jour_label').sort_values('date_production')['jour_label'].tolist()
-            pivot_j = pivot_j.reindex([j for j in ordre_jours if j in pivot_j.index])
-            pivot_j = pivot_j.reset_index()
+                # Graphe tonnages journaliers par ligne
+                pivot_j = df_jour.pivot_table(index='jour', columns='ligne',
+                                              values='tonnage', aggfunc='sum').fillna(0)
 
-            fig_j = go.Figure()
-            for ligne in LIGNES:
-                if ligne in pivot_j.columns:
-                    fig_j.add_trace(go.Bar(
-                        name=ligne, x=pivot_j['jour'], y=pivot_j[ligne],
-                        marker_color=COULEURS[ligne],
-                        text=pivot_j[ligne].apply(lambda v: f"{v:.0f}T" if v > 0 else ""),
-                        textposition='auto',
+                # Réordonner par date
+                ordre_jours = df_j.drop_duplicates('jour_label').sort_values('date_production')['jour_label'].tolist()
+                pivot_j = pivot_j.reindex([j for j in ordre_jours if j in pivot_j.index])
+                pivot_j = pivot_j.reset_index()
+
+                fig_j = go.Figure()
+                for ligne in LIGNES:
+                    if ligne in pivot_j.columns:
+                        fig_j.add_trace(go.Bar(
+                            name=ligne, x=pivot_j['jour'], y=pivot_j[ligne],
+                            marker_color=COULEURS[ligne],
+                            text=pivot_j[ligne].apply(lambda v: f"{v:.0f}T" if v > 0 else ""),
+                            textposition='auto',
+                        ))
+                # Total par jour
+                if len(pivot_j) > 0:
+                    cols_lignes = [c for c in LIGNES if c in pivot_j.columns]
+                    pivot_j['total'] = pivot_j[cols_lignes].sum(axis=1)
+                    fig_j.add_trace(go.Scatter(
+                        name='Total', x=pivot_j['jour'], y=pivot_j['total'],
+                        mode='lines+markers+text',
+                        text=pivot_j['total'].apply(lambda v: f"{v:.0f}T"),
+                        textposition='top center',
+                        line=dict(color='#424242', width=2, dash='dot'),
+                        marker=dict(size=8),
                     ))
-            # Total par jour
-            if len(pivot_j) > 0:
-                cols_lignes = [c for c in LIGNES if c in pivot_j.columns]
-                pivot_j['total'] = pivot_j[cols_lignes].sum(axis=1)
-                fig_j.add_trace(go.Scatter(
-                    name='Total', x=pivot_j['jour'], y=pivot_j['total'],
-                    mode='lines+markers+text',
-                    text=pivot_j['total'].apply(lambda v: f"{v:.0f}T"),
-                    textposition='top center',
-                    line=dict(color='#424242', width=2, dash='dot'),
-                    marker=dict(size=8),
-                ))
-            fig_j.update_layout(
-                barmode='stack', title=f"Tonnages journaliers — {sem_j}",
-                plot_bgcolor='white', paper_bgcolor='white',
-                height=380, xaxis_title="Jour", yaxis_title="Tonnes",
-                legend=dict(orientation='h', yanchor='bottom', y=1.02),
-                margin=dict(t=60,b=50),
-            )
-            st.plotly_chart(fig_j, use_container_width=True)
+                fig_j.update_layout(
+                    barmode='stack', title=f"Tonnages journaliers — {sem_j}",
+                    plot_bgcolor='white', paper_bgcolor='white',
+                    height=380, xaxis_title="Jour", yaxis_title="Tonnes",
+                    legend=dict(orientation='h', yanchor='bottom', y=1.02),
+                    margin=dict(t=60,b=50),
+                )
+                st.plotly_chart(fig_j, use_container_width=True)
 
-            # Graphe cadences journalières
-            fig_cad_j = go.Figure()
-            for ligne in ['SBU1','SBU2','BANC']:
-                ld = df_jour[df_jour['ligne'] == ligne]
-                if ld.empty: continue
-                # Couleur point vert/rouge selon R/O
-                colors_pt = ['#AFCA0A' if (r or 0) >= 0 else '#e53935'
-                             for r in ld['ro_pct']]
-                fig_cad_j.add_trace(go.Scatter(
-                    name=ligne, x=ld['jour'], y=ld['cadence'],
-                    mode='lines+markers',
-                    line=dict(color=COULEURS[ligne], width=2),
-                    marker=dict(size=10, color=colors_pt, line=dict(width=2, color='white')),
-                ))
-                fig_cad_j.add_hline(y=OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne]), line_dash='dot',
-                                    line_color=COULEURS[ligne], opacity=0.4)
-            fig_cad_j.update_layout(
-                title=f"Cadences journalières — {sem_j}",
-                plot_bgcolor='white', paper_bgcolor='white',
-                height=340, xaxis_title="Jour", yaxis_title="T/h",
-                legend=dict(orientation='h', yanchor='bottom', y=1.02),
-                margin=dict(t=60,b=50),
-            )
-            st.plotly_chart(fig_cad_j, use_container_width=True)
+                # Graphe cadences journalières
+                fig_cad_j = go.Figure()
+                for ligne in ['SBU1','SBU2','BANC']:
+                    ld = df_jour[df_jour['ligne'] == ligne]
+                    if ld.empty: continue
+                    # Couleur point vert/rouge selon R/O
+                    colors_pt = ['#AFCA0A' if (r or 0) >= 0 else '#e53935'
+                                 for r in ld['ro_pct']]
+                    fig_cad_j.add_trace(go.Scatter(
+                        name=ligne, x=ld['jour'], y=ld['cadence'],
+                        mode='lines+markers',
+                        line=dict(color=COULEURS[ligne], width=2),
+                        marker=dict(size=10, color=colors_pt, line=dict(width=2, color='white')),
+                    ))
+                    fig_cad_j.add_hline(y=OBJECTIFS.get(ligne, OBJECTIFS_DEFAUT[ligne]), line_dash='dot',
+                                        line_color=COULEURS[ligne], opacity=0.4)
+                fig_cad_j.update_layout(
+                    title=f"Cadences journalières — {sem_j}",
+                    plot_bgcolor='white', paper_bgcolor='white',
+                    height=340, xaxis_title="Jour", yaxis_title="T/h",
+                    legend=dict(orientation='h', yanchor='bottom', y=1.02),
+                    margin=dict(t=60,b=50),
+                )
+                st.plotly_chart(fig_cad_j, use_container_width=True)
 
-            # Tableau détail journalier par ligne
-            st.markdown("---")
-            st.subheader("📋 Détail journalier par atelier")
-            pivot_tab = df_jour.pivot_table(
-                index='jour', columns='ligne',
-                values=['tonnage','cadence','ro_pct'],
-                aggfunc='first'
-            ).round(2)
-            st.dataframe(pivot_tab, use_container_width=True)
+                # Tableau détail journalier par ligne
+                st.markdown("---")
+                st.subheader("📋 Détail journalier par atelier")
+                pivot_tab = df_jour.pivot_table(
+                    index='jour', columns='ligne',
+                    values=['tonnage','cadence','ro_pct'],
+                    aggfunc='first'
+                ).round(2)
+                st.dataframe(pivot_tab, use_container_width=True)
 
 
 # ═══════════════════════════════════════════════════════════════
 # ONGLET 5 : MIX RECETTES
 # ═══════════════════════════════════════════════════════════════
 with tab_recettes:
-    st.subheader("🥔 Mix recettes & variétés")
+    if df.empty:
+        st.info("📤 Aucune donnée en base. Utilisez l'onglet 📥 **Import** pour charger les fiches de production.")
+    else:
+        st.subheader("🥔 Mix recettes & variétés")
 
-    if COMP_DATES:
-        la, d1a, d1b, lb, d2a, d2b = COMP_DATES
-        st.info(f"🔀 Comparaison : **{la}** vs **{lb}**")
-        dfA = filter_df(df, d1a, d1b)
-        dfB = filter_df(df, d2a, d2b)
+        if COMP_DATES:
+            la, d1a, d1b, lb, d2a, d2b = COMP_DATES
+            st.info(f"🔀 Comparaison : **{la}** vs **{lb}**")
+            dfA = filter_df(df, d1a, d1b)
+            dfB = filter_df(df, d2a, d2b)
 
-        def render_mix(d, label):
-            st.markdown(f"### {label}")
-            # Par type (regroupé PDP / CHAMP)
-            d['famille'] = d['marque'].apply(
+            def render_mix(d, label):
+                st.markdown(f"### {label}")
+                # Par type (regroupé PDP / CHAMP)
+                d['famille'] = d['marque'].apply(
+                    lambda m: 'PDP' if str(m).strip().upper() == 'PDP'
+                    else ('Championne' if 'CHAMP' in str(m).upper() else 'CP'))
+                fam = d.groupby('famille')['poids_tonne'].sum().reset_index()
+                fig_f = px.pie(fam, names='famille', values='poids_tonne',
+                               color='famille',
+                               color_discrete_map={'PDP':'#AFCA0A','Championne':'#FFEC00','CP':'#1976D2'},
+                               hole=0.4, title=f"Mix PDP / Championne — {label}")
+                fig_f.update_layout(height=280, margin=dict(t=50,b=10))
+                st.plotly_chart(fig_f, use_container_width=True)
+
+                # Top variétés
+                var = d.groupby('variete')['poids_tonne'].sum().sort_values(ascending=False).head(8).reset_index()
+                fig_v = px.bar(var, x='poids_tonne', y='variete', orientation='h',
+                               title=f"Top variétés — {label}",
+                               color='poids_tonne',
+                               color_continuous_scale=['#FFEC00','#AFCA0A'],
+                               labels={'poids_tonne':'Tonnes','variete':'Variété'})
+                fig_v.update_layout(height=300, margin=dict(t=50,b=10),
+                                    plot_bgcolor='white', paper_bgcolor='white',
+                                    coloraxis_showscale=False, yaxis_autorange='reversed')
+                st.plotly_chart(fig_v, use_container_width=True)
+
+            colA, colB = st.columns(2)
+            with colA: render_mix(dfA, la)
+            with colB: render_mix(dfB, lb)
+
+        else:
+            col_r1, col_r2 = st.columns(2)
+
+            # Marques
+            with col_r1:
+                df_filt2 = df_filt.copy()
+                df_filt2['famille'] = df_filt2['marque'].apply(
+                    lambda m: 'PDP' if str(m).strip().upper() == 'PDP'
+                    else ('Championne' if 'CHAMP' in str(m).upper() else str(m)))
+                fam = df_filt2.groupby('famille')['poids_tonne'].sum().reset_index()
+                fig_fam = px.pie(fam, names='famille', values='poids_tonne',
+                                 color='famille',
+                                 color_discrete_map={'PDP':'#AFCA0A','Championne':'#FFEC00'},
+                                 hole=0.4, title="Répartition PDP / Championne / CP")
+                fig_fam.update_layout(height=320, margin=dict(t=50,b=10), paper_bgcolor='white')
+                st.plotly_chart(fig_fam, use_container_width=True)
+
+            with col_r2:
+                # Top variétés
+                var = df_filt.groupby('variete')['poids_tonne'].sum().sort_values(ascending=False).head(10).reset_index()
+                fig_var = px.bar(var, x='poids_tonne', y='variete', orientation='h',
+                                 title="Top 10 variétés (T)",
+                                 color='poids_tonne',
+                                 color_continuous_scale=['#FFEC00','#AFCA0A'],
+                                 labels={'poids_tonne':'Tonnes','variete':'Variété'})
+                fig_var.update_layout(height=320, margin=dict(t=50,b=10),
+                                      plot_bgcolor='white', paper_bgcolor='white',
+                                      coloraxis_showscale=False, yaxis_autorange='reversed')
+                st.plotly_chart(fig_var, use_container_width=True)
+
+            st.markdown("---")
+
+            # PDP vs Championne par semaine
+            st.subheader("📈 PDP vs Championne — Évolution hebdo")
+            df_filt3 = df_filt.copy()
+            df_filt3['famille'] = df_filt3['marque'].apply(
                 lambda m: 'PDP' if str(m).strip().upper() == 'PDP'
                 else ('Championne' if 'CHAMP' in str(m).upper() else 'CP'))
-            fam = d.groupby('famille')['poids_tonne'].sum().reset_index()
-            fig_f = px.pie(fam, names='famille', values='poids_tonne',
-                           color='famille',
-                           color_discrete_map={'PDP':'#AFCA0A','Championne':'#FFEC00','CP':'#1976D2'},
-                           hole=0.4, title=f"Mix PDP / Championne — {label}")
-            fig_f.update_layout(height=280, margin=dict(t=50,b=10))
-            st.plotly_chart(fig_f, use_container_width=True)
+            sem_fam = df_filt3.groupby(['annee_semaine','famille'])['poids_tonne'].sum().reset_index()
+            fig_sf = px.bar(sem_fam, x='annee_semaine', y='poids_tonne',
+                            color='famille', barmode='group',
+                            color_discrete_map={'PDP':'#AFCA0A','Championne':'#FFEC00','CP':'#1976D2'},
+                            labels={'annee_semaine':'Semaine','poids_tonne':'Tonnes'},
+                            title="Tonnage PDP / Championne / CP par semaine")
+            fig_sf.update_layout(plot_bgcolor='white', paper_bgcolor='white',
+                                 height=360, xaxis_tickangle=-30,
+                                 legend=dict(orientation='h', yanchor='bottom', y=1.02),
+                                 margin=dict(t=60,b=60))
+            st.plotly_chart(fig_sf, use_container_width=True)
 
-            # Top variétés
-            var = d.groupby('variete')['poids_tonne'].sum().sort_values(ascending=False).head(8).reset_index()
-            fig_v = px.bar(var, x='poids_tonne', y='variete', orientation='h',
-                           title=f"Top variétés — {label}",
-                           color='poids_tonne',
-                           color_continuous_scale=['#FFEC00','#AFCA0A'],
-                           labels={'poids_tonne':'Tonnes','variete':'Variété'})
-            fig_v.update_layout(height=300, margin=dict(t=50,b=10),
-                                plot_bgcolor='white', paper_bgcolor='white',
-                                coloraxis_showscale=False, yaxis_autorange='reversed')
-            st.plotly_chart(fig_v, use_container_width=True)
+            # Tableau cadences PDP vs CHAMP par type (style slide 13)
+            st.markdown("---")
+            st.subheader("⚡ Cadences PDP vs Championne par type de recette")
 
-        colA, colB = st.columns(2)
-        with colA: render_mix(dfA, la)
-        with colB: render_mix(dfB, lb)
+            sem_focus_r = st.selectbox("Semaine focus", semaines_dispo if semaines_dispo else [''], key="rec_sem")
+            df_r = df_filt[df_filt['annee_semaine'] == sem_focus_r].copy() if sem_focus_r else df_filt.copy()
+            df_r = df_r[df_r['ligne'].isin(['SBU1','SBU2'])]
 
-    else:
-        col_r1, col_r2 = st.columns(2)
+            # Catégoriser type de recette
+            def cat_recette(t):
+                t = str(t).upper()
+                if 'FOUR' in t or 'POTAGE' in t: return 'Four'
+                if 'FRITE' in t: return 'Frites'
+                if 'VAPEUR' in t and 'JAUNE' in t: return 'Vapeur Jaune'
+                if 'VAPEUR' in t and 'ROUGE' in t: return 'Vapeur Rouge'
+                if 'GRENAL' in t or 'GRENIL' in t: return 'Grenailles'
+                return 'Autre'
 
-        # Marques
-        with col_r1:
-            df_filt2 = df_filt.copy()
-            df_filt2['famille'] = df_filt2['marque'].apply(
-                lambda m: 'PDP' if str(m).strip().upper() == 'PDP'
-                else ('Championne' if 'CHAMP' in str(m).upper() else str(m)))
-            fam = df_filt2.groupby('famille')['poids_tonne'].sum().reset_index()
-            fig_fam = px.pie(fam, names='famille', values='poids_tonne',
-                             color='famille',
-                             color_discrete_map={'PDP':'#AFCA0A','Championne':'#FFEC00'},
-                             hole=0.4, title="Répartition PDP / Championne / CP")
-            fig_fam.update_layout(height=320, margin=dict(t=50,b=10), paper_bgcolor='white')
-            st.plotly_chart(fig_fam, use_container_width=True)
+            df_r['recette'] = df_r['type_prod'].apply(cat_recette)
+            df_r['famille'] = df_r['marque'].apply(
+                lambda m: 'PDP' if str(m).strip().upper() == 'PDP' else 'Championne')
 
-        with col_r2:
-            # Top variétés
-            var = df_filt.groupby('variete')['poids_tonne'].sum().sort_values(ascending=False).head(10).reset_index()
-            fig_var = px.bar(var, x='poids_tonne', y='variete', orientation='h',
-                             title="Top 10 variétés (T)",
-                             color='poids_tonne',
-                             color_continuous_scale=['#FFEC00','#AFCA0A'],
-                             labels={'poids_tonne':'Tonnes','variete':'Variété'})
-            fig_var.update_layout(height=320, margin=dict(t=50,b=10),
-                                  plot_bgcolor='white', paper_bgcolor='white',
-                                  coloraxis_showscale=False, yaxis_autorange='reversed')
-            st.plotly_chart(fig_var, use_container_width=True)
+            rows_rec = []
+            for (recette, fam), g in df_r.groupby(['recette','famille']):
+                t = g['poids_tonne'].sum()
+                h = g['duree_h'].sum()
+                cad = t/h if h > 0 else 0
+                rows_rec.append({'Recette': recette, 'Famille': fam,
+                                 'Tonnage (T)': round(t,1),
+                                 'Cadence (T/h)': round(cad,2)})
+            if rows_rec:
+                df_rec = pd.DataFrame(rows_rec)
+                pivot_rec = df_rec.pivot_table(index='Recette', columns='Famille',
+                                               values=['Tonnage (T)','Cadence (T/h)'],
+                                               aggfunc='first').round(2)
+                st.dataframe(pivot_rec, use_container_width=True)
 
-        st.markdown("---")
+                # Graphe cadences PDP vs Champ
+                pdp  = df_rec[df_rec['Famille']=='PDP']
+                chmp = df_rec[df_rec['Famille']=='Championne']
+                if not pdp.empty and not chmp.empty:
+                    fig_rec = go.Figure()
+                    fig_rec.add_trace(go.Bar(name='PDP', x=pdp['Recette'], y=pdp['Cadence (T/h)'],
+                                             marker_color='#AFCA0A',
+                                             text=pdp['Cadence (T/h)'].apply(lambda v: f"{v:.2f}"),
+                                             textposition='outside'))
+                    fig_rec.add_trace(go.Bar(name='Championne', x=chmp['Recette'], y=chmp['Cadence (T/h)'],
+                                             marker_color='#FFEC00',
+                                             text=chmp['Cadence (T/h)'].apply(lambda v: f"{v:.2f}"),
+                                             textposition='outside'))
+                    fig_rec.update_layout(barmode='group', title="Cadences PDP vs Championne par recette (T/h)",
+                                          plot_bgcolor='white', paper_bgcolor='white',
+                                          height=340, margin=dict(t=60,b=50),
+                                          legend=dict(orientation='h', yanchor='bottom', y=1.02))
+                    st.plotly_chart(fig_rec, use_container_width=True)
 
-        # PDP vs Championne par semaine
-        st.subheader("📈 PDP vs Championne — Évolution hebdo")
-        df_filt3 = df_filt.copy()
-        df_filt3['famille'] = df_filt3['marque'].apply(
-            lambda m: 'PDP' if str(m).strip().upper() == 'PDP'
-            else ('Championne' if 'CHAMP' in str(m).upper() else 'CP'))
-        sem_fam = df_filt3.groupby(['annee_semaine','famille'])['poids_tonne'].sum().reset_index()
-        fig_sf = px.bar(sem_fam, x='annee_semaine', y='poids_tonne',
-                        color='famille', barmode='group',
-                        color_discrete_map={'PDP':'#AFCA0A','Championne':'#FFEC00','CP':'#1976D2'},
-                        labels={'annee_semaine':'Semaine','poids_tonne':'Tonnes'},
-                        title="Tonnage PDP / Championne / CP par semaine")
-        fig_sf.update_layout(plot_bgcolor='white', paper_bgcolor='white',
-                             height=360, xaxis_tickangle=-30,
-                             legend=dict(orientation='h', yanchor='bottom', y=1.02),
-                             margin=dict(t=60,b=60))
-        st.plotly_chart(fig_sf, use_container_width=True)
-
-        # Tableau cadences PDP vs CHAMP par type (style slide 13)
-        st.markdown("---")
-        st.subheader("⚡ Cadences PDP vs Championne par type de recette")
-
-        sem_focus_r = st.selectbox("Semaine focus", semaines_dispo if semaines_dispo else [''], key="rec_sem")
-        df_r = df_filt[df_filt['annee_semaine'] == sem_focus_r].copy() if sem_focus_r else df_filt.copy()
-        df_r = df_r[df_r['ligne'].isin(['SBU1','SBU2'])]
-
-        # Catégoriser type de recette
-        def cat_recette(t):
-            t = str(t).upper()
-            if 'FOUR' in t or 'POTAGE' in t: return 'Four'
-            if 'FRITE' in t: return 'Frites'
-            if 'VAPEUR' in t and 'JAUNE' in t: return 'Vapeur Jaune'
-            if 'VAPEUR' in t and 'ROUGE' in t: return 'Vapeur Rouge'
-            if 'GRENAL' in t or 'GRENIL' in t: return 'Grenailles'
-            return 'Autre'
-
-        df_r['recette'] = df_r['type_prod'].apply(cat_recette)
-        df_r['famille'] = df_r['marque'].apply(
-            lambda m: 'PDP' if str(m).strip().upper() == 'PDP' else 'Championne')
-
-        rows_rec = []
-        for (recette, fam), g in df_r.groupby(['recette','famille']):
-            t = g['poids_tonne'].sum()
-            h = g['duree_h'].sum()
-            cad = t/h if h > 0 else 0
-            rows_rec.append({'Recette': recette, 'Famille': fam,
-                             'Tonnage (T)': round(t,1),
-                             'Cadence (T/h)': round(cad,2)})
-        if rows_rec:
-            df_rec = pd.DataFrame(rows_rec)
-            pivot_rec = df_rec.pivot_table(index='Recette', columns='Famille',
-                                           values=['Tonnage (T)','Cadence (T/h)'],
-                                           aggfunc='first').round(2)
-            st.dataframe(pivot_rec, use_container_width=True)
-
-            # Graphe cadences PDP vs Champ
-            pdp  = df_rec[df_rec['Famille']=='PDP']
-            chmp = df_rec[df_rec['Famille']=='Championne']
-            if not pdp.empty and not chmp.empty:
-                fig_rec = go.Figure()
-                fig_rec.add_trace(go.Bar(name='PDP', x=pdp['Recette'], y=pdp['Cadence (T/h)'],
-                                         marker_color='#AFCA0A',
-                                         text=pdp['Cadence (T/h)'].apply(lambda v: f"{v:.2f}"),
-                                         textposition='outside'))
-                fig_rec.add_trace(go.Bar(name='Championne', x=chmp['Recette'], y=chmp['Cadence (T/h)'],
-                                         marker_color='#FFEC00',
-                                         text=chmp['Cadence (T/h)'].apply(lambda v: f"{v:.2f}"),
-                                         textposition='outside'))
-                fig_rec.update_layout(barmode='group', title="Cadences PDP vs Championne par recette (T/h)",
-                                      plot_bgcolor='white', paper_bgcolor='white',
-                                      height=340, margin=dict(t=60,b=50),
-                                      legend=dict(orientation='h', yanchor='bottom', y=1.02))
-                st.plotly_chart(fig_rec, use_container_width=True)
-
-# ── FOOTER ────────────────────────────────────────────────────
+    # ── FOOTER ────────────────────────────────────────────────────
 show_footer()
