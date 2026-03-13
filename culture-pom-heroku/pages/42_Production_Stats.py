@@ -110,26 +110,28 @@ def save_objectif(ligne: str, objectif: float, date_debut: date,
 def load_data():
     try:
         conn = get_connection()
-        df = pd.read_sql("""
-            SELECT * FROM production_fiches
-            ORDER BY date_production
-        """, conn)
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM production_fiches ORDER BY date_production")
+        rows = cur.fetchall()
+        cur.close()
         conn.close()
-        if not df.empty:
-            df['date_production'] = pd.to_datetime(df['date_production'], errors='coerce')
-            df['poids_tonne']     = pd.to_numeric(df['poids_tonne'],     errors='coerce')
-            df['duree_h']         = pd.to_numeric(df['duree_h'],         errors='coerce')
-            df['cadence']         = pd.to_numeric(df['cadence'],         errors='coerce')
-            # Recalcul des colonnes dérivées — dropper NaT d'abord
-            df = df.dropna(subset=['date_production'])
-            iso = df['date_production'].dt.isocalendar()
-            df['semaine']       = iso.week.astype(int)
-            df['annee']         = iso.year.astype(int)
-            df['annee_semaine'] = df['annee'].astype(str) + '-S' + df['semaine'].astype(str).str.zfill(2)
-            df['jour_label']    = df['date_production'].dt.strftime('%d/%m')
-            df['ligne']         = df['ligne'].fillna('').str.strip().str.upper()
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame([dict(r) for r in rows])
+        df['date_production'] = pd.to_datetime(df['date_production'], errors='coerce')
+        df['poids_tonne']     = pd.to_numeric(df['poids_tonne'],     errors='coerce')
+        df['duree_h']         = pd.to_numeric(df['duree_h'],         errors='coerce')
+        df['cadence']         = pd.to_numeric(df['cadence'],         errors='coerce')
+        df = df.dropna(subset=['date_production'])
+        iso = df['date_production'].dt.isocalendar()
+        df['semaine']       = iso.week.astype(int)
+        df['annee']         = iso.year.astype(int)
+        df['annee_semaine'] = df['annee'].astype(str) + '-S' + df['semaine'].astype(str).str.zfill(2)
+        df['jour_label']    = df['date_production'].dt.strftime('%d/%m')
+        df['ligne']         = df['ligne'].fillna('').str.strip().str.upper()
         return df
-    except Exception:
+    except Exception as e:
+        st.error(f"Erreur chargement BDD production : {e}")
         return pd.DataFrame()
 
 # ── FALLBACK : lire depuis fichier si BDD vide ────────────────
