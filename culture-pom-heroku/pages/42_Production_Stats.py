@@ -279,6 +279,12 @@ DATE_FIN = date_fin
 
 # ── FONCTIONS UTILITAIRES ─────────────────────────────────────
 def filter_df(df, d_from, d_to):
+    if df.empty:
+        return df
+    # Forcer datetime au cas où la colonne serait encore en type object
+    if not pd.api.types.is_datetime64_any_dtype(df['date_production']):
+        df = df.copy()
+        df['date_production'] = pd.to_datetime(df['date_production'], errors='coerce')
     mask = (df['date_production'].dt.date >= d_from) & (df['date_production'].dt.date <= d_to)
     return df[mask].copy()
 
