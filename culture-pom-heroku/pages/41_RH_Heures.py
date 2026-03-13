@@ -598,6 +598,35 @@ def tableau_absences(df_hebdo: pd.DataFrame):
 
 
 # ============================================================
+# FILTRE SITE GLOBAL
+# ============================================================
+SITES_OPTIONS = {
+    "🏭 Tous les sites": None,
+    "COR — Corroy":          "COR",
+    "LMT — La Motte-Tilly":  "LMT",
+    "SFY — Saint-Flavy":     "SFY",
+    "MAIN — Maintenance":    "MAIN",
+}
+
+col_site_f, _ = st.columns([2, 6])
+with col_site_f:
+    site_label = st.selectbox(
+        "🏭 Site",
+        options=list(SITES_OPTIONS.keys()),
+        index=0,
+        key="rh_filtre_site",
+    )
+FILTRE_SITE = SITES_OPTIONS[site_label]
+
+def appliquer_filtre_site(df: pd.DataFrame) -> pd.DataFrame:
+    """Filtre le DataFrame sur le site sélectionné globalement."""
+    if FILTRE_SITE is None or df.empty or 'site' not in df.columns:
+        return df
+    return df[df['site'].str.upper().str.strip() == FILTRE_SITE]
+
+st.markdown("---")
+
+# ============================================================
 # ONGLETS PRINCIPAUX
 # ============================================================
 
@@ -715,7 +744,7 @@ with tab_semaine:
         with col_sel2:
             filtre_type = st.selectbox("Type de salarié", ["Tous", "CDI/CDD", "Intérimaire"], key="sem_type")
 
-        df_sem = get_pointages_semaine(sem_choisie)
+        df_sem = appliquer_filtre_site(get_pointages_semaine(sem_choisie))
 
         if df_sem.empty:
             st.info(f"Aucune donnée pour la semaine {sem_choisie}.")
@@ -805,7 +834,7 @@ with tab_evolution:
             "Jusqu'au", value=date.today(), key="ev_fin"
         )
 
-    df_ev = get_pointages_periode(date_ev_debut, date_ev_fin)
+    df_ev = appliquer_filtre_site(get_pointages_periode(date_ev_debut, date_ev_fin))
 
     if df_ev.empty:
         st.info("Aucune donnée pour cette période.")
@@ -902,8 +931,8 @@ with tab_evolution:
             parts = sem_cmp.split('-S')
             if len(parts) == 2:
                 sem_n1 = f"{int(parts[0]) - 1}-S{parts[1]}"
-                df_n1 = get_pointages_semaine(sem_n1)
-                df_n = get_pointages_semaine(sem_cmp)
+                df_n1 = appliquer_filtre_site(get_pointages_semaine(sem_n1))
+                df_n = appliquer_filtre_site(get_pointages_semaine(sem_cmp))
                 if not df_n.empty:
                     h_n  = float(df_n['nb_heures'].sum())
                     sal_n = df_n['matricule'].nunique()
@@ -943,7 +972,7 @@ with tab_salarie:
         col_sal1, col_sal2 = st.columns(2)
         with col_sal1:
             sem_sal = st.selectbox("Semaine", semaines_sal, key="sal_sem")
-        df_sal_sem = get_pointages_semaine(sem_sal)
+        df_sal_sem = appliquer_filtre_site(get_pointages_semaine(sem_sal))
         df_heb_sal = calcul_hebdo(df_sal_sem) if not df_sal_sem.empty else pd.DataFrame()
 
         salaries_list = []
@@ -1056,7 +1085,7 @@ with tab_ateliers:
         with col_at2:
             granularite = st.radio("Granularité", ["Semaine", "Par jour"], horizontal=True, key="at_gran")
 
-        df_at = get_pointages_semaine(sem_at)
+        df_at = appliquer_filtre_site(get_pointages_semaine(sem_at))
 
         if df_at.empty:
             st.info(f"Aucune donnée pour {sem_at}.")
