@@ -316,6 +316,89 @@ def _lire_onglet_openpyxl(ws, col_map: dict) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+def _upsert_supply_df(df_all: pd.DataFrame, username: str):
+    """
+    Upsert en BDD un DataFrame déjà normalisé (issu du cache session_state).
+    Retourne (ok, message, nb_inserts, nb_skips).
+    """
+    conn = get_connection()
+    if not conn:
+        return False, "Connexion BDD impossible.", 0, 0
+
+    nb_insert = 0
+    nb_skip = 0
+
+    try:
+        cursor = conn.cursor()
+
+        for _, r in df_all.iterrows():
+            try:
+                cursor.execute("""
+                    INSERT INTO supply_transports
+                        (jour, date_transport, semaine_text, statut,
+                         transporteur, chauffeur, site_chargement, quoi,
+                         site_livraison_brut, site_livraison_norm,
+                         condi, infos, heure_arrivee, destination, agreage,
+                         annee_semaine, imported_by, imported_at)
+                    VALUES
+                        (%s, %s, %s, %s,
+                         %s, %s, %s, %s,
+                         %s, %s,
+                         %s, %s, %s, %s, %s,
+                         %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (date_transport, transporteur, chauffeur, site_chargement, quoi, site_livraison_brut)
+                    DO UPDATE SET
+                        statut               = EXCLUDED.statut,
+                        site_livraison_norm  = EXCLUDED.site_livraison_norm,
+                        semaine_text         = EXCLUDED.semaine_text,
+                        condi                = EXCLUDED.condi,
+                        infos                = EXCLUDED.infos,
+                        destination          = EXCLUDED.destination,
+                        annee_semaine        = EXCLUDED.annee_semaine,
+                        imported_by          = EXCLUDED.imported_by,
+                        imported_at          = CURRENT_TIMESTAMP
+                    RETURNING (xmax = 0) AS inserted
+                """, (
+                    r['jour'],
+                    r['date_transport'],
+                    r['semaine_text'],
+                    r['statut'],
+                    r['transporteur'],
+                    r['chauffeur'],
+                    r['site_chargement'],
+                    r['quoi'],
+                    r['site_livraison_brut'],
+                    r['site_livraison_norm'],
+                    r['condi'],
+                    r['infos'],
+                    r['heure_arrivee'],
+                    r['destination'],
+                    r['agreage'],
+                    r['annee_semaine'],
+                    username,
+                ))
+                result = cursor.fetchone()
+                if result and result['inserted']:
+                    nb_insert += 1
+                else:
+                    nb_skip += 1
+            except Exception:
+                nb_skip += 1
+                conn.rollback()
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        msg = (f"✅ Import OK — {nb_insert} nouvelles lignes / {nb_skip} mises à jour ou ignorées")
+        return True, msg, nb_insert, nb_skip
+
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return False, f"Erreur BDD : {str(e)}", 0, 0
+
+
 def importer_supply(uploaded_file, username: str):
     """
     Lit les onglets 'Planning appro' et 'Archives' du fichier Excel,
@@ -716,58 +799,96 @@ with tab_import:
     )
 
     if uploaded:
-        # Aperçu
-        try:
-            xl_prev = pd.ExcelFile(uploaded)
-            onglets_dispo = xl_prev.sheet_names
-            st.caption(f"Onglets détectés : {', '.join(onglets_dispo)}")
+        # ── Lecture unique avec openpyxl read_only ──────────────
+        # On lit le fichier une seule fois et on stocke le DataFrame
+        # en session_state pour éviter une double lecture mémoire.
+        import openpyxl, io
 
-            today = date.today()
-            dfs_prev = []
-            for ong in ['Planning appro', 'Archives']:
-                if ong in onglets_dispo:
-                    df_raw = xl_prev.parse(ong)
-                    df_norm = lire_onglet(df_raw, today)
-                    dfs_prev.append(df_norm)
+        file_id = f"{uploaded.name}_{uploaded.size}"
+        if st.session_state.get('supply_file_id') != file_id:
+            # Nouveau fichier : lire et mettre en cache
+            with st.spinner("Lecture du fichier en cours…"):
+                try:
+                    file_bytes = uploaded.read()
+                    wb = openpyxl.load_workbook(
+                        io.BytesIO(file_bytes),
+                        read_only=True,
+                        data_only=True,
+                    )
+                    col_map = {
+                        'JOUR': 'jour', 'DATE': 'date_brute',
+                        'TRANSP': 'transporteur', 'CHAUFFEUR': 'chauffeur',
+                        'SITE CHARGEMENT': 'site_chargement', 'QUOI ?': 'quoi',
+                        'SITE LIVRAISON': 'site_livraison_brut', 'CONDI': 'condi',
+                        'INFOS': 'infos', "HEURE D'ARRIVEE SUR SITE": 'heure_arrivee',
+                        'DESTINATION': 'destination', 'AGREAGE': 'agreage',
+                    }
+                    today = date.today()
+                    dfs_prev = []
+                    onglets_lus = []
+                    for ong in ['Planning appro', 'Archives']:
+                        if ong in wb.sheetnames:
+                            df_raw = _lire_onglet_openpyxl(wb[ong], col_map)
+                            df_norm = lire_onglet(df_raw, today)
+                            if not df_norm.empty:
+                                dfs_prev.append(df_norm)
+                                onglets_lus.append(ong)
+                    wb.close()
 
-            if dfs_prev:
-                df_apercu = pd.concat(dfs_prev, ignore_index=True).dropna(
-                    subset=['transporteur', 'chauffeur'], how='all'
-                )
-                nb_r = len(df_apercu[df_apercu['statut'] == 'realise'])
-                nb_p = len(df_apercu[df_apercu['statut'] == 'previsionnel'])
-                nb_c = len(df_apercu[df_apercu['statut'] == 'conditionnel'])
-
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Lignes total", len(df_apercu))
-                c2.metric("✅ Réalisé", nb_r)
-                c3.metric("🔮 Prévisionnel", nb_p)
-                c4.metric("⚠️ Conditionnel", nb_c)
-
-                with st.expander("Aperçu des données (20 premières lignes)"):
-                    cols_show = ['statut', 'annee_semaine', 'date_transport', 'semaine_text',
-                                 'transporteur', 'chauffeur', 'site_chargement', 'quoi',
-                                 'site_livraison_norm', 'condi']
-                    cols_show = [c for c in cols_show if c in df_apercu.columns]
-                    st.dataframe(df_apercu[cols_show].head(20),
-                                 use_container_width=True, hide_index=True)
-
-                uploaded.seek(0)
-
-                if st.button("🚀 Importer dans la base", type="primary", use_container_width=True):
-                    with st.spinner("Import en cours…"):
-                        ok, msg, nb_ins, nb_sk = importer_supply(
-                            uploaded,
-                            st.session_state.get('username', '?')
+                    if dfs_prev:
+                        df_cache = pd.concat(dfs_prev, ignore_index=True).dropna(
+                            subset=['transporteur', 'chauffeur'], how='all'
                         )
-                    if ok:
-                        st.success(msg)
-                        st.cache_data.clear()
+                        st.session_state['supply_df_cache']   = df_cache
+                        st.session_state['supply_onglets']    = onglets_lus
+                        st.session_state['supply_file_id']    = file_id
                     else:
-                        st.error(msg)
+                        st.error("Aucune donnée exploitable dans les onglets.")
+                        st.stop()
 
-        except Exception as e:
-            st.error(f"Erreur lecture fichier : {str(e)}")
+                except Exception as e:
+                    st.error(f"Erreur lecture fichier : {str(e)}")
+                    st.stop()
+
+        # ── Affichage aperçu depuis cache ────────────────────────
+        df_apercu  = st.session_state.get('supply_df_cache', pd.DataFrame())
+        ong_lus    = st.session_state.get('supply_onglets', [])
+
+        if not df_apercu.empty:
+            st.caption(f"Onglets lus : {', '.join(ong_lus)}")
+
+            nb_r = len(df_apercu[df_apercu['statut'] == 'realise'])
+            nb_p = len(df_apercu[df_apercu['statut'] == 'previsionnel'])
+            nb_c = len(df_apercu[df_apercu['statut'] == 'conditionnel'])
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Lignes total",      len(df_apercu))
+            c2.metric("✅ Réalisé",         nb_r)
+            c3.metric("🔮 Prévisionnel",    nb_p)
+            c4.metric("⚠️ Conditionnel",    nb_c)
+
+            with st.expander("Aperçu des données (20 premières lignes)"):
+                cols_show = ['statut', 'annee_semaine', 'date_transport', 'semaine_text',
+                             'transporteur', 'chauffeur', 'site_chargement', 'quoi',
+                             'site_livraison_norm', 'condi']
+                cols_show = [c for c in cols_show if c in df_apercu.columns]
+                st.dataframe(df_apercu[cols_show].head(20),
+                             use_container_width=True, hide_index=True)
+
+            if st.button("🚀 Importer dans la base", type="primary", use_container_width=True):
+                with st.spinner("Import en cours…"):
+                    # Upsert direct depuis le DataFrame en cache (pas de relecture fichier)
+                    ok, msg, nb_ins, nb_sk = _upsert_supply_df(
+                        df_apercu,
+                        st.session_state.get('username', '?')
+                    )
+                if ok:
+                    st.success(msg)
+                    st.cache_data.clear()
+                    # Vider le cache fichier pour forcer relecture au prochain upload
+                    st.session_state.pop('supply_file_id', None)
+                else:
+                    st.error(msg)
 
     # Dernier import
     try:
