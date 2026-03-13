@@ -115,6 +115,11 @@ def load_data():
             ORDER BY date_production
         """, conn)
         conn.close()
+        if not df.empty:
+            df['date_production'] = pd.to_datetime(df['date_production'], errors='coerce')
+            df['poids_tonne']     = pd.to_numeric(df['poids_tonne'],     errors='coerce')
+            df['duree_h']         = pd.to_numeric(df['duree_h'],         errors='coerce')
+            df['cadence']         = pd.to_numeric(df['cadence'],         errors='coerce')
         return df
     except Exception:
         return pd.DataFrame()
