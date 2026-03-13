@@ -281,27 +281,92 @@ def lire_onglet(df_raw: pd.DataFrame, today: date) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _lire_onglet_openpyxl(ws, col_map: dict) -> pd.DataFrame:
+    """
+    Lit un worksheet openpyxl en mode read_only et retourne un DataFrame
+    avec uniquement les colonnes définies dans col_map.
+    Évite de charger le formatage et les cellules vides (économie mémoire).
+    """
+    rows_iter = ws.iter_rows(values_only=True)
+
+    # Première ligne = en-têtes
+    try:
+        headers = [str(h).strip() if h is not None else '' for h in next(rows_iter)]
+    except StopIteration:
+        return pd.DataFrame()
+
+    # Index des colonnes utiles uniquement
+    col_indices = {}
+    for src_name, dst_name in col_map.items():
+        if src_name in headers:
+            col_indices[headers.index(src_name)] = dst_name
+
+    if not col_indices:
+        return pd.DataFrame()
+
+    records = []
+    for row in rows_iter:
+        # Ignorer les lignes entièrement vides
+        if all(v is None for v in row):
+            continue
+        record = {dst: row[idx] if idx < len(row) else None
+                  for idx, dst in col_indices.items()}
+        records.append(record)
+
+    return pd.DataFrame(records)
+
+
 def importer_supply(uploaded_file, username: str):
     """
     Lit les onglets 'Planning appro' et 'Archives' du fichier Excel,
     fusionne, normalise et upsert en BDD.
     Retourne (ok, message, nb_inserts, nb_skips).
+    Utilise openpyxl read_only=True pour éviter l'explosion mémoire
+    sur les fichiers Archives volumineux.
     """
+    import openpyxl
+    import io
+
     today = date.today()
     dfs = []
     onglets_lus = []
 
+    # Mapping colonnes Excel → noms internes
+    col_map = {
+        'JOUR':                    'jour',
+        'DATE':                    'date_brute',
+        'TRANSP':                  'transporteur',
+        'CHAUFFEUR':               'chauffeur',
+        'SITE CHARGEMENT':         'site_chargement',
+        'QUOI ?':                  'quoi',
+        'SITE LIVRAISON':          'site_livraison_brut',
+        'CONDI':                   'condi',
+        'INFOS':                   'infos',
+        "HEURE D'ARRIVEE SUR SITE": 'heure_arrivee',
+        'DESTINATION':             'destination',
+        'AGREAGE':                 'agreage',
+    }
+
     try:
-        xl = pd.ExcelFile(uploaded_file)
+        # Lire le fichier en mémoire une seule fois
+        file_bytes = uploaded_file.read()
+        wb = openpyxl.load_workbook(
+            io.BytesIO(file_bytes),
+            read_only=True,   # pas de chargement du formatage
+            data_only=True,   # valeurs calculées, pas les formules
+        )
 
         for onglet in ['Planning appro', 'Archives']:
-            if onglet not in xl.sheet_names:
+            if onglet not in wb.sheetnames:
                 continue
-            df_raw = xl.parse(onglet)
+            ws = wb[onglet]
+            df_raw = _lire_onglet_openpyxl(ws, col_map)
             df_norm = lire_onglet(df_raw, today)
             if not df_norm.empty:
                 dfs.append(df_norm)
                 onglets_lus.append(onglet)
+
+        wb.close()
 
         if not dfs:
             return False, "Aucune donnée exploitable trouvée dans les onglets.", 0, 0
