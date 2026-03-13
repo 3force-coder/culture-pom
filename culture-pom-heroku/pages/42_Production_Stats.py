@@ -106,7 +106,7 @@ def save_objectif(ligne: str, objectif: float, date_debut: date,
         return False
 
 # ── CHARGEMENT DONNÉES ────────────────────────────────────────
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def load_data():
     try:
         conn = get_connection()
@@ -506,10 +506,11 @@ with tab_import:
                 with st.spinner("Import en cours…"):
                     ins, upd, err, last_err = upsert_production(df_preview, user)
                 total = ins + upd
+                st.cache_data.clear()
                 if total > 0 and err == 0:
-                    st.success(f"✅ Import terminé — {ins} insérées, {upd} mises à jour")
-                    st.cache_data.clear()
+                    st.success(f"✅ Import terminé — {ins} insérées, {upd} mises à jour.")
                     st.session_state.pop('prod_file_id', None)
+                    st.session_state.pop('prod_df_cache', None)
                     st.rerun()
                 elif total > 0:
                     st.warning(f"⚠️ Import partiel — {ins} insérées, {upd} mises à jour, {err} erreurs")
