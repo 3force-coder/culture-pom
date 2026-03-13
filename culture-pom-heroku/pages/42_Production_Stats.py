@@ -120,6 +120,13 @@ def load_data():
             df['poids_tonne']     = pd.to_numeric(df['poids_tonne'],     errors='coerce')
             df['duree_h']         = pd.to_numeric(df['duree_h'],         errors='coerce')
             df['cadence']         = pd.to_numeric(df['cadence'],         errors='coerce')
+            # Recalcul des colonnes dérivées pour éviter KeyError si NULL en BDD
+            iso = df['date_production'].dt.isocalendar()
+            df['semaine']       = iso.week.astype('Int64')
+            df['annee']         = iso.year.astype('Int64')
+            df['annee_semaine'] = df['annee'].astype(str) + '-S' + df['semaine'].astype(str).str.zfill(2)
+            df['jour_label']    = df['date_production'].dt.strftime('%d/%m')
+            df['ligne']         = df['ligne'].fillna('').str.strip().str.upper()
         return df
     except Exception:
         return pd.DataFrame()
