@@ -447,6 +447,103 @@ def retirer_element_planning(element_id):
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
+
+def deplacer_element_planning(element_id, nouvelle_date, nouvelle_heure, planning_df, ligne_lavage, horaires_config):
+    """
+    Déplace un élément du planning vers un nouveau créneau.
+    Décale en cascade tous les éléments suivants du même jour/ligne
+    dont l'heure_debut < nouvelle heure de fin du job déplacé.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        # Récupérer l'élément à déplacer
+        cursor.execute("""
+            SELECT id, duree_minutes, ligne_lavage, annee, semaine
+            FROM lavages_planning_elements
+            WHERE id = %s
+        """, (element_id,))
+        elem = cursor.fetchone()
+        if not elem:
+            return False, "❌ Élément introuvable"
+
+        duree = int(elem['duree_minutes'])
+
+        # Calculer nouvelle heure_fin
+        debut_min = nouvelle_heure.hour * 60 + nouvelle_heure.minute
+        fin_min = debut_min + duree
+        nouvelle_heure_fin = time(min(23, fin_min // 60), fin_min % 60)
+
+        # Recalculer annee/semaine selon la nouvelle date
+        nouvelle_annee, nouvelle_semaine, _ = nouvelle_date.isocalendar()
+
+        # Mettre à jour l'élément déplacé
+        cursor.execute("""
+            UPDATE lavages_planning_elements
+            SET date_prevue = %s,
+                heure_debut = %s,
+                heure_fin = %s,
+                annee = %s,
+                semaine = %s
+            WHERE id = %s
+        """, (nouvelle_date, nouvelle_heure, nouvelle_heure_fin,
+              nouvelle_annee, nouvelle_semaine, element_id))
+
+        # Décalage en cascade : éléments suivants sur le même jour/ligne
+        # dont heure_debut est compris entre l'ancienne position et la nouvelle heure_fin
+        # On récupère tous les éléments du jour/ligne triés par heure_debut
+        cursor.execute("""
+            SELECT id, heure_debut, heure_fin, duree_minutes
+            FROM lavages_planning_elements
+            WHERE date_prevue = %s
+              AND ligne_lavage = %s
+              AND id != %s
+            ORDER BY heure_debut
+        """, (nouvelle_date, ligne_lavage, element_id))
+        suivants = cursor.fetchall()
+
+        # Recalculer en cascade : chaque élément qui chevauche ou suit immédiatement
+        curseur_temps = fin_min  # On part de la fin du job déplacé
+        nb_decales = 0
+        for s in suivants:
+            if s['heure_debut'] is None:
+                continue
+            s_debut = s['heure_debut'].hour * 60 + s['heure_debut'].minute
+            s_fin = s['heure_fin'].hour * 60 + s['heure_fin'].minute if s['heure_fin'] else s_debut + int(s['duree_minutes'])
+            s_duree = int(s['duree_minutes'])
+
+            if s_debut < curseur_temps:
+                # Ce slot chevauche → on le pousse après le curseur
+                nouveau_debut = curseur_temps
+                nouveau_fin = nouveau_debut + s_duree
+                nouvelle_h_debut = time(min(23, nouveau_debut // 60), nouveau_debut % 60)
+                nouvelle_h_fin = time(min(23, nouveau_fin // 60), nouveau_fin % 60)
+                cursor.execute("""
+                    UPDATE lavages_planning_elements
+                    SET heure_debut = %s, heure_fin = %s
+                    WHERE id = %s
+                """, (nouvelle_h_debut, nouvelle_h_fin, s['id']))
+                curseur_temps = nouveau_fin
+                nb_decales += 1
+            else:
+                # Pas de chevauchement, on avance le curseur
+                curseur_temps = max(curseur_temps, s_fin)
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        msg = f"✅ Déplacé à {nouvelle_heure.strftime('%H:%M')}"
+        if nb_decales > 0:
+            msg += f" — {nb_decales} élément(s) décalé(s) en cascade"
+        return True, msg
+
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
 def demarrer_job(job_id):
     """Démarre un job (PRÉVU → EN_COURS)"""
     try:
@@ -1627,7 +1724,7 @@ with tab1:
                                 
                                 # Boutons action selon statut
                                 if job_statut == 'PRÉVU':
-                                    col_start, col_del = st.columns(2)
+                                    col_start, col_move, col_del = st.columns(3)
                                     with col_start:
                                         if st.button("▶️", key=f"start_{elem['id']}", help="Démarrer"):
                                             success, msg = demarrer_job(int(elem['job_id']))
@@ -1636,10 +1733,72 @@ with tab1:
                                                 st.rerun()
                                             else:
                                                 st.error(msg)
+                                    with col_move:
+                                        if st.button("🔀", key=f"move_{elem['id']}", help="Déplacer"):
+                                            st.session_state[f'show_move_{elem["id"]}'] = not st.session_state.get(f'show_move_{elem["id"]}', False)
+                                            st.rerun()
                                     with col_del:
                                         if st.button("❌", key=f"del_{elem['id']}", help="Retirer"):
                                             retirer_element_planning(int(elem['id']))
                                             st.rerun()
+                                    
+                                    # Formulaire inline de déplacement
+                                    if st.session_state.get(f'show_move_{elem["id"]}', False):
+                                        elem_id_move = int(elem['id'])
+                                        duree_move = int(elem['duree_minutes']) if pd.notna(elem['duree_minutes']) else 60
+                                        
+                                        jours_move = [f"{['Lun','Mar','Mer','Jeu','Ven','Sam'][k]} {(week_start + timedelta(days=k)).strftime('%d/%m')}" for k in range(6)]
+                                        # Index du jour actuel
+                                        try:
+                                            date_elem_str = str(elem['date_prevue'])[:10]
+                                            jour_actuel_idx = next((k for k in range(6) if str(week_start + timedelta(days=k)) == date_elem_str), 0)
+                                        except:
+                                            jour_actuel_idx = 0
+                                        
+                                        jour_cible_str = st.selectbox(
+                                            "Nouveau jour",
+                                            jours_move,
+                                            index=jour_actuel_idx,
+                                            key=f"move_jour_{elem_id_move}"
+                                        )
+                                        jour_cible_idx = jours_move.index(jour_cible_str)
+                                        date_cible_move = week_start + timedelta(days=jour_cible_idx)
+                                        
+                                        h_debut_defaut = horaires_config.get(jour_cible_idx, {}).get('debut', time(5, 0))
+                                        heure_cible = st.time_input(
+                                            "Nouvelle heure",
+                                            value=h_debut_defaut,
+                                            step=900,
+                                            key=f"move_heure_{elem_id_move}"
+                                        )
+                                        
+                                        # Suggestion auto créneau libre (en excluant le job lui-même)
+                                        planning_sans_elem = planning_df[planning_df['id'] != elem_id_move] if not planning_df.empty else planning_df
+                                        heure_optimale_move, _, msg_move_info = trouver_prochain_creneau_libre(
+                                            planning_sans_elem, date_cible_move,
+                                            st.session_state.selected_ligne,
+                                            heure_cible, duree_move
+                                        )
+                                        if msg_move_info:
+                                            st.info(msg_move_info)
+                                        
+                                        col_ok, col_ann = st.columns(2)
+                                        with col_ok:
+                                            if st.button("✅", key=f"move_ok_{elem_id_move}", type="primary", use_container_width=True):
+                                                success, msg = deplacer_element_planning(
+                                                    elem_id_move, date_cible_move, heure_optimale_move,
+                                                    planning_df, st.session_state.selected_ligne, horaires_config
+                                                )
+                                                if success:
+                                                    st.session_state.pop(f'show_move_{elem_id_move}', None)
+                                                    st.success(msg)
+                                                    st.rerun()
+                                                else:
+                                                    st.error(msg)
+                                        with col_ann:
+                                            if st.button("✖", key=f"move_ann_{elem_id_move}", use_container_width=True):
+                                                st.session_state.pop(f'show_move_{elem_id_move}', None)
+                                                st.rerun()
                                 
                                 elif job_statut == 'EN_COURS':
                                     # Afficher temps écoulé
