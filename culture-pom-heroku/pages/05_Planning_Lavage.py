@@ -490,31 +490,30 @@ def deplacer_element_planning(element_id, nouvelle_date, nouvelle_heure, plannin
         """, (nouvelle_date, nouvelle_heure, nouvelle_heure_fin,
               nouvelle_annee, nouvelle_semaine, element_id))
 
-        # Décalage en cascade : éléments suivants sur le même jour/ligne
-        # dont heure_debut est compris entre l'ancienne position et la nouvelle heure_fin
-        # On récupère tous les éléments du jour/ligne triés par heure_debut
+        # Cascade : uniquement les éléments dont heure_debut >= debut du job déplacé
+        # Les éléments AVANT ne sont jamais touchés
         cursor.execute("""
             SELECT id, heure_debut, heure_fin, duree_minutes
             FROM lavages_planning_elements
             WHERE date_prevue = %s
               AND ligne_lavage = %s
               AND id != %s
+              AND heure_debut >= %s
             ORDER BY heure_debut
-        """, (nouvelle_date, ligne_lavage, element_id))
+        """, (nouvelle_date, ligne_lavage, element_id, nouvelle_heure))
         suivants = cursor.fetchall()
 
-        # Recalculer en cascade : chaque élément qui chevauche ou suit immédiatement
-        curseur_temps = fin_min  # On part de la fin du job déplacé
+        # Décaler en cascade uniquement les éléments qui chevauchent la nouvelle position
+        curseur_temps = fin_min  # Fin du job déplacé
         nb_decales = 0
         for s in suivants:
             if s['heure_debut'] is None:
                 continue
             s_debut = s['heure_debut'].hour * 60 + s['heure_debut'].minute
-            s_fin = s['heure_fin'].hour * 60 + s['heure_fin'].minute if s['heure_fin'] else s_debut + int(s['duree_minutes'])
             s_duree = int(s['duree_minutes'])
 
             if s_debut < curseur_temps:
-                # Ce slot chevauche → on le pousse après le curseur
+                # Chevauchement → pousser après le curseur
                 nouveau_debut = curseur_temps
                 nouveau_fin = nouveau_debut + s_duree
                 nouvelle_h_debut = time(min(23, nouveau_debut // 60), nouveau_debut % 60)
@@ -527,8 +526,8 @@ def deplacer_element_planning(element_id, nouvelle_date, nouvelle_heure, plannin
                 curseur_temps = nouveau_fin
                 nb_decales += 1
             else:
-                # Pas de chevauchement, on avance le curseur
-                curseur_temps = max(curseur_temps, s_fin)
+                # Plus de chevauchement : on s'arrête
+                break
 
         conn.commit()
         cursor.close()
@@ -1772,21 +1771,13 @@ with tab1:
                                             key=f"move_heure_{elem_id_move}"
                                         )
                                         
-                                        # Suggestion auto créneau libre (en excluant le job lui-même)
-                                        planning_sans_elem = planning_df[planning_df['id'] != elem_id_move] if not planning_df.empty else planning_df
-                                        heure_optimale_move, _, msg_move_info = trouver_prochain_creneau_libre(
-                                            planning_sans_elem, date_cible_move,
-                                            st.session_state.selected_ligne,
-                                            heure_cible, duree_move
-                                        )
-                                        if msg_move_info:
-                                            st.info(msg_move_info)
-                                        
+                                        # On place à l'heure exacte saisie.
+                                        # La cascade dans deplacer_element_planning gère les conflits.
                                         col_ok, col_ann = st.columns(2)
                                         with col_ok:
                                             if st.button("✅", key=f"move_ok_{elem_id_move}", type="primary", use_container_width=True):
                                                 success, msg = deplacer_element_planning(
-                                                    elem_id_move, date_cible_move, heure_optimale_move,
+                                                    elem_id_move, date_cible_move, heure_cible,
                                                     planning_df, st.session_state.selected_ligne, horaires_config
                                                 )
                                                 if success:
