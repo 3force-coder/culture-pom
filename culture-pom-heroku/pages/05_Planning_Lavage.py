@@ -878,6 +878,76 @@ def get_lots_bruts_disponibles():
         return pd.DataFrame()
 
 
+def get_recap_produits_lavage():
+    """
+    Récapitulatif besoin de lavage par produit commercial.
+    Pour chaque produit ayant des affectations BRUT :
+    - Besoin NET    = SUM(affectations poids_net_estime) des lots BRUT
+    - Stock LAVÉ    = stock LAVÉ existant sur les lots concernés
+    - Jobs prévus   = tonnage brut jobs PRÉVU/EN_COURS × 78% (équiv NET)
+    - Écart         = Besoin NET - Stock LAVÉ - Jobs prévus (>0 = manque)
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            WITH affectations_par_produit AS (
+                SELECT
+                    pa.code_produit_commercial,
+                    pc.marque,
+                    pc.libelle,
+                    pc.marque || ' ' || pc.libelle as produit_label,
+                    pa.lot_id,
+                    SUM(pa.poids_net_estime_tonnes) as affecte_net_tonnes
+                FROM previsions_affectations pa
+                JOIN ref_produits_commerciaux pc ON pa.code_produit_commercial = pc.code_produit
+                WHERE pa.is_active = TRUE
+                  AND pa.statut_stock = 'BRUT'
+                GROUP BY pa.code_produit_commercial, pc.marque, pc.libelle, pa.lot_id
+            ),
+            stock_lave_par_lot AS (
+                SELECT lot_id, SUM(poids_total_kg) / 1000 as stock_lave_tonnes
+                FROM stock_emplacements
+                WHERE is_active = TRUE AND statut_lavage = 'LAVÉ' AND nombre_unites > 0
+                GROUP BY lot_id
+            ),
+            jobs_par_lot AS (
+                SELECT lot_id, SUM(poids_brut_kg) / 1000 * 0.78 as jobs_net_estime
+                FROM lavages_jobs
+                WHERE statut IN ('PRÉVU', 'EN_COURS')
+                GROUP BY lot_id
+            )
+            SELECT
+                app.code_produit_commercial,
+                app.produit_label,
+                SUM(app.affecte_net_tonnes) as affecte_net_tonnes,
+                SUM(COALESCE(sl.stock_lave_tonnes, 0)) as stock_lave_tonnes,
+                SUM(COALESCE(jp.jobs_net_estime, 0)) as jobs_net_estime,
+                GREATEST(
+                    SUM(app.affecte_net_tonnes)
+                    - SUM(COALESCE(sl.stock_lave_tonnes, 0))
+                    - SUM(COALESCE(jp.jobs_net_estime, 0)),
+                    0
+                ) as besoin_restant_tonnes
+            FROM affectations_par_produit app
+            LEFT JOIN stock_lave_par_lot sl ON app.lot_id = sl.lot_id
+            LEFT JOIN jobs_par_lot jp ON app.lot_id = jp.lot_id
+            GROUP BY app.code_produit_commercial, app.produit_label
+            ORDER BY besoin_restant_tonnes DESC, app.produit_label
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        if rows:
+            df = pd.DataFrame([dict(r) for r in rows])
+            for col in ['affecte_net_tonnes', 'stock_lave_tonnes', 'jobs_net_estime', 'besoin_restant_tonnes']:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            return df
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"❌ Erreur récap produits : {str(e)}")
+        return pd.DataFrame()
+
 def get_besoins_lavage_affectations():
     """
     Récupère les besoins de lavage basés sur les affectations
@@ -1918,7 +1988,10 @@ with tab3:
         if besoins_df.empty:
             st.info("📭 Aucun besoin de lavage basé sur les affectations")
         else:
-            # KPIs
+            # Charger récap produits
+            recap_produits_df = get_recap_produits_lavage()
+            
+            # KPIs globaux
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("📦 Lots avec besoin", len(besoins_df))
@@ -1934,11 +2007,86 @@ with tab3:
             
             st.markdown("---")
             
-            # Filtre variété
-            varietes_besoins = ["Toutes"] + sorted(besoins_df['variete'].dropna().unique().tolist())
-            f_var_besoins = st.selectbox("Filtrer par variété", varietes_besoins, key="f_var_besoins")
+            # ============ RÉCAP PAR PRODUIT COMMERCIAL ============
+            if not recap_produits_df.empty:
+                with st.expander("📦 Récapitulatif besoin par produit commercial", expanded=True):
+                    df_recap_disp = recap_produits_df.copy()
+                    
+                    # Colonne écart colorée
+                    def format_ecart(row):
+                        restant = row['besoin_restant_tonnes']
+                        if restant <= 0:
+                            return "✅ Couvert"
+                        elif restant < 10:
+                            return f"🟡 -{restant:.1f} T"
+                        else:
+                            return f"🔴 -{restant:.1f} T"
+                    
+                    df_recap_disp['Statut'] = df_recap_disp.apply(format_ecart, axis=1)
+                    df_recap_disp = df_recap_disp.rename(columns={
+                        'produit_label': 'Produit',
+                        'affecte_net_tonnes': 'Besoin NET (T)',
+                        'stock_lave_tonnes': 'Stock LAVÉ (T)',
+                        'jobs_net_estime': 'Jobs prévus (T)',
+                        'besoin_restant_tonnes': 'Reste à laver (T)'
+                    })
+                    df_recap_disp = df_recap_disp[['Produit', 'Besoin NET (T)', 'Stock LAVÉ (T)', 'Jobs prévus (T)', 'Reste à laver (T)', 'Statut']]
+                    
+                    for col in ['Besoin NET (T)', 'Stock LAVÉ (T)', 'Jobs prévus (T)', 'Reste à laver (T)']:
+                        df_recap_disp[col] = df_recap_disp[col].round(1)
+                    
+                    st.dataframe(
+                        df_recap_disp,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Produit": st.column_config.TextColumn("Produit", width="large"),
+                            "Besoin NET (T)": st.column_config.NumberColumn("Besoin NET (T)", format="%.1f"),
+                            "Stock LAVÉ (T)": st.column_config.NumberColumn("Stock LAVÉ (T)", format="%.1f"),
+                            "Jobs prévus (T)": st.column_config.NumberColumn("Jobs prévus (T)", format="%.1f"),
+                            "Reste à laver (T)": st.column_config.NumberColumn("Reste à laver (T)", format="%.1f"),
+                            "Statut": st.column_config.TextColumn("Statut", width="small"),
+                        }
+                    )
             
+            st.markdown("---")
+            
+            # ============ FILTRES ============
+            col_f1, col_f2 = st.columns(2)
+            
+            with col_f1:
+                # Filtre produit commercial
+                if not recap_produits_df.empty:
+                    produits_options = sorted(recap_produits_df['produit_label'].dropna().unique().tolist())
+                    f_produit_besoins = st.multiselect(
+                        "🔍 Filtrer par produit commercial",
+                        produits_options,
+                        key="f_produit_besoins",
+                        placeholder="Tous les produits..."
+                    )
+                else:
+                    f_produit_besoins = []
+            
+            with col_f2:
+                # Filtre variété
+                varietes_besoins = ["Toutes"] + sorted(besoins_df['variete'].dropna().unique().tolist())
+                f_var_besoins = st.selectbox("🔍 Filtrer par variété", varietes_besoins, key="f_var_besoins")
+            
+            # Appliquer filtres
             df_besoins = besoins_df.copy()
+            
+            if f_produit_besoins:
+                # Trouver les lot_id correspondant aux produits sélectionnés
+                if not recap_produits_df.empty:
+                    codes_produits_sel = recap_produits_df[
+                        recap_produits_df['produit_label'].isin(f_produit_besoins)
+                    ]['code_produit_commercial'].tolist()
+                    # Filtrer les lots dont produits_liste contient au moins un produit sélectionné
+                    mask_produit = df_besoins['produits_liste'].apply(
+                        lambda pl: any(p.strip() in str(pl) for p in f_produit_besoins) if pd.notna(pl) else False
+                    )
+                    df_besoins = df_besoins[mask_produit]
+            
             if f_var_besoins != "Toutes":
                 df_besoins = df_besoins[df_besoins['variete'] == f_var_besoins]
             
