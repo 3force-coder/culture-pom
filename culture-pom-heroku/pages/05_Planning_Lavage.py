@@ -1318,7 +1318,7 @@ with tab1:
     # Parcourir session_state pour trouver un show_finish actif
     for key in list(st.session_state.keys()):
         if key.startswith('show_finish_') and st.session_state.get(key, False):
-            job_id_to_finish = int(key.replace('show_finish_', ''))
+            job_id_to_finish = int(float(key.replace('show_finish_', '')))
             # Chercher les données de ce job dans planning_df
             if not planning_df.empty:
                 job_rows = planning_df[(planning_df['job_id'] == job_id_to_finish) & (planning_df['type_element'] == 'JOB')]
@@ -1647,7 +1647,7 @@ with tab1:
                                         st.caption(f"⏱️ {minutes_ecoulees // 60}h{minutes_ecoulees % 60:02d} écoulées")
                                     
                                     if st.button("⏹️ Terminer", key=f"finish_{elem['id']}", type="primary", use_container_width=True):
-                                        st.session_state[f'show_finish_{elem["job_id"]}'] = True
+                                        st.session_state[f'show_finish_{int(elem["job_id"])}'] = True
                                         st.rerun()
                                     
                                     # Note: Le formulaire de terminaison s'affiche en pleine largeur au-dessus du calendrier
