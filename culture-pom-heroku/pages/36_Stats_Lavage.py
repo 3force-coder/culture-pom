@@ -958,7 +958,7 @@ with tab_import:
         if not deja_charge:
             try:
                 with st.spinner("Chargement et nettoyage du fichier..."):
-                    file_bytes = uploaded.read()
+                    file_bytes = uploaded.getvalue()
                     df_hist = charger_fichier_excel(file_bytes)
 
                 nb_lignes  = len(df_hist)
