@@ -130,6 +130,159 @@ def charger_fichier_excel(file_bytes):
     return df
 
 
+
+# ============================================================
+# FONCTIONS BDD — PERSISTANCE HISTORIQUE
+# ============================================================
+
+def sauvegarder_import_bdd(df, nom_fichier, imported_by="system"):
+    """
+    Persiste un import en BDD :
+    - Insère une ligne dans lavage_imports
+    - Insère toutes les lignes dans lavage_historique (ON CONFLICT DO NOTHING)
+    Retourne (import_id, nb_inserees, nb_ignorees)
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        annees_str = ", ".join(str(int(a)) for a in sorted(df["annee"].dropna().unique()))
+        nb_varietes = int(df["variete"].nunique())
+
+        # 1. Créer l'entrée import
+        cursor.execute("""
+            INSERT INTO lavage_imports (nom_fichier, nb_lignes, annees, nb_varietes, imported_by)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
+        """, (nom_fichier, len(df), annees_str, nb_varietes, imported_by))
+        import_id = cursor.fetchone()["id"]
+
+        # 2. Insérer les lignes une par une avec ON CONFLICT DO NOTHING
+        nb_inserees = 0
+        nb_ignorees = 0
+        for _, row in df.iterrows():
+            date_ligne = row["date"].date() if pd.notna(row["date"]) else None
+            try:
+                cursor.execute("""
+                    INSERT INTO lavage_historique (
+                        import_id, semaine, annee, date_ligne,
+                        variete, producteur,
+                        pallox, poids_moy_sale, poids_brut,
+                        poids_lave, pallox_laves, poids_moy_lave,
+                        poids_dechets, poids_grenailles, poids_terre,
+                        rendement_pct, pct_dechets, pct_grenailles, pct_terre,
+                        observation
+                    ) VALUES (
+                        %s, %s, %s, %s,
+                        %s, %s,
+                        %s, %s, %s,
+                        %s, %s, %s,
+                        %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s
+                    )
+                    ON CONFLICT ON CONSTRAINT uq_lavage_historique DO NOTHING
+                """, (
+                    import_id,
+                    int(row["semaine"]) if pd.notna(row["semaine"]) else None,
+                    int(row["annee"])   if pd.notna(row["annee"])   else None,
+                    date_ligne,
+                    str(row["variete"])    if pd.notna(row["variete"])    else None,
+                    str(row["producteur"]) if pd.notna(row["producteur"]) else None,
+                    int(row["pallox"])          if pd.notna(row["pallox"])          else 0,
+                    float(row["poids_moy_sale"]) if pd.notna(row["poids_moy_sale"]) else 0,
+                    float(row["poids_brut"])     if pd.notna(row["poids_brut"])     else 0,
+                    float(row["poids_lave"])     if pd.notna(row["poids_lave"])     else 0,
+                    int(row["pallox_laves"])     if pd.notna(row["pallox_laves"])   else 0,
+                    float(row["poids_moy_lave"]) if pd.notna(row["poids_moy_lave"]) else 0,
+                    float(row["poids_dechets"])   if pd.notna(row["poids_dechets"])   else 0,
+                    float(row["poids_grenailles"]) if pd.notna(row["poids_grenailles"]) else 0,
+                    float(row["poids_terre"])     if pd.notna(row["poids_terre"])     else 0,
+                    float(row["rendement_pct"])   if pd.notna(row["rendement_pct"])   else None,
+                    float(row["pct_dechets"])     if pd.notna(row["pct_dechets"])     else None,
+                    float(row["pct_grenailles"])  if pd.notna(row["pct_grenailles"])  else None,
+                    float(row["pct_terre"])       if pd.notna(row["pct_terre"])       else None,
+                    str(row["observation"]) if "observation" in row.index and pd.notna(row["observation"]) else None,
+                ))
+                if cursor.rowcount > 0:
+                    nb_inserees += 1
+                else:
+                    nb_ignorees += 1
+            except Exception:
+                nb_ignorees += 1
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, import_id, nb_inserees, nb_ignorees, ""
+
+    except Exception as e:
+        if "conn" in locals():
+            conn.rollback()
+        return False, None, 0, 0, str(e)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_imports_historique():
+    """Récupère les 3 derniers imports depuis BDD"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, nom_fichier, date_import, nb_lignes, annees, nb_varietes, imported_by
+            FROM lavage_imports
+            ORDER BY date_import DESC
+            LIMIT 3
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        if rows:
+            return pd.DataFrame([dict(r) for r in rows])
+        return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_historique_bdd():
+    """Récupère toutes les données historique depuis BDD"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                lh.semaine, lh.annee, lh.date_ligne as date,
+                lh.variete, lh.producteur,
+                lh.pallox, lh.poids_moy_sale, lh.poids_brut,
+                lh.poids_lave, lh.pallox_laves, lh.poids_moy_lave,
+                lh.poids_dechets, lh.poids_grenailles, lh.poids_terre,
+                lh.rendement_pct, lh.pct_dechets, lh.pct_grenailles, lh.pct_terre,
+                lh.observation
+            FROM lavage_historique lh
+            WHERE lh.poids_brut > 0
+            ORDER BY lh.annee, lh.semaine, lh.date_ligne
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        if rows:
+            df = pd.DataFrame([dict(r) for r in rows])
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df["annee"] = pd.to_numeric(df["annee"], errors="coerce")
+            df["semaine"] = pd.to_numeric(df["semaine"], errors="coerce")
+            num_cols = ["pallox","poids_moy_sale","poids_brut","poids_lave","pallox_laves",
+                        "poids_moy_lave","poids_dechets","poids_grenailles","poids_terre",
+                        "rendement_pct","pct_dechets","pct_grenailles","pct_terre"]
+            for c in num_cols:
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+            return df
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Erreur chargement historique BDD : {str(e)}")
+        return pd.DataFrame()
+
 # ============================================================
 # FONCTIONS DONNÉES POMI (BDD)
 # ============================================================
@@ -784,51 +937,54 @@ with tab_import:
 
     if uploaded:
         try:
-            with st.spinner("Chargement et nettoyage..."):
+            with st.spinner("Chargement et nettoyage du fichier..."):
                 file_bytes = uploaded.read()
                 df_hist = charger_fichier_excel(file_bytes)
 
-            nb_lignes = len(df_hist)
-            nb_annees = df_hist["annee"].nunique()
-            nb_var    = df_hist["variete"].nunique()
+            nb_lignes  = len(df_hist)
+            nb_annees  = df_hist["annee"].nunique()
+            nb_var     = df_hist["variete"].nunique()
             annees_str = ", ".join(str(int(a)) for a in sorted(df_hist["annee"].dropna().unique()))
 
             st.success(f"✅ **{nb_lignes} lignes** chargées — {nb_annees} année(s) : {annees_str} — {nb_var} variétés")
 
-            # Stocker pour onglet stats
+            # Stocker en session pour l'onglet stats (accès rapide sans re-lecture BDD)
             st.session_state.df_historique_courant = df_hist
             st.session_state.obj_th_f = obj_th_f
             st.session_state.h_jour_f = h_jour_f
 
-            # Historique imports (max 3, sans doublon nom)
-            entry = {
-                "nom": uploaded.name,
-                "date": datetime.now().strftime("%d/%m/%Y %H:%M"),
-                "lignes": nb_lignes,
-                "annees": annees_str,
-                "varietes": nb_var,
-            }
-            st.session_state.historique_imports = [
-                h for h in st.session_state.historique_imports if h["nom"] != uploaded.name
-            ]
-            st.session_state.historique_imports.insert(0, entry)
-            st.session_state.historique_imports = st.session_state.historique_imports[:3]
+            # Persister en BDD
+            with st.spinner("Sauvegarde en base de données..."):
+                imported_by = st.session_state.get("username", "system")
+                ok, import_id, nb_ins, nb_ign, err = sauvegarder_import_bdd(
+                    df_hist, uploaded.name, imported_by
+                )
+
+            if ok:
+                st.success(f"💾 Sauvegardé en BDD — {nb_ins} lignes insérées, {nb_ign} ignorées (doublons)")
+                # Vider le cache pour que l'onglet stats recharge les nouvelles données
+                get_imports_historique.clear()
+                get_historique_bdd.clear()
+            else:
+                st.warning(f"⚠️ Analyse disponible mais sauvegarde BDD échouée : {err}")
 
             st.info("Allez dans **Stats Historique** pour lancer l'analyse.")
 
         except Exception as e:
-            st.error(f"Erreur a l'import : {str(e)}")
+            st.error(f"Erreur à l'import : {str(e)}")
     else:
-        st.info("Selectionnez le fichier Excel pour commencer.")
+        st.info("Sélectionnez le fichier Excel pour commencer.")
 
     st.markdown("---")
-    st.markdown("#### Derniers imports de la session")
-    if st.session_state.historique_imports:
-        df_imp_tab = pd.DataFrame(st.session_state.historique_imports)
-        df_imp_tab.columns = ["Fichier", "Date import", "Lignes", "Annees", "Nb varietes"]
-        st.dataframe(df_imp_tab, use_container_width=True, hide_index=True)
+    st.markdown("#### 3 derniers imports")
+    df_imports_bdd = get_imports_historique()
+    if not df_imports_bdd.empty:
+        df_imp_disp = df_imports_bdd[["nom_fichier","date_import","nb_lignes","annees","nb_varietes","imported_by"]].copy()
+        df_imp_disp["date_import"] = pd.to_datetime(df_imp_disp["date_import"]).dt.strftime("%d/%m/%Y %H:%M")
+        df_imp_disp.columns = ["Fichier", "Date import", "Lignes", "Annees", "Varietes", "Importé par"]
+        st.dataframe(df_imp_disp, use_container_width=True, hide_index=True)
     else:
-        st.caption("Aucun import effectue dans cette session.")
+        st.caption("Aucun import en base de données.")
 
 # ============================================================
 # ONGLET 2 — STATS HISTORIQUE FICHIER
@@ -836,16 +992,25 @@ with tab_import:
 with tab_histo:
     st.subheader("Analyse — Historique fichier")
 
-    if st.session_state.df_historique_courant is None:
-        st.info("Aucun fichier importe. Rendez-vous dans **Import fichier** pour charger le fichier Excel.")
-    else:
+    # Priorité : session (import vient d'être fait) sinon BDD
+    if st.session_state.df_historique_courant is not None:
         df_hist_anal = st.session_state.df_historique_courant
-        obj_th_h = st.session_state.get("obj_th_f", 13.0)
-        h_jour_h = st.session_state.get("h_jour_f", 13.0)
+        source_label = "session (import récent)"
+    else:
+        with st.spinner("Chargement historique depuis BDD..."):
+            df_hist_anal = get_historique_bdd()
+        source_label = "base de données"
+
+    obj_th_h = st.session_state.get("obj_th_f", 13.0)
+    h_jour_h = st.session_state.get("h_jour_f", 13.0)
+
+    if df_hist_anal is None or df_hist_anal.empty:
+        st.info("Aucune donnée disponible. Importez un fichier Excel dans l'onglet **Import fichier**.")
+    else:
         nb_l = len(df_hist_anal)
         nb_v = df_hist_anal["variete"].nunique()
         annees_disp = ", ".join(str(int(a)) for a in sorted(df_hist_anal["annee"].dropna().unique()))
-        st.caption(f"Donnees chargees : **{nb_l} lignes** — **{nb_v} varietes** — Annees : {annees_disp}")
+        st.caption(f"Source : **{source_label}** — {nb_l} lignes — {nb_v} variétés — Années : {annees_disp}")
         st.markdown("---")
         afficher_analyse(df_hist_anal, source="fichier",
                          objectif_th=obj_th_h, heures_jour=h_jour_h)
