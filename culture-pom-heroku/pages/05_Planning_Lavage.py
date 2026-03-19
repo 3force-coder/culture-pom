@@ -1427,7 +1427,7 @@ st.markdown("---")
 # ONGLETS PRINCIPAUX
 # ============================================================
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📅 Planning Semaine", "📋 Liste Jobs", "➕ Créer Job", "📊 Stats & Recap", "🖨️ Imprimer", "⚙️ Admin"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📅 Planning Semaine", "📋 Liste Jobs", "➕ Créer Job", "🖨️ Imprimer", "⚙️ Admin"])
 
 # ============================================================
 # ONGLET 1 : PLANNING SEMAINE (fusionné de page 06)
@@ -2433,216 +2433,10 @@ with tab3:
             st.warning("Aucun lot BRUT disponible")
 
 # ============================================================
-# ONGLET 4 : STATS & RECAP
+# ONGLET 4 : IMPRIMER
 # ============================================================
 
 with tab4:
-    st.subheader("📊 Statistiques & Récapitulatif")
-    st.caption("*Vue d'ensemble des affectations et tonnages*")
-    
-    # ============ KPIs DÉTAILLÉS ============
-    st.markdown("### 📈 Statistiques détaillées")
-    
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Stats jobs par statut
-        cursor.execute("""
-            SELECT 
-                statut,
-                COUNT(*) as nb_jobs,
-                COALESCE(SUM(quantite_pallox), 0) as total_pallox,
-                COALESCE(SUM(poids_brut_kg), 0) as total_poids,
-                COALESCE(SUM(temps_estime_heures), 0) as total_temps
-            FROM lavages_jobs
-            GROUP BY statut
-            ORDER BY 
-                CASE statut 
-                    WHEN 'PRÉVU' THEN 1 
-                    WHEN 'EN_COURS' THEN 2 
-                    WHEN 'TERMINÉ' THEN 3 
-                    ELSE 4 
-                END
-        """)
-        stats_statut = cursor.fetchall()
-        
-        if stats_statut:
-            col1, col2, col3 = st.columns(3)
-            for stat in stats_statut:
-                if stat['statut'] == 'PRÉVU':
-                    with col1:
-                        st.markdown("#### 🎯 PRÉVU")
-                        st.metric("Jobs", stat['nb_jobs'])
-                        st.metric("Pallox", f"{int(stat['total_pallox']):,}")
-                        st.metric("Tonnage", f"{stat['total_poids']/1000:.1f} T")
-                        st.metric("Temps prévu", f"{float(stat['total_temps']):.1f}h")
-                elif stat['statut'] == 'EN_COURS':
-                    with col2:
-                        st.markdown("#### ⚙️ EN COURS")
-                        st.metric("Jobs", stat['nb_jobs'])
-                        st.metric("Pallox", f"{int(stat['total_pallox']):,}")
-                        st.metric("Tonnage", f"{stat['total_poids']/1000:.1f} T")
-                        st.metric("Temps prévu", f"{float(stat['total_temps']):.1f}h")
-                elif stat['statut'] == 'TERMINÉ':
-                    with col3:
-                        st.markdown("#### ✅ TERMINÉ")
-                        st.metric("Jobs", stat['nb_jobs'])
-                        st.metric("Pallox", f"{int(stat['total_pallox']):,}")
-                        st.metric("Tonnage", f"{stat['total_poids']/1000:.1f} T")
-                        
-        st.markdown("---")
-        
-        # ============ RECAP AFFECTATION PAR LOT ============
-        st.markdown("### 📦 Récapitulatif affectation des lots")
-        st.caption("*Jobs PRÉVU et EN_COURS par lot*")
-        
-        cursor.execute("""
-            SELECT 
-                lj.code_lot_interne,
-                l.nom_usage,
-                COALESCE(p.nom, l.code_producteur) as producteur,
-                lj.variete,
-                COUNT(*) as nb_jobs,
-                SUM(lj.quantite_pallox) as pallox_reserves,
-                SUM(lj.poids_brut_kg) as poids_reserve,
-                SUM(lj.temps_estime_heures) as temps_total,
-                STRING_AGG(DISTINCT lj.statut, ', ') as statuts
-            FROM lavages_jobs lj
-            JOIN lots_bruts l ON lj.lot_id = l.id
-            LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
-            WHERE lj.statut IN ('PRÉVU', 'EN_COURS')
-            GROUP BY lj.code_lot_interne, l.nom_usage, p.nom, l.code_producteur, lj.variete
-            ORDER BY poids_reserve DESC
-        """)
-        recap_lots = cursor.fetchall()
-        
-        if recap_lots:
-            df_recap = pd.DataFrame(recap_lots)
-            df_recap = df_recap.rename(columns={
-                'code_lot_interne': 'Code Lot',
-                'nom_usage': 'Nom Lot',
-                'producteur': 'Producteur',
-                'variete': 'Variété',
-                'nb_jobs': 'Jobs',
-                'pallox_reserves': 'Pallox',
-                'poids_reserve': 'Poids (kg)',
-                'temps_total': 'Temps (h)',
-                'statuts': 'Statuts'
-            })
-            
-            # Formater
-            df_recap['Poids (kg)'] = pd.to_numeric(df_recap['Poids (kg)'], errors='coerce').fillna(0).astype(int)
-            df_recap['Pallox'] = pd.to_numeric(df_recap['Pallox'], errors='coerce').fillna(0).astype(int)
-            df_recap['Temps (h)'] = pd.to_numeric(df_recap['Temps (h)'], errors='coerce').fillna(0).round(1)
-            
-            # Afficher
-            st.dataframe(df_recap, use_container_width=True, hide_index=True)
-            
-            # Totaux
-            total_pallox = df_recap['Pallox'].sum()
-            total_poids = df_recap['Poids (kg)'].sum()
-            total_temps = df_recap['Temps (h)'].sum()
-            
-            col1, col2, col3 = st.columns(3)
-            col1.metric("📦 Total Pallox réservés", f"{total_pallox:,}")
-            col2.metric("⚖️ Tonnage attendu", f"{total_poids/1000:.1f} T")
-            col3.metric("⏱️ Temps de travail", f"{total_temps:.1f}h")
-        else:
-            st.info("Aucun job PRÉVU ou EN_COURS actuellement")
-        
-        st.markdown("---")
-        
-        # ============ TONNAGE PAR SEMAINE ============
-        st.markdown("### 📅 Tonnage prévu par semaine")
-        
-        cursor.execute("""
-            SELECT 
-                DATE_TRUNC('week', date_prevue) as semaine,
-                COUNT(*) as nb_jobs,
-                SUM(quantite_pallox) as pallox,
-                SUM(poids_brut_kg) as poids,
-                SUM(temps_estime_heures) as temps
-            FROM lavages_jobs
-            WHERE statut IN ('PRÉVU', 'EN_COURS')
-              AND date_prevue >= CURRENT_DATE - INTERVAL '7 days'
-              AND date_prevue <= CURRENT_DATE + INTERVAL '28 days'
-            GROUP BY DATE_TRUNC('week', date_prevue)
-            ORDER BY semaine
-        """)
-        stats_semaine = cursor.fetchall()
-        
-        if stats_semaine:
-            df_sem = pd.DataFrame(stats_semaine)
-            df_sem['semaine'] = pd.to_datetime(df_sem['semaine']).dt.strftime('S%W - %d/%m')
-            df_sem = df_sem.rename(columns={
-                'semaine': 'Semaine',
-                'nb_jobs': 'Jobs',
-                'pallox': 'Pallox',
-                'poids': 'Poids (kg)',
-                'temps': 'Temps (h)'
-            })
-            df_sem['Poids (kg)'] = pd.to_numeric(df_sem['Poids (kg)'], errors='coerce').fillna(0).astype(int)
-            df_sem['Pallox'] = pd.to_numeric(df_sem['Pallox'], errors='coerce').fillna(0).astype(int)
-            df_sem['Temps (h)'] = pd.to_numeric(df_sem['Temps (h)'], errors='coerce').fillna(0).round(1)
-            df_sem['Tonnage'] = (df_sem['Poids (kg)'] / 1000).round(1)
-            
-            st.dataframe(df_sem[['Semaine', 'Jobs', 'Pallox', 'Tonnage', 'Temps (h)']], use_container_width=True, hide_index=True)
-        else:
-            st.info("Aucun job prévu dans les 4 prochaines semaines")
-        
-        st.markdown("---")
-        
-        # ============ STATS PAR VARIÉTÉ ============
-        st.markdown("### 🌱 Statistiques par variété (jobs terminés)")
-        
-        cursor.execute("""
-            SELECT 
-                variete,
-                COUNT(*) as nb_jobs,
-                SUM(poids_brut_kg) as poids_brut_total,
-                SUM(poids_lave_net_kg) as poids_lave_total,
-                AVG(rendement_pct) as rendement_moyen,
-                AVG(tare_reelle_pct) as tare_moyenne
-            FROM lavages_jobs
-            WHERE statut = 'TERMINÉ'
-              AND poids_lave_net_kg IS NOT NULL
-            GROUP BY variete
-            ORDER BY poids_brut_total DESC
-            LIMIT 10
-        """)
-        stats_variete = cursor.fetchall()
-        
-        if stats_variete:
-            df_var = pd.DataFrame(stats_variete)
-            df_var = df_var.rename(columns={
-                'variete': 'Variété',
-                'nb_jobs': 'Jobs',
-                'poids_brut_total': 'Brut (kg)',
-                'poids_lave_total': 'Lavé (kg)',
-                'rendement_moyen': 'Rendement %',
-                'tare_moyenne': 'Tare %'
-            })
-            df_var['Brut (kg)'] = pd.to_numeric(df_var['Brut (kg)'], errors='coerce').fillna(0).astype(int)
-            df_var['Lavé (kg)'] = pd.to_numeric(df_var['Lavé (kg)'], errors='coerce').fillna(0).astype(int)
-            df_var['Rendement %'] = pd.to_numeric(df_var['Rendement %'], errors='coerce').fillna(0).round(1)
-            df_var['Tare %'] = pd.to_numeric(df_var['Tare %'], errors='coerce').fillna(0).round(1)
-            
-            st.dataframe(df_var, use_container_width=True, hide_index=True)
-        else:
-            st.info("Aucun job terminé avec données de rendement")
-        
-        cursor.close()
-        conn.close()
-        
-    except Exception as e:
-        st.error(f"Erreur chargement stats : {str(e)}")
-
-# ============================================================
-# ONGLET 5 : IMPRIMER
-# ============================================================
-
-with tab5:
     st.subheader("🖨️ Imprimer Planning Journée")
     st.caption("*Générer une fiche imprimable pour une équipe de lavage*")
     
@@ -2905,10 +2699,10 @@ with tab5:
             st.error(f"❌ Erreur : {str(e)}")
 
 # ============================================================
-# ONGLET 6 : ADMIN
+# ONGLET 5 : ADMIN
 # ============================================================
 
-with tab6:
+with tab5:
     if not is_admin():
         st.warning("⚠️ Accès réservé aux administrateurs")
     else:
