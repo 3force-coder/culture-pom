@@ -505,26 +505,28 @@ def terminer_job(job_id,
         # Récupérer l'emplacement source via emplacement_id du job (si disponible)
         # Sinon fallback sur l'ancienne méthode
         if job['emplacement_id']:
+            # Sans is_active : l'emplacement peut avoir ete desactive si stock epuise
+            # entre la creation du job et sa terminaison
             cursor.execute("""
                 SELECT id, nombre_unites, poids_total_kg, site_stockage, emplacement_stockage, statut_lavage
                 FROM stock_emplacements
-                WHERE id = %s AND is_active = TRUE
+                WHERE id = %s
             """, (job['emplacement_id'],))
         else:
             # Fallback pour anciens jobs sans emplacement_id
+            # ORDER BY is_active DESC : priorite au stock encore actif
             cursor.execute("""
                 SELECT id, nombre_unites, poids_total_kg, site_stockage, emplacement_stockage, statut_lavage
                 FROM stock_emplacements
                 WHERE lot_id = %s 
                   AND statut_lavage IN ('BRUT', 'GRENAILLES_BRUTES')
-                  AND is_active = TRUE
-                ORDER BY id
+                ORDER BY is_active DESC, id
                 LIMIT 1
             """, (job['lot_id'],))
         
         stock_source = cursor.fetchone()
         if not stock_source:
-            return False, "❌ Stock source introuvable"
+            return False, "❌ Stock source introuvable (emplacement_id absent de la base)"
         
         # Déterminer le type de source (BRUT ou GRENAILLES_BRUTES)
         statut_source = job['statut_source'] or stock_source['statut_lavage'] or 'BRUT'
