@@ -501,6 +501,7 @@ def afficher_analyse(df, source="fichier", objectif_th=13.0, heures_jour=13.0):
         df_jour['rendement_pct']  = df_jour['poids_lave']  / df_jour['poids_brut'] * 100
         df_jour['pct_dechets']    = df_jour['poids_dechets']    / df_jour['poids_brut'] * 100
         df_jour['pct_grenailles'] = df_jour['poids_grenailles'] / df_jour['poids_brut'] * 100
+        df_jour['pct_terre']      = df_jour['poids_terre']      / df_jour['poids_brut'] * 100
         df_jour['date_str']       = df_jour['date_dt'].dt.strftime('%d/%m')
 
         # Cadence : T/h = poids_brut / 1000 / heures_jour
@@ -740,83 +741,143 @@ def afficher_analyse(df, source="fichier", objectif_th=13.0, heures_jour=13.0):
                            "text/csv", use_container_width=False)
 
 
+
 # ============================================================
 # PAGE PRINCIPALE
 # ============================================================
 
 st.title("📊 Statistiques Lavage")
 
-tab_fichier, tab_pomi = st.tabs([
-    "📂 Onglet 1 — Historique fichier",
-    "🔗 Onglet 2 — Données POMI"
+# Initialisation session state
+if 'historique_imports' not in st.session_state:
+    st.session_state.historique_imports = []
+if 'df_historique_courant' not in st.session_state:
+    st.session_state.df_historique_courant = None
+
+tab_import, tab_histo, tab_pomi = st.tabs([
+    "📥 Import fichier",
+    "📂 Stats Historique",
+    "🔗 Stats POMI"
 ])
 
 # ============================================================
-# ONGLET 1 — IMPORT FICHIER HISTORIQUE
+# ONGLET 1 — IMPORT
 # ============================================================
-with tab_fichier:
-    st.subheader("📂 Analyse depuis fichier Excel")
-    st.caption("Import du fichier *ST_FLAVY - écart de tri.xlsx* ou tout fichier au même format.")
+with tab_import:
+    st.subheader("📥 Import fichier historique")
+    st.caption("Fichier *ST_FLAVY - écart de tri.xlsx* — feuille *Saisi des données écarts de tri*")
 
     col_up, col_cfg = st.columns([2, 1])
 
     with col_up:
         uploaded = st.file_uploader(
-            "📎 Importer le fichier Excel",
-            type=['xlsx', 'xls'],
+            "Sélectionner le fichier Excel",
+            type=["xlsx", "xls"],
             key="upload_stats_lavage",
-            help="Feuille attendue : 'Saisi des données écarts de tri'"
+            help="Feuille attendue : Saisi des données écarts de tri"
         )
 
     with col_cfg:
-        st.markdown("**⚙️ Paramètres objectif**")
-        obj_th_f  = st.number_input("Obj. cadence (T/h)", 1.0, 30.0, 13.0, 0.5, key="obj_f")
-        h_jour_f  = st.number_input("Heures marche / jour", 1.0, 24.0, 13.0, 0.5, key="hj_f")
+        st.markdown("**Paramètres objectif cadence**")
+        obj_th_f = st.number_input("Obj. cadence (T/h)", 1.0, 30.0, 13.0, 0.5, key="obj_f")
+        h_jour_f = st.number_input("Heures marche / jour", 1.0, 24.0, 13.0, 0.5, key="hj_f")
 
     if uploaded:
         try:
-            with st.spinner("Chargement..."):
-                df_hist = charger_fichier_excel(uploaded.read())
-            st.success(f"✅ {len(df_hist)} lignes chargées — "
-                       f"{df_hist['annee'].nunique()} année(s), "
-                       f"{df_hist['variete'].nunique()} variétés")
-            st.markdown("---")
-            afficher_analyse(df_hist, source="fichier",
-                             objectif_th=obj_th_f, heures_jour=h_jour_f)
+            with st.spinner("Chargement et nettoyage..."):
+                file_bytes = uploaded.read()
+                df_hist = charger_fichier_excel(file_bytes)
+
+            nb_lignes = len(df_hist)
+            nb_annees = df_hist["annee"].nunique()
+            nb_var    = df_hist["variete"].nunique()
+            annees_str = ", ".join(str(int(a)) for a in sorted(df_hist["annee"].dropna().unique()))
+
+            st.success(f"✅ **{nb_lignes} lignes** chargées — {nb_annees} année(s) : {annees_str} — {nb_var} variétés")
+
+            # Stocker pour onglet stats
+            st.session_state.df_historique_courant = df_hist
+            st.session_state.obj_th_f = obj_th_f
+            st.session_state.h_jour_f = h_jour_f
+
+            # Historique imports (max 3, sans doublon nom)
+            entry = {
+                "nom": uploaded.name,
+                "date": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                "lignes": nb_lignes,
+                "annees": annees_str,
+                "varietes": nb_var,
+            }
+            st.session_state.historique_imports = [
+                h for h in st.session_state.historique_imports if h["nom"] != uploaded.name
+            ]
+            st.session_state.historique_imports.insert(0, entry)
+            st.session_state.historique_imports = st.session_state.historique_imports[:3]
+
+            st.info("Allez dans **Stats Historique** pour lancer l'analyse.")
+
         except Exception as e:
-            st.error(f"❌ Erreur à l'import : {str(e)}")
+            st.error(f"Erreur a l'import : {str(e)}")
     else:
-        st.info("👆 Importez le fichier Excel pour démarrer l'analyse.")
+        st.info("Selectionnez le fichier Excel pour commencer.")
+
+    st.markdown("---")
+    st.markdown("#### Derniers imports de la session")
+    if st.session_state.historique_imports:
+        df_imp_tab = pd.DataFrame(st.session_state.historique_imports)
+        df_imp_tab.columns = ["Fichier", "Date import", "Lignes", "Annees", "Nb varietes"]
+        st.dataframe(df_imp_tab, use_container_width=True, hide_index=True)
+    else:
+        st.caption("Aucun import effectue dans cette session.")
 
 # ============================================================
-# ONGLET 2 — DONNÉES POMI (BDD)
+# ONGLET 2 — STATS HISTORIQUE FICHIER
+# ============================================================
+with tab_histo:
+    st.subheader("Analyse — Historique fichier")
+
+    if st.session_state.df_historique_courant is None:
+        st.info("Aucun fichier importe. Rendez-vous dans **Import fichier** pour charger le fichier Excel.")
+    else:
+        df_hist_anal = st.session_state.df_historique_courant
+        obj_th_h = st.session_state.get("obj_th_f", 13.0)
+        h_jour_h = st.session_state.get("h_jour_f", 13.0)
+        nb_l = len(df_hist_anal)
+        nb_v = df_hist_anal["variete"].nunique()
+        annees_disp = ", ".join(str(int(a)) for a in sorted(df_hist_anal["annee"].dropna().unique()))
+        st.caption(f"Donnees chargees : **{nb_l} lignes** — **{nb_v} varietes** — Annees : {annees_disp}")
+        st.markdown("---")
+        afficher_analyse(df_hist_anal, source="fichier",
+                         objectif_th=obj_th_h, heures_jour=h_jour_h)
+
+# ============================================================
+# ONGLET 3 — STATS POMI (BDD)
 # ============================================================
 with tab_pomi:
-    st.subheader("🔗 Analyse depuis POMI")
-    st.caption("Données issues des jobs de lavage terminés sur la plateforme POMI. "
-               "Indépendant de l'historique fichier — aucun croisement entre les deux sources.")
+    st.subheader("Analyse — Donnees POMI")
+    st.caption("Jobs de lavage termines sur la plateforme POMI. Source independante du fichier historique.")
 
-    col_cfg2_1, col_cfg2_2 = st.columns([3, 1])
-    with col_cfg2_2:
-        st.markdown("**⚙️ Paramètres objectif**")
+    col_p1, col_p2 = st.columns([3, 1])
+    with col_p2:
+        st.markdown("**Parametres objectif cadence**")
         obj_th_p = st.number_input("Obj. cadence (T/h)", 1.0, 30.0, 13.0, 0.5, key="obj_p")
         h_jour_p = st.number_input("Heures marche / jour", 1.0, 24.0, 13.0, 0.5, key="hj_p")
-        if st.button("🔄 Rafraîchir", key="refresh_pomi"):
+        if st.button("Rafraichir", key="refresh_pomi"):
             st.cache_data.clear()
             st.rerun()
 
-    with col_cfg2_1:
-        with st.spinner("Chargement des données POMI..."):
+    with col_p1:
+        with st.spinner("Chargement donnees POMI..."):
             df_pomi = get_jobs_termines_pomi()
 
     if df_pomi.empty:
-        st.info("📭 Aucun job de lavage terminé dans POMI pour le moment.\n\n"
-                "Les statistiques apparaîtront ici dès que des jobs seront terminés depuis le planning.")
+        st.info("Aucun job de lavage termine dans POMI. Les statistiques apparaitront ici des que des jobs seront termines depuis le planning.")
     else:
         nb_jobs = len(df_pomi)
-        total_t = df_pomi['poids_brut'].sum() / 1000
-        rend_moy = df_pomi['poids_lave'].sum() / df_pomi['poids_brut'].sum() * 100
-        st.success(f"✅ **{nb_jobs} jobs terminés** — {total_t:.1f} T lavées — Rendement moyen : {rend_moy:.1f}%")
+        total_t = df_pomi["poids_brut"].sum() / 1000
+        rend_moy = (df_pomi["poids_lave"].sum() / df_pomi["poids_brut"].sum() * 100
+                    if df_pomi["poids_brut"].sum() > 0 else 0)
+        st.success(f"**{nb_jobs} jobs termines** — {total_t:.1f} T brut — Rendement moyen : {rend_moy:.1f}%")
         st.markdown("---")
         afficher_analyse(df_pomi, source="pomi",
                          objectif_th=obj_th_p, heures_jour=h_jour_p)
