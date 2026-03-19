@@ -88,6 +88,7 @@ pages = {
     "📊 Statistiques": [
     st.Page("pages/35_Frulog.py",           title="Import & Mapping",   icon="📥"),
     st.Page("pages/42_Production_Stats.py", title="Stats Production",   icon="🏭"),
+    st.Page("pages/36_Stats_Lavage.py", title="Stats Lavage", icon="🧼"),
     st.Page("pages/35_Frulog_Condi.py",     title="Stats Condi",        icon="📈"),
     st.Page("pages/35_Frulog_Negoce.py",    title="Stats Négoce",       icon="🏪"),
     st.Page("pages/35_Frulog_Achats.py",    title="Stats Achats",       icon="🛒"),
@@ -105,7 +106,6 @@ pages = {
     ],
     "🏭 Production": [
         st.Page("pages/05_Planning_Lavage.py", title="Planning Lavage", icon="🧼"),
-        st.Page("pages/05b_Planning_Lavage_Bis.py", title="Lavage Bis", icon="🧼"),
         st.Page("pages/08_Planning_Production.py", title="Planning Production", icon="🏭"),
     ],
     "📈 Commercial": [
