@@ -2676,15 +2676,21 @@ with tab4:
                     </html>
                     """
                     
-                    # Afficher dans un composant HTML avec bouton print
+                    # Encodage base64 : evite tout conflit backtick/accolades dans le JS
+                    import base64
+                    html_b64 = base64.b64encode(html_content.encode('utf-8')).decode('ascii')
+                    
                     stc.html(f"""
-                    <button onclick="openPrint()" style="background:#1976d2;color:white;border:none;padding:10px 20px;border-radius:5px;cursor:pointer;font-size:14px;">
-                        🖨️ Ouvrir fenêtre d'impression
+                    <button onclick="openPrint()" style="background:#AFCA0A;color:white;border:none;padding:10px 24px;border-radius:5px;cursor:pointer;font-size:14px;font-weight:bold;">
+                        Ouvrir fenetre d'impression
                     </button>
                     <script>
                         function openPrint() {{
+                            var b64 = "{html_b64}";
+                            var html = decodeURIComponent(escape(atob(b64)));
                             var win = window.open('', '_blank');
-                            win.document.write(`{html_content.replace('`', "'")}`);
+                            win.document.open();
+                            win.document.write(html);
                             win.document.close();
                         }}
                     </script>
