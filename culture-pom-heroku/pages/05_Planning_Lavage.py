@@ -7,6 +7,7 @@ from components import show_footer
 from auth import require_access
 from auth.roles import is_admin
 import io
+import math
 
 # ============================================================
 # CSS CUSTOM
@@ -22,7 +23,12 @@ st.markdown("""
         margin-bottom: 0.3rem !important;
     }
     
-    /* Cartes jobs */
+    /* Centrage semaine */
+    .semaine-center {
+        text-align: center;
+    }
+    
+    /* Cartes jobs à placer */
     .job-card {
         background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
         border-left: 4px solid #1976d2;
@@ -58,7 +64,7 @@ st.markdown("""
         margin-bottom: 0.5rem;
     }
     
-    /* Jobs planifiés */
+    /* Jobs planifiés par statut */
     .planned-prevu {
         background: linear-gradient(135deg, #c8e6c9 0%, #a5d6a7 100%);
         border-left: 4px solid #388e3c;
@@ -93,173 +99,62 @@ st.markdown("""
         font-size: 0.8rem;
     }
     
+    /* Animation pulse pour EN_COURS */
     @keyframes pulse {
         0% { box-shadow: 0 0 0 0 rgba(255, 152, 0, 0.4); }
         70% { box-shadow: 0 0 0 10px rgba(255, 152, 0, 0); }
         100% { box-shadow: 0 0 0 0 rgba(255, 152, 0, 0); }
     }
+    
+    /* Indicateurs charge */
+    .charge-low { color: #2e7d32; font-weight: bold; }
+    .charge-medium { color: #f9a825; font-weight: bold; }
+    .charge-high { color: #c62828; font-weight: bold; }
+    
+    /* Stats temps */
+    .temps-ok { color: #2e7d32; }
+    .temps-warning { color: #f57c00; }
+    .temps-bad { color: #c62828; }
 </style>
 """, unsafe_allow_html=True)
 
 # ============================================================
-# 🔒 RBAC
+# 🔒 CONTRÔLE D'ACCÈS RBAC
 # ============================================================
 require_access("PRODUCTION")
+# ============================================================
+
 
 # ============================================================
 # FONCTIONS UTILITAIRES
 # ============================================================
 
-def get_lots_bruts_disponibles():
-    """Récupère les lots BRUT disponibles pour lavage"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT 
-                se.id as emplacement_id,
-                l.id as lot_id,
-                l.code_lot_interne,
-                l.nom_usage,
-                COALESCE(v.nom_variete, l.code_variete) as variete,
-                l.calibre_min,
-                l.calibre_max,
-                se.site_stockage,
-                se.emplacement_stockage,
-                se.nombre_unites,
-                se.type_conditionnement,
-                se.poids_total_kg,
-                COALESCE(p.nom, l.code_producteur) as producteur
-            FROM stock_emplacements se
-            JOIN lots_bruts l ON se.lot_id = l.id
-            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
-            LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
-            WHERE se.is_active = TRUE 
-              AND se.statut_lavage = 'BRUT'
-              AND se.nombre_unites > 0
-            ORDER BY l.code_lot_interne
-        """)
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        
-        if rows:
-            df = pd.DataFrame(rows)
-            numeric_cols = ['nombre_unites', 'poids_total_kg', 'calibre_min', 'calibre_max']
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            return df
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"❌ Erreur : {str(e)}")
-        return pd.DataFrame()
-
-def get_lots_grenailles_disponibles():
-    """Récupère les lots GRENAILLES_BRUTES disponibles pour lavage"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT 
-                se.id as emplacement_id,
-                l.id as lot_id,
-                l.code_lot_interne,
-                l.nom_usage,
-                COALESCE(v.nom_variete, l.code_variete) as variete,
-                l.calibre_min,
-                l.calibre_max,
-                se.site_stockage,
-                se.emplacement_stockage,
-                se.nombre_unites,
-                se.type_conditionnement,
-                se.poids_total_kg,
-                COALESCE(p.nom, l.code_producteur) as producteur
-            FROM stock_emplacements se
-            JOIN lots_bruts l ON se.lot_id = l.id
-            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
-            LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
-            WHERE se.is_active = TRUE 
-              AND se.statut_lavage = 'GRENAILLES'
-              AND se.nombre_unites > 0
-            ORDER BY l.code_lot_interne
-        """)
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        
-        if rows:
-            df = pd.DataFrame(rows)
-            numeric_cols = ['nombre_unites', 'poids_total_kg', 'calibre_min', 'calibre_max']
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            return df
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"❌ Erreur : {str(e)}")
-        return pd.DataFrame()
-
-def create_job_lavage(lot_id, emplacement_id, ligne_lavage, quantite_pallox, poids_brut_kg,
-                      date_prevue, capacite_th, statut_source, producteur="", notes=""):
-    """Crée un nouveau job de lavage (BRUT ou GRENAILLES_BRUTES)"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Convertir types
-        lot_id = int(lot_id)
-        emplacement_id = int(emplacement_id)
-        quantite_pallox = int(quantite_pallox)
-        poids_brut_kg = float(poids_brut_kg)
-        capacite_th = float(capacite_th)
-        
-        # Récupérer infos lot
-        cursor.execute("""
-            SELECT l.code_lot_interne, COALESCE(v.nom_variete, l.code_variete) as variete
-            FROM lots_bruts l
-            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
-            WHERE l.id = %s
-        """, (lot_id,))
-        lot_info = cursor.fetchone()
-        
-        # Calculer temps estimé
-        temps_estime = (poids_brut_kg / 1000) / capacite_th
-        
-        # Insérer job
-        created_by = st.session_state.get('username', 'system')
-        
-        cursor.execute("""
-            INSERT INTO lavages_jobs (
-                lot_id, code_lot_interne, variete, quantite_pallox, poids_brut_kg,
-                date_prevue, ligne_lavage, capacite_th, temps_estime_heures,
-                statut, statut_source, producteur, created_by, notes
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'PRÉVU', %s, %s, %s, %s)
-            RETURNING id
-        """, (
-            lot_id, lot_info['code_lot_interne'], lot_info['variete'],
-            quantite_pallox, poids_brut_kg, date_prevue, ligne_lavage,
-            capacite_th, temps_estime, statut_source, producteur, created_by, notes
-        ))
-        
-        job_id = cursor.fetchone()['id']
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        return True, f"✅ Job #{job_id} créé ({statut_source})"
-    except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
-        return False, f"❌ Erreur : {str(e)}"
+def arrondir_quart_heure_sup(heure_obj):
+    """Arrondit une heure au quart d'heure supérieur"""
+    minutes = heure_obj.minute
+    if minutes % 15 == 0:
+        return heure_obj
+    nouveau_minutes = ((minutes // 15) + 1) * 15
+    if nouveau_minutes >= 60:
+        nouvelle_heure = heure_obj.hour + 1
+        nouveau_minutes = 0
+        if nouvelle_heure >= 24:
+            nouvelle_heure = 23
+            nouveau_minutes = 45
+        return time(nouvelle_heure, nouveau_minutes)
+    return time(heure_obj.hour, nouveau_minutes)
 
 def get_lignes_lavage():
     """Récupère les lignes de lavage actives"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT code, libelle, capacite_th FROM lavages_lignes WHERE is_active = TRUE ORDER BY code")
+        cursor.execute("""
+            SELECT code, libelle, capacite_th 
+            FROM lavages_lignes 
+            WHERE is_active = TRUE 
+            ORDER BY code
+        """)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -273,130 +168,240 @@ def get_temps_customs():
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, code, libelle, emoji, duree_minutes FROM lavages_temps_customs WHERE is_active = TRUE ORDER BY id")
+        cursor.execute("""
+            SELECT id, code, libelle, emoji, duree_minutes 
+            FROM lavages_temps_customs 
+            WHERE is_active = TRUE 
+            ORDER BY id
+        """)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
         return rows if rows else []
-    except:
+    except Exception as e:
         return []
+
+def supprimer_temps_custom(temps_id):
+    """Supprime (désactive) un temps custom"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE lavages_temps_customs SET is_active = FALSE WHERE id = %s", (temps_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, "✅ Supprimé"
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+def get_config_horaires():
+    """Récupère la configuration des horaires par jour"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT jour_semaine, heure_debut, heure_fin 
+            FROM lavages_config_horaires 
+            WHERE is_active = TRUE 
+            ORDER BY jour_semaine
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        config = {}
+        for row in rows:
+            config[row['jour_semaine']] = {'debut': row['heure_debut'], 'fin': row['heure_fin']}
+        return config
+    except:
+        return {i: {'debut': time(5, 0), 'fin': time(22, 0) if i < 5 else time(20, 0)} for i in range(6)}
 
 def get_kpis_lavage():
     """Récupère les KPIs de lavage"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        
         cursor.execute("SELECT COUNT(*) as nb FROM lavages_jobs WHERE statut = 'PRÉVU'")
         nb_prevus = cursor.fetchone()['nb']
-        
         cursor.execute("SELECT COUNT(*) as nb FROM lavages_jobs WHERE statut = 'EN_COURS'")
         nb_en_cours = cursor.fetchone()['nb']
-        
         cursor.execute("SELECT COUNT(*) as nb FROM lavages_jobs WHERE statut = 'TERMINÉ'")
         nb_termines = cursor.fetchone()['nb']
-        
         cursor.execute("SELECT COALESCE(SUM(temps_estime_heures), 0) as total FROM lavages_jobs WHERE statut IN ('PRÉVU', 'EN_COURS')")
         temps_total = cursor.fetchone()['total']
-        
         cursor.close()
         conn.close()
-        
-        return {
-            'nb_prevus': nb_prevus,
-            'nb_en_cours': nb_en_cours,
-            'nb_termines': nb_termines,
-            'temps_total': float(temps_total)
-        }
+        return {'nb_prevus': nb_prevus, 'nb_en_cours': nb_en_cours, 'nb_termines': nb_termines, 'temps_total': float(temps_total)}
     except Exception as e:
-        st.error(f"❌ Erreur KPIs : {str(e)}")
         return None
 
-def get_planning_semaine(ligne_code, week_start):
-    """Charge le planning d'une semaine pour une ligne"""
+def get_jobs_a_placer(ligne_lavage=None):
+    """Récupère les jobs PRÉVU, filtrés par ligne si précisé"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        
-        week_end = week_start + timedelta(days=6)
-        annee, semaine, _ = week_start.isocalendar()
-        
-        query = """
-        SELECT 
-            pe.id, pe.type_element, pe.date_prevue, pe.ligne_lavage,
-            pe.heure_debut, pe.heure_fin, pe.duree_minutes, pe.ordre_jour,
-            pe.job_id, pe.temps_custom_id, pe.producteur as pe_producteur,
-            j.code_lot_interne, j.variete, j.quantite_pallox, j.statut as job_statut,
-            j.temps_estime_heures, j.date_activation, j.date_terminaison, j.producteur,
-            j.statut_source,
-            tc.libelle as custom_libelle, tc.emoji as custom_emoji
-        FROM lavages_planning_elements pe
-        LEFT JOIN lavages_jobs j ON pe.job_id = j.id
-        LEFT JOIN lavages_temps_customs tc ON pe.temps_custom_id = tc.id
-        WHERE pe.date_prevue BETWEEN %s AND %s
-          AND pe.ligne_lavage = %s
-        ORDER BY pe.date_prevue, pe.ordre_jour, pe.heure_debut
-        """
-        
-        cursor.execute(query, (week_start, week_end, ligne_code))
+        if ligne_lavage:
+            cursor.execute("""
+                SELECT 
+                    lj.id, lj.lot_id, lj.code_lot_interne, lj.variete,
+                    lj.quantite_pallox, lj.poids_brut_kg, lj.temps_estime_heures,
+                    lj.date_prevue, lj.ligne_lavage as ligne_origine, lj.statut,
+                    lj.statut_source,
+                    COALESCE(p.nom, lj.producteur) as producteur
+                FROM lavages_jobs lj
+                LEFT JOIN lots_bruts lb ON lj.lot_id = lb.id
+                LEFT JOIN ref_producteurs p ON lb.code_producteur = p.code_producteur
+                WHERE lj.statut = 'PRÉVU'
+                  AND lj.ligne_lavage = %s
+                ORDER BY lj.date_prevue, lj.id
+            """, (ligne_lavage,))
+        else:
+            cursor.execute("""
+                SELECT 
+                    lj.id, lj.lot_id, lj.code_lot_interne, lj.variete,
+                    lj.quantite_pallox, lj.poids_brut_kg, lj.temps_estime_heures,
+                    lj.date_prevue, lj.ligne_lavage as ligne_origine, lj.statut,
+                    lj.statut_source,
+                    COALESCE(p.nom, lj.producteur) as producteur
+                FROM lavages_jobs lj
+                LEFT JOIN lots_bruts lb ON lj.lot_id = lb.id
+                LEFT JOIN ref_producteurs p ON lb.code_producteur = p.code_producteur
+                WHERE lj.statut = 'PRÉVU'
+                ORDER BY lj.date_prevue, lj.id
+            """)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        
         if rows:
-            df = pd.DataFrame(rows)
-            numeric_cols = ['quantite_pallox', 'temps_estime_heures', 'duree_minutes', 'ordre_jour']
-            for col in numeric_cols:
+            df = pd.DataFrame([dict(r) for r in rows])
+            for col in ['quantite_pallox', 'poids_brut_kg', 'temps_estime_heures']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             return df
         return pd.DataFrame()
     except Exception as e:
-        st.error(f"❌ Erreur : {str(e)}")
+        st.error(f"❌ Erreur get_jobs_a_placer : {str(e)}")
         return pd.DataFrame()
 
-def get_jobs_a_placer(ligne_code):
-    """Récupère les jobs PRÉVU pour une ligne"""
+def get_planning_semaine(annee, semaine):
+    """Récupère le planning d'une semaine donnée"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, code_lot_interne, variete, quantite_pallox, poids_brut_kg,
-                   temps_estime_heures, date_prevue, producteur, statut_source
-            FROM lavages_jobs
-            WHERE statut = 'PRÉVU' AND ligne_lavage = %s
-            ORDER BY date_prevue, id
-        """, (ligne_code,))
+            SELECT 
+                pe.id, pe.type_element, pe.job_id, pe.temps_custom_id,
+                pe.date_prevue, pe.ligne_lavage, pe.ordre_jour,
+                pe.heure_debut, pe.heure_fin, pe.duree_minutes,
+                lj.code_lot_interne, lj.variete, lj.quantite_pallox,
+                lj.poids_brut_kg, lj.statut as job_statut,
+                lj.date_activation, lj.date_terminaison,
+                lj.temps_estime_heures, lj.statut_source,
+                COALESCE(p.nom, lj.producteur) as producteur,
+                tc.libelle as custom_libelle, tc.emoji as custom_emoji
+            FROM lavages_planning_elements pe
+            LEFT JOIN lavages_jobs lj ON pe.job_id = lj.id
+            LEFT JOIN lots_bruts lb ON lj.lot_id = lb.id
+            LEFT JOIN ref_producteurs p ON lb.code_producteur = p.code_producteur
+            LEFT JOIN lavages_temps_customs tc ON pe.temps_custom_id = tc.id
+            WHERE pe.annee = %s AND pe.semaine = %s
+            ORDER BY pe.date_prevue, pe.ligne_lavage, pe.ordre_jour
+        """, (annee, semaine))
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        
         if rows:
-            df = pd.DataFrame(rows)
-            numeric_cols = ['quantite_pallox', 'poids_brut_kg', 'temps_estime_heures']
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            return df
+            return pd.DataFrame([dict(r) for r in rows])
         return pd.DataFrame()
-    except:
+    except Exception as e:
+        st.error(f"❌ Erreur chargement planning : {str(e)}")
         return pd.DataFrame()
 
-def ajouter_element_planning(type_element, job_id, temps_custom_id, date_prevue, ligne_lavage,
-                             duree_minutes, annee, semaine, heure_debut_choisie, parent_job_id=None):
-    """Ajoute un élément au planning avec dénormalisation producteur"""
+def get_horaire_fin_jour(jour_semaine, horaires_config):
+    """Retourne l'heure de fin pour un jour donné"""
+    if jour_semaine in horaires_config:
+        h_fin = horaires_config[jour_semaine]['fin']
+        if isinstance(h_fin, time):
+            return h_fin
+    return time(22, 0) if jour_semaine < 5 else time(20, 0)
+
+def get_capacite_jour(ligne_code, capacite_th, jour_semaine, horaires_config):
+    """Calcule la capacité totale en heures pour un jour donné"""
+    if jour_semaine not in horaires_config:
+        return 17.0
+    h_debut = horaires_config[jour_semaine]['debut']
+    h_fin = horaires_config[jour_semaine]['fin']
+    debut_h = h_debut.hour + h_debut.minute / 60 if isinstance(h_debut, time) else 5.0
+    fin_h = h_fin.hour + h_fin.minute / 60 if isinstance(h_fin, time) else 22.0
+    return fin_h - debut_h
+
+def calculer_temps_utilise(planning_df, date_str, ligne):
+    """Calcule le temps utilisé pour un jour/ligne"""
+    if planning_df.empty:
+        return 0.0
+    mask = (planning_df['date_prevue'].astype(str) == date_str) & (planning_df['ligne_lavage'] == ligne)
+    filtered = planning_df[mask]
+    return filtered['duree_minutes'].sum() / 60 if not filtered.empty else 0.0
+
+def trouver_prochain_creneau_libre(planning_df, date_cible, ligne, heure_souhaitee, duree_min):
+    """
+    Trouve le prochain créneau disponible pour placer un élément.
+    Si l'heure souhaitée est libre → la retourne telle quelle.
+    Si occupée → calcule automatiquement la prochaine heure libre sans bloquer.
+    Retourne : (heure_time, ok:bool, message:str)
+    """
+    if planning_df.empty:
+        return heure_souhaitee, True, ""
+
+    date_str = str(date_cible)
+    mask = (planning_df['date_prevue'].astype(str) == date_str) & (planning_df['ligne_lavage'] == ligne)
+    elements = planning_df[mask]
+
+    if elements.empty:
+        return heure_souhaitee, True, ""
+
+    debut_souhaite = heure_souhaitee.hour * 60 + heure_souhaitee.minute
+
+    creneaux_occupes = []
+    for _, elem in elements.iterrows():
+        if pd.isna(elem['heure_debut']) or pd.isna(elem['heure_fin']):
+            continue
+        elem_debut = elem['heure_debut'].hour * 60 + elem['heure_debut'].minute
+        elem_fin = elem['heure_fin'].hour * 60 + elem['heure_fin'].minute
+        creneaux_occupes.append({'debut': elem_debut, 'fin': elem_fin})
+
+    creneaux_occupes.sort(key=lambda x: x['debut'])
+
+    fin_souhaitee = debut_souhaite + duree_min
+    conflit = False
+    dernier_fin = debut_souhaite
+
+    for creneau in creneaux_occupes:
+        if not (fin_souhaitee <= creneau['debut'] or debut_souhaite >= creneau['fin']):
+            conflit = True
+            dernier_fin = max(dernier_fin, creneau['fin'])
+
+    if not conflit:
+        return heure_souhaitee, True, ""
+
+    prochain_debut = dernier_fin
+    prochain_fin = prochain_debut + duree_min
+    for creneau in creneaux_occupes:
+        if creneau['debut'] < prochain_fin and creneau['fin'] > prochain_debut:
+            prochain_debut = creneau['fin']
+            prochain_fin = prochain_debut + duree_min
+
+    heure_proposee = time(min(23, prochain_debut // 60), prochain_debut % 60)
+    message = f"ℹ️ Repositionné à {heure_proposee.strftime('%H:%M')} (créneau {heure_souhaitee.strftime('%H:%M')} occupé)"
+    return heure_proposee, True, message
+
+def ajouter_element_planning(type_element, job_id, temps_custom_id, date_prevue, ligne_lavage, 
+                             duree_minutes, annee, semaine, heure_debut_choisie):
+    """Ajoute un élément au planning"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        
-        # Récupérer producteur si c'est un JOB (dénormalisation pour performance)
-        producteur = None
-        if type_element == 'JOB' and job_id:
-            cursor.execute("SELECT producteur FROM lavages_jobs WHERE id = %s", (job_id,))
-            result = cursor.fetchone()
-            if result:
-                producteur = result.get('producteur')
-        
         cursor.execute("""
             SELECT COALESCE(MAX(ordre_jour), 0) as max_ordre
             FROM lavages_planning_elements
@@ -404,23 +409,20 @@ def ajouter_element_planning(type_element, job_id, temps_custom_id, date_prevue,
         """, (date_prevue, ligne_lavage))
         result = cursor.fetchone()
         next_ordre = (result['max_ordre'] or 0) + 1
-        
         heure_debut = heure_debut_choisie
         debut_minutes = heure_debut.hour * 60 + heure_debut.minute
         fin_minutes = debut_minutes + duree_minutes
-        heure_fin = time(min(23, fin_minutes // 60), fin_minutes % 60)
-        
+        heure_fin_brute = time(min(23, fin_minutes // 60), fin_minutes % 60)
+        heure_fin = arrondir_quart_heure_sup(heure_fin_brute)
         created_by = st.session_state.get('username', 'system')
-        
         cursor.execute("""
             INSERT INTO lavages_planning_elements 
-            (type_element, job_id, temps_custom_id, parent_job_id, producteur, annee, semaine, date_prevue,
+            (type_element, job_id, temps_custom_id, annee, semaine, date_prevue, 
              ligne_lavage, ordre_jour, heure_debut, heure_fin, duree_minutes, created_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
-        """, (type_element, job_id, temps_custom_id, parent_job_id, producteur, annee, semaine, date_prevue,
+        """, (type_element, job_id, temps_custom_id, annee, semaine, date_prevue,
               ligne_lavage, next_ordre, heure_debut, heure_fin, duree_minutes, created_by))
-        
         conn.commit()
         cursor.close()
         conn.close()
@@ -431,17 +433,11 @@ def ajouter_element_planning(type_element, job_id, temps_custom_id, date_prevue,
         return False, f"❌ Erreur : {str(e)}"
 
 def retirer_element_planning(element_id):
-    """Retire un élément du planning + temps customs associés"""
+    """Retire un élément du planning"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        
-        # Supprimer les temps customs liés (parent_job_id)
-        cursor.execute("DELETE FROM lavages_planning_elements WHERE parent_job_id = %s", (element_id,))
-        
-        # Supprimer l'élément principal
         cursor.execute("DELETE FROM lavages_planning_elements WHERE id = %s", (element_id,))
-        
         conn.commit()
         cursor.close()
         conn.close()
@@ -450,139 +446,6 @@ def retirer_element_planning(element_id):
         if 'conn' in locals():
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
-
-def trouver_prochain_creneau_libre(planning_df, date_cible, ligne, heure_souhaitee, duree_min):
-    """
-    Trouve le prochain créneau disponible pour placer un élément.
-    Si l'heure souhaitée est libre, la retourne.
-    Sinon, trouve automatiquement le prochain créneau libre après les chevauchements.
-    """
-    if planning_df.empty:
-        return heure_souhaitee, True, ""
-    
-    date_str = str(date_cible)
-    mask = (planning_df['date_prevue'].astype(str) == date_str) & (planning_df['ligne_lavage'] == ligne)
-    elements = planning_df[mask]
-    
-    if elements.empty:
-        return heure_souhaitee, True, ""
-    
-    # Convertir heure souhaitée en minutes
-    debut_souhaite = heure_souhaitee.hour * 60 + heure_souhaitee.minute
-    
-    # Collecter tous les créneaux occupés
-    creneaux_occupes = []
-    for _, elem in elements.iterrows():
-        if pd.isna(elem['heure_debut']) or pd.isna(elem['heure_fin']):
-            continue
-        elem_debut = elem['heure_debut'].hour * 60 + elem['heure_debut'].minute
-        elem_fin = elem['heure_fin'].hour * 60 + elem['heure_fin'].minute
-        
-        # Récupérer le libellé pour affichage
-        if pd.notna(elem.get('custom_libelle')):
-            libelle = f"🔧 {elem['custom_libelle']}"
-        elif pd.notna(elem.get('variete')):
-            libelle = f"🌱 {elem['variete']}"
-        else:
-            libelle = "élément"
-        
-        creneaux_occupes.append({
-            'debut': elem_debut,
-            'fin': elem_fin,
-            'libelle': libelle,
-            'heure_debut_str': elem['heure_debut'].strftime('%H:%M'),
-            'heure_fin_str': elem['heure_fin'].strftime('%H:%M')
-        })
-    
-    # Trier par heure de début
-    creneaux_occupes.sort(key=lambda x: x['debut'])
-    
-    # Vérifier si l'heure souhaitée est libre
-    fin_souhaitee = debut_souhaite + duree_min
-    conflit = False
-    dernier_fin = debut_souhaite
-    
-    for creneau in creneaux_occupes:
-        # Chevauchement ?
-        if not (fin_souhaitee <= creneau['debut'] or debut_souhaite >= creneau['fin']):
-            conflit = True
-            dernier_fin = max(dernier_fin, creneau['fin'])
-    
-    # Si pas de conflit, retourner l'heure souhaitée
-    if not conflit:
-        return heure_souhaitee, True, ""
-    
-    # Sinon, trouver le prochain créneau libre après tous les conflits
-    # Chercher à partir de la fin du dernier élément en conflit
-    prochain_debut = dernier_fin
-    
-    # Vérifier que ce nouveau créneau ne chevauche pas d'autres éléments
-    prochain_fin = prochain_debut + duree_min
-    for creneau in creneaux_occupes:
-        if creneau['debut'] < prochain_fin and creneau['fin'] > prochain_debut:
-            # Conflit avec un autre élément, décaler encore
-            prochain_debut = creneau['fin']
-            prochain_fin = prochain_debut + duree_min
-    
-    # Convertir minutes en time
-    heure_proposee = time(prochain_debut // 60, prochain_debut % 60)
-    
-    # Message informatif
-    message = f"ℹ️ Repositionné à {heure_proposee.strftime('%H:%M')} (créneau {heure_souhaitee.strftime('%H:%M')} occupé)"
-    
-    return heure_proposee, True, message
-
-def recalculer_heures_fin_job(job_planning_id):
-    """Recalcule heure_fin du job en incluant les temps customs intercalés"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Récupérer le job parent
-        cursor.execute("""
-            SELECT date_prevue, ligne_lavage, heure_debut, duree_minutes, job_id
-            FROM lavages_planning_elements
-            WHERE id = %s
-        """, (job_planning_id,))
-        job_elem = cursor.fetchone()
-        
-        if not job_elem:
-            return
-        
-        # Récupérer les temps customs de ce job (parent_job_id)
-        cursor.execute("""
-            SELECT duree_minutes
-            FROM lavages_planning_elements
-            WHERE parent_job_id = %s
-            ORDER BY ordre_jour
-        """, (job_planning_id,))
-        customs = cursor.fetchall()
-        
-        # Calculer durée totale
-        duree_job = int(job_elem['duree_minutes'])
-        duree_customs = sum([int(c['duree_minutes']) for c in customs])
-        duree_totale = duree_job + duree_customs
-        
-        # Recalculer heure_fin
-        h_debut = job_elem['heure_debut']
-        debut_min = h_debut.hour * 60 + h_debut.minute
-        fin_min = debut_min + duree_totale
-        heure_fin = time(min(23, fin_min // 60), fin_min % 60)
-        
-        # Mettre à jour
-        cursor.execute("""
-            UPDATE lavages_planning_elements
-            SET heure_fin = %s, duree_minutes = %s
-            WHERE id = %s
-        """, (heure_fin, duree_totale, job_planning_id))
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-    except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
-        st.error(f"❌ Erreur recalcul : {str(e)}")
 
 def demarrer_job(job_id):
     """Démarre un job (PRÉVU → EN_COURS)"""
@@ -606,53 +469,107 @@ def demarrer_job(job_id):
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
-def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
-                site_dest, emplacement_dest, notes=""):
-    """Termine un job EN_COURS → TERMINÉ
+def terminer_job(job_id, 
+                 # Sorties LAVÉ
+                 nb_pallox_lave, type_cond_lave, poids_lave, calibre_min_lave, calibre_max_lave,
+                 # Sorties GRENAILLES
+                 nb_pallox_gren, type_cond_gren, poids_grenailles, calibre_min_gren, calibre_max_gren,
+                 # Déchets (reste en kg)
+                 poids_dechets,
+                 # Destination
+                 site_dest, emplacement_dest, notes=""):
+    """Termine un job avec création stocks LAVÉ/GRENAILLES et déduction source
     
-    Gère automatiquement selon statut_source :
-    - BRUT : crée stock LAVÉ + GRENAILLES_BRUTES
-    - GRENAILLES_BRUTES : crée stock GRENAILLES_LAVÉES
+    Nouvelle version : prend en entrée les pallox + type + calibre pour chaque sortie.
+    Le poids peut être ajusté par l'utilisateur après calcul auto.
+    
+    Si source = BRUT → crée LAVÉ + GRENAILLES_BRUTES
+    Si source = GRENAILLES_BRUTES → crée GRENAILLES_LAVÉES (pas de sous-grenailles)
     """
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Récupérer infos job
+        # Récupérer job complet avec emplacement_id et statut_source
         cursor.execute("""
-            SELECT lot_id, quantite_pallox, poids_brut_kg, code_lot_interne,
-                   emplacement_id, statut, statut_source, variete, producteur
-            FROM lavages_jobs
-            WHERE id = %s
+            SELECT lj.lot_id, lj.quantite_pallox, lj.poids_brut_kg,
+                   lj.code_lot_interne, lj.ligne_lavage, lj.date_activation,
+                   lj.variete, lj.emplacement_id, lj.statut_source
+            FROM lavages_jobs lj
+            WHERE lj.id = %s AND lj.statut = 'EN_COURS'
         """, (job_id,))
-        
         job = cursor.fetchone()
         if not job:
-            return False, "❌ Job introuvable"
-        if job['statut'] != 'EN_COURS':
-            return False, f"❌ Ce job est {job['statut']}, pas EN_COURS"
+            return False, "❌ Job introuvable ou pas EN_COURS"
         
-        # Convertir types
-        poids_lave = float(poids_lave)
-        poids_grenailles = float(poids_grenailles)
-        poids_dechets = float(poids_dechets)
+        # Récupérer l'emplacement source via emplacement_id du job (si disponible)
+        # Sinon fallback sur l'ancienne méthode
+        if job['emplacement_id']:
+            cursor.execute("""
+                SELECT id, nombre_unites, poids_total_kg, site_stockage, emplacement_stockage, statut_lavage
+                FROM stock_emplacements
+                WHERE id = %s AND is_active = TRUE
+            """, (job['emplacement_id'],))
+        else:
+            # Fallback pour anciens jobs sans emplacement_id
+            cursor.execute("""
+                SELECT id, nombre_unites, poids_total_kg, site_stockage, emplacement_stockage, statut_lavage
+                FROM stock_emplacements
+                WHERE lot_id = %s 
+                  AND statut_lavage IN ('BRUT', 'GRENAILLES_BRUTES')
+                  AND is_active = TRUE
+                ORDER BY id
+                LIMIT 1
+            """, (job['lot_id'],))
+        
+        stock_source = cursor.fetchone()
+        if not stock_source:
+            return False, "❌ Stock source introuvable"
+        
+        # Déterminer le type de source (BRUT ou GRENAILLES_BRUTES)
+        statut_source = job['statut_source'] or stock_source['statut_lavage'] or 'BRUT'
+        is_grenailles_source = (statut_source == 'GRENAILLES_BRUTES')
+        
+        # S'assurer que le stock source a bien un statut_lavage
+        if not stock_source['statut_lavage']:
+            cursor.execute("""
+                UPDATE stock_emplacements 
+                SET statut_lavage = 'BRUT', type_stock = 'PRINCIPAL'
+                WHERE id = %s AND statut_lavage IS NULL
+            """, (stock_source['id'],))
+        
+        # Calculs tares
         poids_brut = float(job['poids_brut_kg'])
-        quantite_pallox = int(job['quantite_pallox'])
-        lot_id = int(job['lot_id'])
-        emplacement_id = job['emplacement_id']
-        statut_source = job['statut_source'] or 'BRUT'
         
-        # Calculs
-        poids_terre = poids_brut - poids_lave - poids_grenailles - poids_dechets
-        tare_reelle = ((poids_dechets + poids_terre) / poids_brut) * 100 if poids_brut > 0 else 0
-        rendement = ((poids_lave + poids_grenailles) / poids_brut) * 100 if poids_brut > 0 else 0
+        if is_grenailles_source:
+            # Pour grenailles : pas de sous-grenailles, tout passe en lavé ou déchets
+            poids_terre = poids_brut - poids_lave - poids_dechets
+            poids_grenailles = 0  # Pas de sous-grenailles
+            tare_reelle = ((poids_dechets + poids_terre) / poids_brut) * 100
+            rendement = (poids_lave / poids_brut) * 100
+        else:
+            # Pour BRUT normal
+            poids_terre = poids_brut - poids_lave - poids_grenailles - poids_dechets
+            tare_reelle = ((poids_dechets + poids_terre) / poids_brut) * 100
+            rendement = ((poids_lave + poids_grenailles) / poids_brut) * 100
         
         # Validation cohérence
-        if abs(poids_terre) > 100:
-            return False, f"❌ Incohérent : Terre = {poids_terre:.0f} kg (vérifier saisie)"
+        total_sorties = poids_lave + poids_grenailles + poids_dechets + poids_terre
+        if abs(poids_brut - total_sorties) > 1:
+            return False, f"❌ Poids incohérents ! Brut={poids_brut:.0f} vs Total={total_sorties:.0f}"
         
-        # Mettre à jour le job
+        # Calcul temps réel (en minutes)
+        temps_reel_minutes = None
+        if job['date_activation']:
+            delta = datetime.now() - job['date_activation']
+            temps_reel_minutes = int(delta.total_seconds() / 60)
+        
         terminated_by = st.session_state.get('username', 'system')
+        quantite_pallox = int(job['quantite_pallox'])
+        
+        # ============================================================
+        # 1. METTRE À JOUR LE JOB
+        # ============================================================
         cursor.execute("""
             UPDATE lavages_jobs
             SET statut = 'TERMINÉ',
@@ -673,127 +590,424 @@ def terminer_job(job_id, poids_lave, poids_grenailles, poids_dechets,
               terminated_by, notes, job_id))
         
         # ============================================================
-        # WORKFLOW DIFFÉRENCIÉ SELON STATUT_SOURCE
+        # 2. CRÉER STOCK LAVÉ (ou GRENAILLES_LAVÉES si source = grenailles)
         # ============================================================
-        
-        if statut_source == 'BRUT':
-            # ========== CAS 1 : SOURCE BRUT → LAVÉ + GRENAILLES_BRUTES ==========
-            
-            # Créer stock LAVÉ
-            if poids_lave > 0:
-                nb_unites_lave = int(poids_lave / 1900)  # Estimation pallox lavés
-                cursor.execute("""
-                    INSERT INTO stock_emplacements (
-                        lot_id, site_stockage, emplacement_stockage,
-                        nombre_unites, type_conditionnement, poids_total_kg,
-                        statut_lavage, lavage_job_id, is_active
-                    ) VALUES (%s, %s, %s, %s, 'Pallox', %s, 'LAVÉ', %s, TRUE)
-                """, (lot_id, site_dest, emplacement_dest, nb_unites_lave, poids_lave, job_id))
-                
-                # Mouvement LAVÉ
-                cursor.execute("""
-                    INSERT INTO stock_mouvements (
-                        lot_id, type_mouvement, site_destination, emplacement_destination,
-                        quantite, type_conditionnement, poids_kg, user_action, notes
-                    ) VALUES (%s, 'LAVAGE_CREE_LAVE', %s, %s, %s, 'Pallox', %s, %s, %s)
-                """, (lot_id, site_dest, emplacement_dest, nb_unites_lave, poids_lave,
-                      terminated_by, f"Job #{job_id} - BRUT → LAVÉ"))
-            
-            # Créer stock GRENAILLES_BRUTES (pas GRENAILLES)
-            if poids_grenailles > 0:
-                nb_unites_gren = int(poids_grenailles / 1200)  # Estimation petit pallox grenailles
-                cursor.execute("""
-                    INSERT INTO stock_emplacements (
-                        lot_id, site_stockage, emplacement_stockage,
-                        nombre_unites, type_conditionnement, poids_total_kg,
-                        statut_lavage, lavage_job_id, is_active
-                    ) VALUES (%s, %s, %s, %s, 'Petit Pallox', %s, 'GRENAILLES', %s, TRUE)
-                """, (lot_id, site_dest, emplacement_dest, nb_unites_gren, poids_grenailles, job_id))
-                
-                # Mouvement GRENAILLES
-                cursor.execute("""
-                    INSERT INTO stock_mouvements (
-                        lot_id, type_mouvement, site_destination, emplacement_destination,
-                        quantite, type_conditionnement, poids_kg, user_action, notes
-                    ) VALUES (%s, 'LAVAGE_CREE_GRENAILLES', %s, %s, %s, 'Petit Pallox', %s, %s, %s)
-                """, (lot_id, site_dest, emplacement_dest, nb_unites_gren, poids_grenailles,
-                      terminated_by, f"Job #{job_id} - BRUT → GRENAILLES"))
-        
+        if is_grenailles_source:
+            # Source = GRENAILLES_BRUTES → créer GRENAILLES_LAVÉES
+            statut_sortie = 'GRENAILLES_LAVÉES'
+            type_stock_sortie = 'GRENAILLES_LAVÉES'
         else:
-            # ========== CAS 2 : SOURCE GRENAILLES_BRUTES → GRENAILLES_LAVÉES ==========
-            
-            # Créer stock GRENAILLES_LAVÉES (statut spécifique)
-            if poids_lave > 0:
-                nb_unites_gren_lavees = int(poids_lave / 1200)
-                cursor.execute("""
-                    INSERT INTO stock_emplacements (
-                        lot_id, site_stockage, emplacement_stockage,
-                        nombre_unites, type_conditionnement, poids_total_kg,
-                        statut_lavage, lavage_job_id, is_active
-                    ) VALUES (%s, %s, %s, %s, 'Petit Pallox', %s, 'GRENAILLES_LAVÉES', %s, TRUE)
-                """, (lot_id, site_dest, emplacement_dest, nb_unites_gren_lavees, poids_lave, job_id))
-                
-                # Mouvement GRENAILLES_LAVÉES
-                cursor.execute("""
-                    INSERT INTO stock_mouvements (
-                        lot_id, type_mouvement, site_destination, emplacement_destination,
-                        quantite, type_conditionnement, poids_kg, user_action, notes
-                    ) VALUES (%s, 'LAVAGE_GRENAILLES_CREE_LAVEES', %s, %s, %s, 'Petit Pallox', %s, %s, %s)
-                """, (lot_id, site_dest, emplacement_dest, nb_unites_gren_lavees, poids_lave,
-                      terminated_by, f"Job #{job_id} - GRENAILLES → LAVÉES"))
-            
-            # Note : Pas de grenailles secondaires (déchets uniquement)
+            # Source = BRUT → créer LAVÉ
+            statut_sortie = 'LAVÉ'
+            type_stock_sortie = 'LAVÉ'
+        
+        # Utiliser les paramètres pallox et type fournis par l'utilisateur
+        cursor.execute("""
+            INSERT INTO stock_emplacements 
+            (lot_id, site_stockage, emplacement_stockage, nombre_unites, 
+             type_conditionnement, poids_total_kg, type_stock, statut_lavage, 
+             calibre_min, calibre_max, lavage_job_id, is_active)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+            RETURNING id
+        """, (job['lot_id'], site_dest, emplacement_dest, int(nb_pallox_lave), 
+              type_cond_lave, float(poids_lave), type_stock_sortie, statut_sortie, 
+              int(calibre_min_lave), int(calibre_max_lave), job_id))
+        stock_lave_id = cursor.fetchone()['id']
         
         # ============================================================
-        # DÉDUIRE DU STOCK SOURCE (commun aux 2 cas)
+        # 3. CRÉER STOCK GRENAILLES_BRUTES (seulement si source = BRUT et grenailles > 0)
         # ============================================================
+        stock_grenailles_id = None
+        if not is_grenailles_source and poids_grenailles > 0 and nb_pallox_gren > 0:
+            cursor.execute("""
+                INSERT INTO stock_emplacements 
+                (lot_id, site_stockage, emplacement_stockage, nombre_unites, 
+                 type_conditionnement, poids_total_kg, type_stock, statut_lavage, 
+                 calibre_min, calibre_max, lavage_job_id, is_active)
+                VALUES (%s, %s, %s, %s, %s, %s, 'GRENAILLES', 'GRENAILLES_BRUTES', %s, %s, %s, TRUE)
+                RETURNING id
+            """, (job['lot_id'], site_dest, emplacement_dest, int(nb_pallox_gren), 
+                  type_cond_gren, float(poids_grenailles), 
+                  int(calibre_min_gren), int(calibre_max_gren), job_id))
+            stock_grenailles_id = cursor.fetchone()['id']
         
-        if emplacement_id:
-            # Déduire quantité du stock source
+        # ============================================================
+        # 4. DÉDUIRE DU STOCK SOURCE
+        # ============================================================
+        nouveau_nb_unites = int(stock_source['nombre_unites']) - quantite_pallox
+        nouveau_poids = float(stock_source['poids_total_kg']) - poids_brut
+        
+        if nouveau_nb_unites <= 0:
+            # Stock épuisé - désactiver
             cursor.execute("""
                 UPDATE stock_emplacements
-                SET nombre_unites = nombre_unites - %s,
-                    poids_total_kg = poids_total_kg - %s
+                SET nombre_unites = 0, poids_total_kg = 0, is_active = FALSE
                 WHERE id = %s
-            """, (quantite_pallox, poids_brut, emplacement_id))
-            
-            # Vérifier si stock épuisé
-            cursor.execute("SELECT nombre_unites FROM stock_emplacements WHERE id = %s", (emplacement_id,))
-            result = cursor.fetchone()
-            if result and result['nombre_unites'] <= 0:
-                cursor.execute("UPDATE stock_emplacements SET is_active = FALSE WHERE id = %s", (emplacement_id,))
-            
-            # Mouvement déduction
+            """, (stock_source['id'],))
+        else:
+            # Stock restant
             cursor.execute("""
-                INSERT INTO stock_mouvements (
-                    lot_id, type_mouvement, quantite, type_conditionnement, poids_kg,
-                    user_action, notes
-                ) VALUES (%s, 'LAVAGE_DEDUIT_SOURCE', %s, 'Pallox', %s, %s, %s)
-            """, (lot_id, quantite_pallox, poids_brut, terminated_by,
-                  f"Job #{job_id} - Déduit stock {statut_source}"))
+                UPDATE stock_emplacements
+                SET nombre_unites = %s, poids_total_kg = %s
+                WHERE id = %s
+            """, (nouveau_nb_unites, nouveau_poids, stock_source['id']))
+        
+        # ============================================================
+        # 5. ENREGISTRER MOUVEMENTS DE STOCK
+        # ============================================================
+        # Mouvement réduction source
+        type_mvt_source = 'LAVAGE_GRENAILLES_REDUIT' if is_grenailles_source else 'LAVAGE_BRUT_REDUIT'
+        cursor.execute("""
+            INSERT INTO stock_mouvements 
+            (lot_id, type_mouvement, site_origine, emplacement_origine,
+             quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
+            VALUES (%s, %s, %s, %s, %s, 'Pallox', %s, %s, %s, %s)
+        """, (job['lot_id'], type_mvt_source, stock_source['site_stockage'], stock_source['emplacement_stockage'], 
+              quantite_pallox, poids_brut, terminated_by, f"Job #{job_id} - Sortie lavage", terminated_by))
+        
+        # Mouvement création sortie (LAVÉ ou GRENAILLES_LAVÉES)
+        type_mvt_sortie = 'LAVAGE_CREATION_GRENAILLES_LAVEES' if is_grenailles_source else 'LAVAGE_CREATION_LAVE'
+        cursor.execute("""
+            INSERT INTO stock_mouvements 
+            (lot_id, type_mouvement, site_destination, emplacement_destination,
+             quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
+            VALUES (%s, %s, %s, %s, %s, 'Pallox', %s, %s, %s, %s)
+        """, (job['lot_id'], type_mvt_sortie, site_dest, emplacement_dest, nb_pallox_lave, 
+              poids_lave, terminated_by, f"Job #{job_id} - Entrée {statut_sortie}", terminated_by))
+        
+        # Mouvement GRENAILLES_BRUTES (seulement si source = BRUT et grenailles > 0)
+        if not is_grenailles_source and poids_grenailles > 0:
+            cursor.execute("""
+                INSERT INTO stock_mouvements 
+                (lot_id, type_mouvement, site_destination, emplacement_destination,
+                 quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
+                VALUES (%s, 'LAVAGE_CREATION_GRENAILLES', %s, %s, %s, 'Pallox', %s, %s, %s, %s)
+            """, (job['lot_id'], site_dest, emplacement_dest, nb_pallox_gren, 
+                  poids_grenailles, terminated_by, f"Job #{job_id} - Entrée grenailles brutes", terminated_by))
         
         conn.commit()
         cursor.close()
         conn.close()
         
-        type_resultat = "LAVÉ + GRENAILLES" if statut_source == 'BRUT' else "GRENAILLES_LAVÉES"
-        return True, f"✅ Job terminé - {type_resultat} créés (Rdt: {rendement:.1f}%)"
-        
+        temps_str = f"{temps_reel_minutes // 60}h{temps_reel_minutes % 60:02d}" if temps_reel_minutes else "N/A"
+        if is_grenailles_source:
+            return True, f"✅ Terminé ! Temps: {temps_str} - Rendement: {rendement:.1f}% - Stock GRENAILLES_LAVÉES créé"
+        else:
+            return True, f"✅ Terminé ! Temps: {temps_str} - Rendement: {rendement:.1f}% - Stock LAVÉ créé"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
-# ============================================================
-# ✅ PHASE 1 : FONCTIONS ADMIN
-# ============================================================
+def get_emplacements_saint_flavy():
+    """Récupère les emplacements disponibles à SAINT_FLAVY"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT code_emplacement, nom_complet
+            FROM ref_sites_stockage
+            WHERE code_site = 'SAINT_FLAVY' AND is_active = TRUE
+            ORDER BY code_emplacement
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [(row['code_emplacement'], row['nom_complet']) for row in rows] if rows else []
+    except:
+        return []
 
-def supprimer_job(job_id):
-    """Supprime un job PRÉVU (DELETE complet)"""
+def get_lots_bruts_disponibles():
+    """Récupère les emplacements disponibles pour créer un job
+    
+    IMPORTANT: 
+    - Filtre sur lots_bruts.is_active = TRUE
+    - Calcule les réservations PAR EMPLACEMENT (pas par lot)
+    - Inclut BRUT et GRENAILLES_BRUTES (peuvent être lavés)
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                l.id as lot_id, 
+                l.code_lot_interne, 
+                l.nom_usage,
+                l.code_producteur,
+                COALESCE(p.nom, l.code_producteur) as producteur,
+                l.calibre_min, 
+                l.calibre_max,
+                COALESCE(v.nom_variete, l.code_variete) as variete,
+                se.id as emplacement_id, 
+                se.site_stockage, 
+                se.emplacement_stockage,
+                se.statut_lavage,
+                se.nombre_unites as stock_total,
+                COALESCE(jobs_reserves.pallox_reserves, 0) as pallox_reserves,
+                se.nombre_unites - COALESCE(jobs_reserves.pallox_reserves, 0) as nombre_unites,
+                se.poids_total_kg - COALESCE(jobs_reserves.poids_reserve, 0) as poids_total_kg,
+                se.type_conditionnement
+            FROM lots_bruts l
+            JOIN stock_emplacements se ON l.id = se.lot_id
+            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+            LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
+            LEFT JOIN (
+                SELECT emplacement_id,
+                       SUM(quantite_pallox) as pallox_reserves,
+                       SUM(poids_brut_kg) as poids_reserve
+                FROM lavages_jobs
+                WHERE statut IN ('PRÉVU', 'EN_COURS')
+                  AND emplacement_id IS NOT NULL
+                GROUP BY emplacement_id
+            ) jobs_reserves ON se.id = jobs_reserves.emplacement_id
+            WHERE l.is_active = TRUE
+              AND se.is_active = TRUE 
+              AND se.statut_lavage IN ('BRUT', 'GRENAILLES_BRUTES')
+              AND (se.nombre_unites - COALESCE(jobs_reserves.pallox_reserves, 0)) > 0
+            ORDER BY l.code_lot_interne, se.site_stockage, se.emplacement_stockage
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        if rows:
+            df = pd.DataFrame(rows)
+            for col in ['nombre_unites', 'poids_total_kg', 'calibre_min', 'calibre_max', 'stock_total', 'pallox_reserves']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            return df
+        return pd.DataFrame()
+    except:
+        return pd.DataFrame()
+
+
+def get_besoins_lavage_affectations():
+    """
+    Récupère les besoins de lavage basés sur les affectations
+    
+    Pour chaque lot avec affectations BRUT :
+    - Affecté BRUT = somme des affectations BRUT (tonnes brut)
+    - Stock LAVÉ = stock déjà lavé disponible (tonnes)
+    - Besoin lavage = Affecté BRUT - Stock LAVÉ (si > 0)
+    - Stock BRUT dispo = stock BRUT disponible pour jobs
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
+        query = """
+        WITH affectations_brut AS (
+            -- Affectations BRUT par lot
+            SELECT 
+                pa.lot_id,
+                SUM(pa.quantite_affectee_tonnes) as affecte_brut_tonnes,
+                SUM(pa.poids_net_estime_tonnes) as affecte_net_tonnes,
+                STRING_AGG(DISTINCT pc.marque || ' ' || pc.libelle, ', ') as produits_liste,
+                COUNT(DISTINCT pa.code_produit_commercial) as nb_produits
+            FROM previsions_affectations pa
+            LEFT JOIN ref_produits_commerciaux pc ON pa.code_produit_commercial = pc.code_produit
+            WHERE pa.is_active = TRUE 
+              AND pa.statut_stock = 'BRUT'
+            GROUP BY pa.lot_id
+        ),
+        stock_lave AS (
+            -- Stock LAVÉ disponible par lot
+            SELECT 
+                se.lot_id,
+                SUM(se.poids_total_kg) / 1000 as stock_lave_tonnes,
+                SUM(se.nombre_unites) as pallox_laves
+            FROM stock_emplacements se
+            WHERE se.is_active = TRUE
+              AND se.statut_lavage = 'LAVÉ'
+              AND se.nombre_unites > 0
+            GROUP BY se.lot_id
+        ),
+        stock_brut AS (
+            -- Stock BRUT disponible par lot (moins jobs réservés)
+            SELECT 
+                se.lot_id,
+                SUM(se.nombre_unites - COALESCE(jobs.pallox_reserves, 0)) as pallox_brut_dispo,
+                SUM(se.poids_total_kg - COALESCE(jobs.poids_reserve, 0)) / 1000 as brut_dispo_tonnes
+            FROM stock_emplacements se
+            LEFT JOIN (
+                SELECT emplacement_id,
+                       SUM(quantite_pallox) as pallox_reserves,
+                       SUM(poids_brut_kg) as poids_reserve
+                FROM lavages_jobs
+                WHERE statut IN ('PRÉVU', 'EN_COURS')
+                  AND emplacement_id IS NOT NULL
+                GROUP BY emplacement_id
+            ) jobs ON se.id = jobs.emplacement_id
+            WHERE se.is_active = TRUE
+              AND se.statut_lavage IN ('BRUT', 'GRENAILLES_BRUTES')
+              AND (se.nombre_unites - COALESCE(jobs.pallox_reserves, 0)) > 0
+            GROUP BY se.lot_id
+        ),
+        jobs_deja_crees AS (
+            -- Jobs déjà créés par lot (PRÉVU ou EN_COURS)
+            SELECT 
+                lot_id,
+                SUM(poids_brut_kg) / 1000 as jobs_prevus_tonnes,
+                SUM(quantite_pallox) as jobs_prevus_pallox
+            FROM lavages_jobs
+            WHERE statut IN ('PRÉVU', 'EN_COURS')
+            GROUP BY lot_id
+        )
+        SELECT 
+            l.id as lot_id,
+            l.code_lot_interne,
+            l.nom_usage,
+            l.code_producteur,
+            COALESCE(p.nom, l.code_producteur) as producteur,
+            COALESCE(v.nom_variete, l.code_variete) as variete,
+            
+            -- Affectations
+            COALESCE(ab.affecte_brut_tonnes, 0) as affecte_brut_tonnes,
+            COALESCE(ab.affecte_net_tonnes, 0) as affecte_net_tonnes,
+            ab.produits_liste,
+            COALESCE(ab.nb_produits, 0) as nb_produits,
+            
+            -- Stock LAVÉ existant
+            COALESCE(sl.stock_lave_tonnes, 0) as stock_lave_tonnes,
+            
+            -- Stock BRUT disponible
+            COALESCE(sb.pallox_brut_dispo, 0) as pallox_brut_dispo,
+            COALESCE(sb.brut_dispo_tonnes, 0) as brut_dispo_tonnes,
+            
+            -- Jobs déjà créés
+            COALESCE(jc.jobs_prevus_tonnes, 0) as jobs_prevus_tonnes,
+            COALESCE(jc.jobs_prevus_pallox, 0) as jobs_prevus_pallox,
+            
+            -- Calcul besoin net de lavage
+            -- Besoin = (Affecté NET - Stock LAVÉ - Jobs déjà prévus en équivalent net)
+            -- Si < 0, pas de besoin
+            GREATEST(
+                COALESCE(ab.affecte_net_tonnes, 0) 
+                - COALESCE(sl.stock_lave_tonnes, 0)
+                - COALESCE(jc.jobs_prevus_tonnes, 0) * 0.78,  -- 78% rendement moyen
+                0
+            ) as besoin_lavage_net_tonnes
+            
+        FROM affectations_brut ab
+        JOIN lots_bruts l ON ab.lot_id = l.id
+        LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+        LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
+        LEFT JOIN stock_lave sl ON l.id = sl.lot_id
+        LEFT JOIN stock_brut sb ON l.id = sb.lot_id
+        LEFT JOIN jobs_deja_crees jc ON l.id = jc.lot_id
+        WHERE l.is_active = TRUE
+        ORDER BY 
+            GREATEST(COALESCE(ab.affecte_net_tonnes, 0) - COALESCE(sl.stock_lave_tonnes, 0), 0) DESC,
+            l.code_lot_interne
+        """
+        
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if rows:
+            df = pd.DataFrame(rows)
+            
+            # Conversions numériques
+            numeric_cols = ['affecte_brut_tonnes', 'affecte_net_tonnes', 'stock_lave_tonnes', 
+                           'pallox_brut_dispo', 'brut_dispo_tonnes', 'jobs_prevus_tonnes', 
+                           'jobs_prevus_pallox', 'besoin_lavage_net_tonnes', 'nb_produits']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            
+            # Filtrer lots avec un besoin > 0
+            df = df[df['besoin_lavage_net_tonnes'] > 0.1]  # Seuil minimal 100 kg
+            
+            return df
+        return pd.DataFrame()
+        
+    except Exception as e:
+        st.error(f"❌ Erreur get_besoins_lavage_affectations : {str(e)}")
+        return pd.DataFrame()
+
+def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg, 
+                     date_prevue, ligne_lavage, capacite_th, notes=""):
+    """Crée un nouveau job de lavage
+    
+    Vérifie que le stock disponible PAR EMPLACEMENT est suffisant
+    Enregistre emplacement_id et statut_source
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        lot_id = int(lot_id)
+        emplacement_id = int(emplacement_id)
+        quantite_pallox = int(quantite_pallox)
+        poids_brut_kg = float(poids_brut_kg)
+        capacite_th = float(capacite_th)
+        
+        # ============================================================
+        # VÉRIFICATION : Stock disponible PAR EMPLACEMENT suffisant ?
+        # ============================================================
+        cursor.execute("""
+            SELECT 
+                se.nombre_unites as stock_total,
+                se.statut_lavage,
+                COALESCE(jobs.pallox_reserves, 0) as pallox_reserves,
+                se.nombre_unites - COALESCE(jobs.pallox_reserves, 0) as stock_disponible
+            FROM stock_emplacements se
+            LEFT JOIN (
+                SELECT emplacement_id, SUM(quantite_pallox) as pallox_reserves
+                FROM lavages_jobs
+                WHERE statut IN ('PRÉVU', 'EN_COURS')
+                  AND emplacement_id IS NOT NULL
+                GROUP BY emplacement_id
+            ) jobs ON se.id = jobs.emplacement_id
+            WHERE se.id = %s
+        """, (emplacement_id,))
+        stock_info = cursor.fetchone()
+        
+        if not stock_info:
+            return False, "❌ Emplacement introuvable"
+        
+        stock_disponible = int(stock_info['stock_disponible']) if stock_info['stock_disponible'] else int(stock_info['stock_total'])
+        if quantite_pallox > stock_disponible:
+            return False, f"❌ Stock insuffisant : {quantite_pallox} demandés mais seulement {stock_disponible} disponibles (déjà {int(stock_info['pallox_reserves'])} réservés)"
+        
+        # Récupérer le statut_source (BRUT ou GRENAILLES_BRUTES)
+        statut_source = stock_info['statut_lavage'] or 'BRUT'
+        
+        cursor.execute("""
+            SELECT l.code_lot_interne, COALESCE(v.nom_variete, l.code_variete) as variete
+            FROM lots_bruts l
+            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+            WHERE l.id = %s
+        """, (lot_id,))
+        lot_info = cursor.fetchone()
+        temps_estime = (poids_brut_kg / 1000) / capacite_th
+        created_by = st.session_state.get('username', 'system')
+        
+        cursor.execute("""
+            INSERT INTO lavages_jobs (
+                lot_id, emplacement_id, code_lot_interne, variete, quantite_pallox, poids_brut_kg,
+                date_prevue, ligne_lavage, capacite_th, temps_estime_heures,
+                statut, statut_source, created_by, notes
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'PRÉVU', %s, %s, %s)
+            RETURNING id
+        """, (lot_id, emplacement_id, lot_info['code_lot_interne'], lot_info['variete'],
+              quantite_pallox, poids_brut_kg, date_prevue, ligne_lavage,
+              capacite_th, temps_estime, statut_source, created_by, notes))
+        job_id = cursor.fetchone()['id']
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, f"✅ Job #{job_id} créé"
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+def supprimer_job(job_id):
+    """Supprime un job PRÉVU (suppression complète)"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
         # Vérifier que le job est PRÉVU
         cursor.execute("SELECT statut FROM lavages_jobs WHERE id = %s", (job_id,))
         result = cursor.fetchone()
@@ -804,10 +1018,8 @@ def supprimer_job(job_id):
         
         # Supprimer du planning si présent
         cursor.execute("DELETE FROM lavages_planning_elements WHERE job_id = %s", (job_id,))
-        
         # Supprimer le job
         cursor.execute("DELETE FROM lavages_jobs WHERE id = %s", (job_id,))
-        
         conn.commit()
         cursor.close()
         conn.close()
@@ -822,7 +1034,6 @@ def annuler_job_en_cours(job_id):
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        
         # Vérifier que le job est EN_COURS
         cursor.execute("SELECT statut FROM lavages_jobs WHERE id = %s", (job_id,))
         result = cursor.fetchone()
@@ -839,7 +1050,6 @@ def annuler_job_en_cours(job_id):
                 activated_by = NULL
             WHERE id = %s
         """, (job_id,))
-        
         conn.commit()
         cursor.close()
         conn.close()
@@ -880,6 +1090,7 @@ def annuler_job_termine(job_id):
         # ============================================================
         # 1. SUPPRIMER LES STOCKS CRÉÉS PAR CE JOB
         # ============================================================
+        # Inclut tous les types possibles : LAVÉ, GRENAILLES_BRUTES, GRENAILLES_LAVÉES
         cursor.execute("""
             DELETE FROM stock_emplacements 
             WHERE lavage_job_id = %s AND statut_lavage IN ('LAVÉ', 'GRENAILLES', 'GRENAILLES_BRUTES', 'GRENAILLES_LAVÉES')
@@ -888,6 +1099,7 @@ def annuler_job_termine(job_id):
         # ============================================================
         # 2. RESTAURER LE STOCK SOURCE
         # ============================================================
+        # Utiliser emplacement_id du job si disponible, sinon chercher par lot_id
         if emplacement_id:
             cursor.execute("""
                 SELECT id, nombre_unites, poids_total_kg, is_active, statut_lavage
@@ -895,7 +1107,7 @@ def annuler_job_termine(job_id):
                 WHERE id = %s
             """, (emplacement_id,))
         else:
-            # Fallback : chercher le stock source du lot
+            # Fallback : chercher le stock source du lot (BRUT ou GRENAILLES_BRUTES selon statut_source)
             cursor.execute("""
                 SELECT id, nombre_unites, poids_total_kg, is_active, statut_lavage
                 FROM stock_emplacements
@@ -973,20 +1185,46 @@ def creer_temps_custom(code, libelle, emoji, duree_minutes):
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
-def supprimer_temps_custom(temps_id):
-    """Supprime (désactive) un temps custom"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE lavages_temps_customs SET is_active = FALSE WHERE id = %s", (temps_id,))
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return True, "✅ Supprimé"
-    except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
-        return False, f"❌ Erreur : {str(e)}"
+def generer_html_jour(planning_df, date_obj, ligne, lignes_info):
+    """Génère le HTML pour impression"""
+    jours_fr = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche']
+    jour_nom = jours_fr[date_obj.weekday()]
+    html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
+    <title>Planning {ligne} - {date_obj.strftime('%d/%m/%Y')}</title>
+    <style>
+        @page {{ size: A4 portrait; margin: 15mm; }}
+        body {{ font-family: Arial; margin: 0; padding: 20px; }}
+        h1 {{ color: #1976d2; border-bottom: 3px solid #1976d2; }}
+        .element {{ border-left: 5px solid #388e3c; padding: 12px; margin: 10px 0; background: #f9f9f9; }}
+        .element-custom {{ border-left-color: #7b1fa2; background: #f3e5f5; }}
+        .horaire {{ font-weight: bold; color: #1976d2; }}
+    </style></head><body>
+    <h1>🗓️ PLANNING LAVAGE - {ligne}</h1>
+    <p><strong>📅</strong> {jour_nom} {date_obj.strftime('%d/%m/%Y')}</p>"""
+    
+    jour_str = str(date_obj)
+    if not planning_df.empty:
+        mask = (planning_df['date_prevue'].astype(str) == jour_str) & (planning_df['ligne_lavage'] == ligne)
+        elements = planning_df[mask].sort_values('heure_debut')
+    else:
+        elements = pd.DataFrame()
+    
+    if elements.empty:
+        html += "<p style='color:#666;'>Aucun élément</p>"
+    else:
+        for _, elem in elements.iterrows():
+            h_debut = elem['heure_debut'].strftime('%H:%M') if pd.notna(elem['heure_debut']) else '--:--'
+            h_fin = elem['heure_fin'].strftime('%H:%M') if pd.notna(elem['heure_fin']) else '--:--'
+            if elem['type_element'] == 'JOB':
+                html += f"""<div class="element"><span class="horaire">{h_debut} → {h_fin}</span>
+                <br><strong>Job #{int(elem['job_id'])} - {elem['variete']}</strong>
+                <br>📦 {int(elem['quantite_pallox'])} pallox</div>"""
+            else:
+                html += f"""<div class="element element-custom"><span class="horaire">{h_debut} → {h_fin}</span>
+                <br><strong>{elem['custom_emoji']} {elem['custom_libelle']}</strong></div>"""
+    
+    html += f"<p style='margin-top:30px;border-top:1px solid #ddd;padding-top:10px;font-size:0.9em;'>Imprimé le {datetime.now().strftime('%d/%m/%Y %H:%M')}</p></body></html>"
+    return html
 
 # ============================================================
 # INITIALISATION SESSION STATE
@@ -1004,8 +1242,8 @@ if 'selected_ligne' not in st.session_state:
 # HEADER + KPIs
 # ============================================================
 
-st.title("🧼 Planning Lavage V8 - Phase 5")
-st.caption("*Gestion jobs lavage - Architecture pause intercalée + Admin*")
+st.title("🧼 Planning Lavage")
+st.caption("*Gestion des jobs de lavage - SAINT_FLAVY*")
 
 kpis = get_kpis_lavage()
 if kpis:
@@ -1021,51 +1259,226 @@ st.markdown("---")
 # ONGLETS PRINCIPAUX
 # ============================================================
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📅 Planning Semaine", "📋 Jobs à Placer", "⚙️ Admin", "➕ Créer Job", "ℹ️ Info"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📅 Planning Semaine", "📋 Liste Jobs", "➕ Créer Job", "📊 Stats & Recap", "🖨️ Imprimer", "⚙️ Admin"])
 
 # ============================================================
-# ONGLET 1 : PLANNING SEMAINE
+# ONGLET 1 : PLANNING SEMAINE (fusionné de page 06)
 # ============================================================
 
 with tab1:
     # Contrôles
-    col_ligne, col_prev, col_semaine, col_next = st.columns([2, 0.5, 2, 0.5])
+    col_ligne, col_nav_prev, col_semaine, col_nav_next, col_refresh = st.columns([2, 0.5, 2, 0.5, 1])
     
     lignes = get_lignes_lavage()
     with col_ligne:
         if lignes:
             ligne_options = [f"{l['code']} ({l['capacite_th']} T/h)" for l in lignes]
             selected_idx = next((i for i, l in enumerate(lignes) if l['code'] == st.session_state.selected_ligne), 0)
-            selected = st.selectbox("Ligne", ligne_options, index=selected_idx, label_visibility="collapsed", key="ligne_select")
+            selected = st.selectbox("🔵 Ligne", ligne_options, index=selected_idx, key="ligne_select")
             st.session_state.selected_ligne = lignes[ligne_options.index(selected)]['code']
     
-    with col_prev:
-        if st.button("◀️", use_container_width=True):
-            st.session_state.current_week_start -= timedelta(days=7)
+    with col_nav_prev:
+        if st.button("◀", key="prev_week", use_container_width=True):
+            st.session_state.current_week_start -= timedelta(weeks=1)
             st.rerun()
     
     with col_semaine:
         week_start = st.session_state.current_week_start
-        week_end = week_start + timedelta(days=4)
-        st.markdown(f"<div style='text-align:center;font-weight:bold;'>Semaine du {week_start.strftime('%d/%m')} au {week_end.strftime('%d/%m')}</div>", unsafe_allow_html=True)
+        week_end = week_start + timedelta(days=5)
+        annee, semaine, _ = week_start.isocalendar()
+        st.markdown(f"""<div class="semaine-center"><h3>Semaine {semaine}</h3>
+        <small>{week_start.strftime('%d/%m')} → {week_end.strftime('%d/%m/%Y')}</small></div>""", unsafe_allow_html=True)
     
-    with col_next:
-        if st.button("▶️", use_container_width=True):
-            st.session_state.current_week_start += timedelta(days=7)
+    with col_nav_next:
+        if st.button("▶", key="next_week", use_container_width=True):
+            st.session_state.current_week_start += timedelta(weeks=1)
+            st.rerun()
+    
+    with col_refresh:
+        if st.button("🔄", key="refresh", use_container_width=True):
             st.rerun()
     
     st.markdown("---")
     
-    # Charger planning
-    annee, semaine, _ = week_start.isocalendar()
-    planning_df = get_planning_semaine(st.session_state.selected_ligne, week_start)
+    # Chargement données
     jobs_a_placer = get_jobs_a_placer(st.session_state.selected_ligne)
     temps_customs = get_temps_customs()
+    horaires_config = get_config_horaires()
+    planning_df = get_planning_semaine(annee, semaine)
+    lignes_dict = {l['code']: float(l['capacite_th']) for l in lignes} if lignes else {'LIGNE_1': 13.0, 'LIGNE_2': 6.0}
     
-    # Layout
+    # ============================================================
+    # ⭐ FORMULAIRE TERMINAISON EN PLEINE LARGEUR (avant calendrier)
+    # ============================================================
+    
+    # Chercher si un job EN_COURS a son formulaire ouvert
+    job_en_terminaison = None
+    job_elem_data = None
+    
+    # Parcourir session_state pour trouver un show_finish actif
+    for key in list(st.session_state.keys()):
+        if key.startswith('show_finish_') and st.session_state.get(key, False):
+            job_id_to_finish = int(key.replace('show_finish_', ''))
+            # Chercher les données de ce job dans planning_df
+            if not planning_df.empty:
+                job_rows = planning_df[(planning_df['job_id'] == job_id_to_finish) & (planning_df['type_element'] == 'JOB')]
+                if not job_rows.empty:
+                    job_en_terminaison = job_id_to_finish
+                    job_elem_data = job_rows.iloc[0]
+                    break
+    
+    # Si un formulaire de terminaison est ouvert, l'afficher en pleine largeur
+    if job_en_terminaison and job_elem_data is not None:
+        elem = job_elem_data
+        
+        st.markdown("---")
+        st.markdown(f"## 📝 Saisie résultats lavage - Job #{job_en_terminaison}")
+        
+        # Info job
+        variete = elem['variete'] if pd.notna(elem.get('variete')) else '-'
+        code_lot = elem['code_lot_interne'] if pd.notna(elem.get('code_lot_interne')) else '-'
+        st.info(f"🌱 **{variete}** | 📦 Lot: {code_lot} | {int(elem['quantite_pallox'])} pallox")
+        
+        poids_brut = float(elem['poids_brut_kg']) if pd.notna(elem['poids_brut_kg']) else 0
+        
+        # ⭐ POIDS UNITAIRES CORRECTS
+        TYPES_COND = ["Pallox", "Petit Pallox", "Big Bag"]
+        POIDS_UNIT = {"Pallox": 1900, "Petit Pallox": 800, "Big Bag": 1600}
+        
+        st.markdown(f"### ⚖️ Poids brut en entrée : {poids_brut:,.0f} kg")
+        st.markdown("---")
+        
+        # ============ LAYOUT 2 COLONNES PRINCIPALES ============
+        col_lave, col_gren = st.columns(2)
+        
+        # ============ COLONNE LAVÉ ============
+        with col_lave:
+            st.markdown("### 🧼 Sortie LAVÉ")
+            
+            col_nb, col_type = st.columns([1, 2])
+            with col_nb:
+                nb_pallox_lave = st.number_input("Nb Pallox", min_value=0, value=max(1, int(poids_brut * 0.75 / 1900)), key=f"nb_lave_full_{job_en_terminaison}")
+            with col_type:
+                type_lave = st.selectbox("Type conditionnement", TYPES_COND, key=f"type_lave_full_{job_en_terminaison}")
+            
+            poids_lave_auto = nb_pallox_lave * POIDS_UNIT[type_lave]
+            st.metric("Poids calculé", f"{poids_lave_auto:,.0f} kg", help=f"{nb_pallox_lave} × {POIDS_UNIT[type_lave]} kg")
+            p_lave = st.number_input("Poids réel (kg)", 0.0, poids_brut*1.2, float(poids_lave_auto), step=100.0, key=f"p_lave_full_{job_en_terminaison}")
+            
+            col_cal1, col_cal2 = st.columns(2)
+            with col_cal1:
+                cal_min_lave = st.number_input("Calibre min (mm)", 0, 100, 35, key=f"cal_min_lave_full_{job_en_terminaison}")
+            with col_cal2:
+                cal_max_lave = st.number_input("Calibre max (mm)", 0, 100, 75, key=f"cal_max_lave_full_{job_en_terminaison}")
+        
+        # ============ COLONNE GRENAILLES ============
+        with col_gren:
+            st.markdown("### 🌾 Sortie GRENAILLES")
+            
+            col_nb_g, col_type_g = st.columns([1, 2])
+            with col_nb_g:
+                nb_pallox_gren = st.number_input("Nb Pallox", min_value=0, value=0, key=f"nb_gren_full_{job_en_terminaison}")
+            with col_type_g:
+                type_gren = st.selectbox("Type conditionnement", TYPES_COND, key=f"type_gren_full_{job_en_terminaison}")
+            
+            poids_gren_auto = nb_pallox_gren * POIDS_UNIT[type_gren]
+            
+            if nb_pallox_gren > 0:
+                st.metric("Poids calculé", f"{poids_gren_auto:,.0f} kg", help=f"{nb_pallox_gren} × {POIDS_UNIT[type_gren]} kg")
+                p_gren = st.number_input("Poids réel (kg)", 0.0, poids_brut, float(poids_gren_auto), step=100.0, key=f"p_gren_full_{job_en_terminaison}")
+                
+                col_cal1_g, col_cal2_g = st.columns(2)
+                with col_cal1_g:
+                    cal_min_gren = st.number_input("Calibre min (mm)", 0, 100, 20, key=f"cal_min_gren_full_{job_en_terminaison}")
+                with col_cal2_g:
+                    cal_max_gren = st.number_input("Calibre max (mm)", 0, 100, 35, key=f"cal_max_gren_full_{job_en_terminaison}")
+            else:
+                p_gren = 0.0
+                cal_min_gren = 20
+                cal_max_gren = 35
+                st.caption("ℹ️ Pas de grenailles - mettez Nb Pallox > 0 si besoin")
+        
+        st.markdown("---")
+        
+        # ============ DÉCHETS + RÉCAP ============
+        col_dech, col_recap = st.columns([1, 2])
+        
+        with col_dech:
+            st.markdown("### 🗑️ Déchets")
+            p_dech = st.number_input("Poids déchets (kg)", 0.0, poids_brut, poids_brut*0.05, step=50.0, key=f"p_dech_full_{job_en_terminaison}")
+            
+            p_terre = poids_brut - p_lave - p_gren - p_dech
+            
+            if p_terre < 0:
+                st.error(f"❌ Terre : {p_terre:,.0f} kg (NÉGATIF !)")
+                terre_ok = False
+            else:
+                st.success(f"✅ Terre : **{p_terre:,.0f} kg**")
+                terre_ok = True
+        
+        with col_recap:
+            st.markdown("### 📊 Récapitulatif")
+            col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+            with col_r1:
+                st.metric("Brut entrée", f"{poids_brut:,.0f} kg")
+            with col_r2:
+                st.metric("Lavé sortie", f"{p_lave:,.0f} kg")
+            with col_r3:
+                st.metric("Grenailles", f"{p_gren:,.0f} kg")
+            with col_r4:
+                st.metric("Déch+Terre", f"{p_dech + max(0, p_terre):,.0f} kg")
+            
+            if poids_brut > 0:
+                rendement = ((p_lave + p_gren) / poids_brut) * 100
+                st.info(f"📈 **Rendement : {rendement:.1f}%**")
+        
+        # Validation calibres
+        calibres_ok = (cal_min_lave < cal_max_lave) and (nb_pallox_gren == 0 or cal_min_gren < cal_max_gren)
+        if not calibres_ok:
+            st.error("❌ Calibre min doit être < calibre max")
+        
+        st.markdown("---")
+        
+        # ============ DESTINATION + BOUTONS ============
+        col_dest, col_btns = st.columns([2, 1])
+        
+        with col_dest:
+            st.markdown("### 📍 Destination")
+            empls = get_emplacements_saint_flavy()
+            empl = st.selectbox("Emplacement stockage SAINT_FLAVY", [""] + [e[0] for e in empls], key=f"empl_full_{job_en_terminaison}")
+        
+        with col_btns:
+            st.markdown("### ✅ Actions")
+            can_validate = terre_ok and calibres_ok and empl != ""
+            
+            if st.button("✅ Valider terminaison", key=f"val_finish_full_{job_en_terminaison}", type="primary", disabled=not can_validate, use_container_width=True):
+                success, msg = terminer_job(
+                    job_en_terminaison,
+                    nb_pallox_lave, type_lave, p_lave, cal_min_lave, cal_max_lave,
+                    nb_pallox_gren, type_gren, p_gren, cal_min_gren, cal_max_gren,
+                    p_dech,
+                    "SAINT_FLAVY", empl
+                )
+                if success:
+                    st.success(msg)
+                    st.session_state.pop(f'show_finish_{job_en_terminaison}', None)
+                    st.rerun()
+                else:
+                    st.error(msg)
+            
+            if st.button("❌ Annuler", key=f"cancel_full_{job_en_terminaison}", use_container_width=True):
+                st.session_state.pop(f'show_finish_{job_en_terminaison}', None)
+                st.rerun()
+        
+        st.markdown("---")
+        st.markdown("---")
+    
+    # ============================================================
+    # Layout principal calendrier
+    # ============================================================
     col_left, col_right = st.columns([1, 4])
     
-    # GAUCHE : Jobs à placer + Temps customs
+    # COLONNE GAUCHE
     with col_left:
         st.markdown("### 📦 Jobs à placer")
         
@@ -1076,28 +1489,31 @@ with tab1:
             st.info("✅ Tous les jobs planifiés")
         else:
             for _, job in jobs_non_planifies.iterrows():
-                producteur_info = f" - 👤 {job['producteur']}" if pd.notna(job.get('producteur')) and job['producteur'] else ""
                 statut_source = job.get('statut_source', 'BRUT')
                 badge_source = "🔄" if statut_source == 'GRENAILLES_BRUTES' else "🥔"
+                producteur_info = f"<br>👤 {job['producteur']}" if pd.notna(job.get('producteur')) and job['producteur'] else ""
                 st.markdown(f"""<div class="job-card"><strong>Job #{int(job['id'])} {badge_source}</strong><br>
                 🌱 {job['variete']}{producteur_info}<br>📦 {int(job['quantite_pallox'])}p - ⏱️ {job['temps_estime_heures']:.1f}h</div>""", unsafe_allow_html=True)
                 
-                jours_options = ["Sélectionner..."] + [f"{['Lun','Mar','Mer','Jeu','Ven'][i]} {(week_start + timedelta(days=i)).strftime('%d/%m')}" for i in range(5)]
+                jours_options = ["Sélectionner..."] + [f"{['Lun','Mar','Mer','Jeu','Ven','Sam'][i]} {(week_start + timedelta(days=i)).strftime('%d/%m')}" for i in range(6)]
                 jour_choisi = st.selectbox("Jour", jours_options, key=f"jour_job_{job['id']}", label_visibility="collapsed")
                 
                 if jour_choisi != "Sélectionner...":
                     jour_idx = jours_options.index(jour_choisi) - 1
                     date_cible = week_start + timedelta(days=jour_idx)
-                    heure_saisie = st.time_input("Heure", value=time(4, 0), step=900, key=f"heure_job_{job['id']}", label_visibility="collapsed")
+                    h_debut_jour = horaires_config.get(jour_idx, {}).get('debut', time(5, 0))
+                    heure_saisie = st.time_input("Heure", value=h_debut_jour, step=900, key=f"heure_job_{job['id']}", label_visibility="collapsed")
                     duree_min = int(job['temps_estime_heures'] * 60)
                     
-                    # Trouver le prochain créneau libre (auto-repositionnement)
-                    heure_optimale, ok, msg_info = trouver_prochain_creneau_libre(planning_df, date_cible, st.session_state.selected_ligne, heure_saisie, duree_min)
-                    
+                    heure_optimale, _, msg_info = trouver_prochain_creneau_libre(planning_df, date_cible, st.session_state.selected_ligne, heure_saisie, duree_min)
                     if msg_info:
                         st.info(msg_info)
                     
-                    if st.button("✅ Placer", key=f"confirm_job_{job['id']}", type="primary", use_container_width=True):
+                    h_fin_jour = get_horaire_fin_jour(jour_idx, horaires_config)
+                    fin_minutes = heure_optimale.hour * 60 + heure_optimale.minute + duree_min
+                    if fin_minutes > h_fin_jour.hour * 60 + h_fin_jour.minute:
+                        st.error(f"⚠️ Dépasse fin journée même repositionné")
+                    elif st.button("✅ Placer", key=f"confirm_job_{job['id']}", type="primary", use_container_width=True):
                         success, msg = ajouter_element_planning('JOB', int(job['id']), None, date_cible, st.session_state.selected_ligne, duree_min, annee, semaine, heure_optimale)
                         if success:
                             st.success(msg)
@@ -1118,28 +1534,33 @@ with tab1:
                     supprimer_temps_custom(tc['id'])
                     st.rerun()
             
-            jours_tc = ["Sélectionner..."] + [f"{['Lun','Mar','Mer','Jeu','Ven'][i]} {(week_start + timedelta(days=i)).strftime('%d/%m')}" for i in range(5)]
+            jours_tc = ["Sélectionner..."] + [f"{['Lun','Mar','Mer','Jeu','Ven','Sam'][i]} {(week_start + timedelta(days=i)).strftime('%d/%m')}" for i in range(6)]
             jour_tc = st.selectbox("Jour", jours_tc, key=f"jour_tc_{tc['id']}", label_visibility="collapsed")
             if jour_tc != "Sélectionner...":
                 jour_idx = jours_tc.index(jour_tc) - 1
                 date_cible = week_start + timedelta(days=jour_idx)
-                heure_saisie_tc = st.time_input("Heure", value=time(4, 0), step=900, key=f"heure_tc_{tc['id']}", label_visibility="collapsed")
-                
-                # Trouver le prochain créneau libre (auto-repositionnement)
-                heure_optimale_tc, ok, msg_info_tc = trouver_prochain_creneau_libre(planning_df, date_cible, st.session_state.selected_ligne, heure_saisie_tc, tc['duree_minutes'])
-                
+                h_debut = horaires_config.get(jour_idx, {}).get('debut', time(5, 0))
+                heure_tc = st.time_input("Heure", value=h_debut, step=900, key=f"heure_tc_{tc['id']}", label_visibility="collapsed")
+                heure_optimale_tc, _, msg_info_tc = trouver_prochain_creneau_libre(planning_df, date_cible, st.session_state.selected_ligne, heure_tc, tc['duree_minutes'])
                 if msg_info_tc:
                     st.info(msg_info_tc)
-                
                 if st.button("✅", key=f"confirm_tc_{tc['id']}", use_container_width=True):
                     success, msg = ajouter_element_planning('CUSTOM', None, int(tc['id']), date_cible, st.session_state.selected_ligne, tc['duree_minutes'], annee, semaine, heure_optimale_tc)
                     if success:
                         st.rerun()
+        
+        with st.expander("➕ Créer temps"):
+            new_lib = st.text_input("Libellé", key="new_tc_lib")
+            new_dur = st.number_input("Durée (min)", 5, 480, 20, key="new_tc_dur")
+            new_emo = st.selectbox("Emoji", ["⚙️", "☕", "🔧", "🍽️", "⏸️"], key="new_tc_emo")
+            if st.button("Créer", key="btn_create_tc") and new_lib:
+                creer_temps_custom(new_lib.upper().replace(" ", "_")[:20], new_lib, new_emo, new_dur)
+                st.rerun()
     
-    # DROITE : Calendrier
+    # COLONNE DROITE : CALENDRIER
     with col_right:
-        jour_cols = st.columns(5)
-        jours_noms = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven']
+        jour_cols = st.columns(6)
+        jours_noms = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam']
         
         for i, col_jour in enumerate(jour_cols):
             jour_date = week_start + timedelta(days=i)
@@ -1148,9 +1569,21 @@ with tab1:
             with col_jour:
                 st.markdown(f"""<div class="day-header">{jours_noms[i]} {jour_date.strftime('%d/%m')}</div>""", unsafe_allow_html=True)
                 
+                # Capacités
+                cap_html = ""
+                for lc in sorted(lignes_dict.keys()):
+                    cap_tot = get_capacite_jour(lc, lignes_dict[lc], i, horaires_config)
+                    temps_ut = calculer_temps_utilise(planning_df, jour_str, lc)
+                    temps_di = max(0, cap_tot - temps_ut)
+                    charge = (temps_ut / cap_tot * 100) if cap_tot > 0 else 0
+                    emoji = "🟢" if charge < 50 else "🟡" if charge < 80 else "🔴"
+                    cap_html += f"<div><strong>{lc.replace('LIGNE_','L')}</strong>: {temps_di:.1f}h {emoji}</div>"
+                st.markdown(f"""<div class="capacity-box">{cap_html}</div>""", unsafe_allow_html=True)
+                
                 # Éléments planifiés
+                ligne_aff = st.session_state.selected_ligne
                 if not planning_df.empty:
-                    mask = (planning_df['date_prevue'].astype(str) == jour_str) & (planning_df['ligne_lavage'] == st.session_state.selected_ligne)
+                    mask = (planning_df['date_prevue'].astype(str) == jour_str) & (planning_df['ligne_lavage'] == ligne_aff)
                     elements = planning_df[mask].sort_values('heure_debut')
                     
                     if elements.empty:
@@ -1162,16 +1595,25 @@ with tab1:
                             
                             if elem['type_element'] == 'JOB':
                                 job_statut = elem.get('job_statut', 'PRÉVU')
-                                css_class = "planned-prevu" if job_statut == 'PRÉVU' else "planned-encours" if job_statut == 'EN_COURS' else "planned-termine"
-                                statut_emoji = "🟢" if job_statut == 'PRÉVU' else "⏱️" if job_statut == 'EN_COURS' else "✅"
                                 
-                                # Déterminer producteur (pe_producteur en priorité, sinon j.producteur)
-                                producteur = elem.get('pe_producteur') or elem.get('producteur') or ''
-                                producteur_ligne = f"<br>👤 {producteur}" if producteur else ""
-                                
-                                # Badge statut_source
+                                # Badge source BRUT vs GRENAILLES
                                 statut_source = elem.get('statut_source', 'BRUT')
                                 badge_source = " 🔄" if statut_source == 'GRENAILLES_BRUTES' else " 🥔"
+                                
+                                # Producteur
+                                producteur = elem.get('producteur') or ''
+                                producteur_ligne = f"<br>👤 {producteur}" if producteur else ""
+                                
+                                # Couleur selon statut
+                                if job_statut == 'EN_COURS':
+                                    css_class = "planned-encours"
+                                    statut_emoji = "⏱️"
+                                elif job_statut == 'TERMINÉ':
+                                    css_class = "planned-termine"
+                                    statut_emoji = "✅"
+                                else:
+                                    css_class = "planned-prevu"
+                                    statut_emoji = "🟢"
                                 
                                 st.markdown(f"""<div class="{css_class}">
                                     <strong>{h_deb}</strong> {statut_emoji}<br>
@@ -1181,6 +1623,7 @@ with tab1:
                                     <small>→{h_fin}</small>
                                 </div>""", unsafe_allow_html=True)
                                 
+                                # Boutons action selon statut
                                 if job_statut == 'PRÉVU':
                                     col_start, col_del = st.columns(2)
                                     with col_start:
@@ -1197,96 +1640,27 @@ with tab1:
                                             st.rerun()
                                 
                                 elif job_statut == 'EN_COURS':
-                                    # ✅ PHASE 5 : Bouton Terminer
-                                    if st.button("✅ Terminer", key=f"finish_{elem['id']}", help="Terminer le job", use_container_width=True):
-                                        st.session_state[f'show_finish_form_{elem["id"]}'] = True
+                                    # Afficher temps écoulé
+                                    if pd.notna(elem.get('date_activation')):
+                                        delta = datetime.now() - elem['date_activation']
+                                        minutes_ecoulees = int(delta.total_seconds() / 60)
+                                        st.caption(f"⏱️ {minutes_ecoulees // 60}h{minutes_ecoulees % 60:02d} écoulées")
+                                    
+                                    if st.button("⏹️ Terminer", key=f"finish_{elem['id']}", type="primary", use_container_width=True):
+                                        st.session_state[f'show_finish_{elem["job_id"]}'] = True
                                         st.rerun()
                                     
-                                    # Formulaire terminaison
-                                    if st.session_state.get(f'show_finish_form_{elem["id"]}', False):
-                                        st.markdown("---")
-                                        st.markdown("**📋 Saisir les tares**")
-                                        
-                                        job_id = int(elem['job_id'])
-                                        poids_brut = float(elem['poids_brut_kg']) if pd.notna(elem['poids_brut_kg']) else 0
-                                        source_type = elem.get('statut_source', 'BRUT')
-                                        
-                                        if source_type == 'BRUT':
-                                            st.caption("🥔 Source BRUT → Stock LAVÉ + GRENAILLES_BRUTES")
-                                        else:
-                                            st.caption("🔄 Source GRENAILLES → Stock GRENAILLES_LAVÉES")
-                                        
-                                        col1, col2 = st.columns(2)
-                                        
-                                        with col1:
-                                            poids_lave = st.number_input(
-                                                "Poids lavé (kg) *",
-                                                min_value=0.0,
-                                                value=poids_brut * 0.75,
-                                                step=10.0,
-                                                key=f"lave_{elem['id']}"
-                                            )
-                                            
-                                            poids_grenailles = st.number_input(
-                                                "Poids grenailles (kg) *",
-                                                min_value=0.0,
-                                                value=poids_brut * 0.05 if source_type == 'BRUT' else 0.0,
-                                                step=10.0,
-                                                key=f"gren_{elem['id']}",
-                                                disabled=(source_type != 'BRUT')
-                                            )
-                                        
-                                        with col2:
-                                            poids_dechets = st.number_input(
-                                                "Poids déchets (kg) *",
-                                                min_value=0.0,
-                                                value=poids_brut * 0.05,
-                                                step=10.0,
-                                                key=f"dech_{elem['id']}"
-                                            )
-                                            
-                                            poids_terre_calc = poids_brut - poids_lave - poids_grenailles - poids_dechets
-                                            st.metric("Terre calculée", f"{poids_terre_calc:.0f} kg")
-                                        
-                                        st.markdown("---")
-                                        
-                                        emplacements = [
-                                            ("A-01", "Saint Flavy - Zone A-01"),
-                                            ("A-02", "Saint Flavy - Zone A-02"),
-                                            ("B-01", "Saint Flavy - Zone B-01")
-                                        ]
-                                        emplacement_dest = st.selectbox(
-                                            "Emplacement destination *",
-                                            options=[""] + [e[0] for e in emplacements],
-                                            format_func=lambda x: dict(emplacements).get(x, "Sélectionner...") if x else "Sélectionner...",
-                                            key=f"empl_{elem['id']}"
-                                        )
-                                        
-                                        notes_fin = st.text_area("Notes", key=f"notes_{elem['id']}")
-                                        
-                                        col_save, col_cancel = st.columns(2)
-                                        
-                                        with col_save:
-                                            if st.button("💾 Valider", key=f"save_{elem['id']}", type="primary"):
-                                                if not emplacement_dest:
-                                                    st.error("❌ Emplacement obligatoire")
-                                                else:
-                                                    success, message = terminer_job(
-                                                        job_id, poids_lave, poids_grenailles, poids_dechets,
-                                                        "SAINT_FLAVY", emplacement_dest, notes_fin
-                                                    )
-                                                    if success:
-                                                        st.success(message)
-                                                        st.balloons()
-                                                        st.session_state.pop(f'show_finish_form_{elem["id"]}')
-                                                        st.rerun()
-                                                    else:
-                                                        st.error(message)
-                                        
-                                        with col_cancel:
-                                            if st.button("❌ Annuler", key=f"cancel_{elem['id']}"):
-                                                st.session_state.pop(f'show_finish_form_{elem["id"]}')
-                                                st.rerun()
+                                    # Note: Le formulaire de terminaison s'affiche en pleine largeur au-dessus du calendrier
+                                
+                                elif job_statut == 'TERMINÉ':
+                                    # Afficher stats temps
+                                    if pd.notna(elem.get('temps_estime_heures')) and pd.notna(elem.get('date_activation')) and pd.notna(elem.get('date_terminaison')):
+                                        temps_prevu = float(elem['temps_estime_heures']) * 60
+                                        delta = elem['date_terminaison'] - elem['date_activation']
+                                        temps_reel = delta.total_seconds() / 60
+                                        ecart = temps_reel - temps_prevu
+                                        color = "temps-ok" if ecart <= 0 else "temps-warning" if ecart < 15 else "temps-bad"
+                                        st.markdown(f"<small class='{color}'>Prévu: {temps_prevu:.0f}' | Réel: {temps_reel:.0f}'</small>", unsafe_allow_html=True)
                             else:
                                 # Temps custom
                                 st.markdown(f"""<div class="planned-custom">
@@ -1294,49 +1668,925 @@ with tab1:
                                     {elem['custom_emoji']} {elem['custom_libelle']}<br>
                                     <small>→{h_fin}</small>
                                 </div>""", unsafe_allow_html=True)
-                                
-                                if st.button("❌", key=f"del_custom_{elem['id']}", help="Retirer"):
+                                if st.button("❌", key=f"del_{elem['id']}"):
                                     retirer_element_planning(int(elem['id']))
                                     st.rerun()
                 else:
                     st.caption("_Vide_")
+    
+    # Footer planning
+    st.markdown("---")
+    col_f1, col_f2, col_f3, col_f4 = st.columns([1, 1, 1, 2])
+    with col_f1:
+        if st.button("🗑️ Réinit. semaine", use_container_width=True):
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM lavages_planning_elements WHERE annee = %s AND semaine = %s", (annee, semaine))
+            conn.commit()
+            st.rerun()
+    with col_f2:
+        jours_print = [f"{jours_noms[i]} {(week_start + timedelta(days=i)).strftime('%d/%m')}" for i in range(6)]
+        jour_print = st.selectbox("Jour", jours_print, key="jour_print", label_visibility="collapsed")
+    with col_f3:
+        jour_idx = jours_print.index(jour_print)
+        date_print = week_start + timedelta(days=jour_idx)
+        html_content = generer_html_jour(planning_df, date_print, st.session_state.selected_ligne, lignes_dict)
+        st.download_button("🖨️ Imprimer", html_content, f"planning_{date_print.strftime('%Y%m%d')}.html", "text/html", use_container_width=True)
+    with col_f4:
+        if not planning_df.empty:
+            total_l1 = planning_df[planning_df['ligne_lavage'] == 'LIGNE_1']['duree_minutes'].sum() / 60
+            total_l2 = planning_df[planning_df['ligne_lavage'] == 'LIGNE_2']['duree_minutes'].sum() / 60
+            st.markdown(f"**📊** L1={total_l1:.1f}h | L2={total_l2:.1f}h")
 
 # ============================================================
-# ONGLET 2 : JOBS À PLACER
+# ONGLET 2 : LISTE JOBS
 # ============================================================
 
 with tab2:
-    st.subheader("📋 Liste des Jobs PRÉVU")
-    st.caption("Tous les jobs en attente de placement")
+    st.subheader("📋 Historique des Jobs")
     
-    jobs_prevus = get_jobs_a_placer(st.session_state.selected_ligne)
-    
-    if not jobs_prevus.empty:
-        for _, job in jobs_prevus.iterrows():
-            statut_source = job.get('statut_source', 'BRUT')
-            badge_source = "🔄 GRENAILLES" if statut_source == 'GRENAILLES_BRUTES' else "🥔 BRUT"
-            with st.expander(f"Job #{int(job['id'])} - {job['code_lot_interne']} - {job['variete']} ({badge_source})"):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.write(f"**Lot** : {job['code_lot_interne']}")
-                    st.write(f"**Variété** : {job['variete']}")
-                    st.write(f"**Quantité** : {int(job['quantite_pallox'])} pallox")
-                    if pd.notna(job.get('producteur')) and job['producteur']:
-                        st.write(f"**Producteur** : 👤 {job['producteur']}")
-                
-                with col2:
-                    st.write(f"**Poids** : {job['poids_brut_kg']:.0f} kg")
-                    st.write(f"**Temps estimé** : {job['temps_estime_heures']:.1f}h")
-                    st.write(f"**Date prévue** : {job['date_prevue']}")
-    else:
-        st.info("Aucun job PRÉVU")
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, code_lot_interne, variete, quantite_pallox, poids_brut_kg,
+                   date_prevue, ligne_lavage, temps_estime_heures, statut,
+                   date_activation, date_terminaison, rendement_pct, tare_reelle_pct,
+                   created_by, created_at
+            FROM lavages_jobs
+            ORDER BY created_at DESC
+            LIMIT 100
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if rows:
+            df = pd.DataFrame(rows)
+            
+            # Filtres
+            col1, col2 = st.columns(2)
+            with col1:
+                statuts = ["Tous"] + df['statut'].unique().tolist()
+                filtre_statut = st.selectbox("Statut", statuts, key="filtre_statut_liste")
+            with col2:
+                varietes = ["Toutes"] + df['variete'].dropna().unique().tolist()
+                filtre_variete = st.selectbox("Variété", varietes, key="filtre_variete_liste")
+            
+            if filtre_statut != "Tous":
+                df = df[df['statut'] == filtre_statut]
+            if filtre_variete != "Toutes":
+                df = df[df['variete'] == filtre_variete]
+            
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.info("Aucun job")
+    except Exception as e:
+        st.error(f"Erreur : {str(e)}")
 
 # ============================================================
-# ONGLET 3 : ADMIN ✅ PHASE 1
+# ONGLET 3 : CRÉER JOB
 # ============================================================
 
 with tab3:
+    st.subheader("➕ Créer un Job de Lavage")
+    
+    # Deux sous-onglets : Besoins basés sur affectations VS Tous les lots BRUT
+    create_tab1, create_tab2 = st.tabs(["📊 Besoins Affectations", "📋 Tous les lots BRUT"])
+    
+    # ============================================================
+    # SOUS-ONGLET 1 : BESOINS BASÉS SUR AFFECTATIONS
+    # ============================================================
+    with create_tab1:
+        st.markdown("*Lots avec affectations BRUT nécessitant du lavage*")
+        
+        besoins_df = get_besoins_lavage_affectations()
+        lots_dispo = get_lots_bruts_disponibles()
+        
+        if besoins_df.empty:
+            st.info("📭 Aucun besoin de lavage basé sur les affectations")
+        else:
+            # KPIs
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("📦 Lots avec besoin", len(besoins_df))
+            with col2:
+                total_besoin = besoins_df['besoin_lavage_net_tonnes'].sum()
+                st.metric("🧼 Besoin total NET", f"{total_besoin:.1f} T")
+            with col3:
+                total_jobs = besoins_df['jobs_prevus_tonnes'].sum()
+                st.metric("📋 Jobs déjà prévus", f"{total_jobs:.1f} T")
+            with col4:
+                total_lave = besoins_df['stock_lave_tonnes'].sum()
+                st.metric("✅ Stock LAVÉ existant", f"{total_lave:.1f} T")
+            
+            st.markdown("---")
+            
+            # Filtre variété
+            varietes_besoins = ["Toutes"] + sorted(besoins_df['variete'].dropna().unique().tolist())
+            f_var_besoins = st.selectbox("Filtrer par variété", varietes_besoins, key="f_var_besoins")
+            
+            df_besoins = besoins_df.copy()
+            if f_var_besoins != "Toutes":
+                df_besoins = df_besoins[df_besoins['variete'] == f_var_besoins]
+            
+            st.markdown(f"**{len(df_besoins)} lot(s) avec besoin de lavage**")
+            st.caption("💡 Besoin NET = Affecté NET - Stock LAVÉ - Jobs prévus × 78%")
+            
+            # Préparer tableau
+            df_display_besoins = df_besoins[[
+                'lot_id', 'code_lot_interne', 'nom_usage', 'producteur', 'variete',
+                'affecte_net_tonnes', 'stock_lave_tonnes', 'jobs_prevus_tonnes',
+                'besoin_lavage_net_tonnes', 'pallox_brut_dispo', 'brut_dispo_tonnes', 'produits_liste'
+            ]].copy()
+            
+            # Tronquer
+            df_display_besoins['nom_usage'] = df_display_besoins['nom_usage'].apply(
+                lambda x: (str(x)[:18] + '..') if pd.notna(x) and len(str(x)) > 20 else x
+            )
+            df_display_besoins['producteur'] = df_display_besoins['producteur'].apply(
+                lambda x: (str(x)[:15] + '..') if pd.notna(x) and len(str(x)) > 17 else x
+            )
+            
+            # Formater nombres
+            for col in ['affecte_net_tonnes', 'stock_lave_tonnes', 'jobs_prevus_tonnes', 'besoin_lavage_net_tonnes', 'brut_dispo_tonnes']:
+                df_display_besoins[col] = df_display_besoins[col].apply(lambda x: f"{x:.1f}")
+            
+            df_display_besoins = df_display_besoins.rename(columns={
+                'code_lot_interne': 'Code Lot',
+                'nom_usage': 'Nom',
+                'producteur': 'Producteur',
+                'variete': 'Variété',
+                'affecte_net_tonnes': 'Affecté NET',
+                'stock_lave_tonnes': 'Stock LAVÉ',
+                'jobs_prevus_tonnes': 'Jobs prévus',
+                'besoin_lavage_net_tonnes': '🎯 Besoin NET',
+                'pallox_brut_dispo': 'BRUT dispo',
+                'brut_dispo_tonnes': 'BRUT (T)'
+            })
+            df_display_besoins = df_display_besoins.reset_index(drop=True)
+            
+            column_config_besoins = {
+                "lot_id": None,
+                "produits_liste": None,
+                "Code Lot": st.column_config.TextColumn("Code Lot", width="small"),
+                "Nom": st.column_config.TextColumn("Nom", width="medium"),
+                "Producteur": st.column_config.TextColumn("Producteur", width="medium"),
+                "Variété": st.column_config.TextColumn("Variété", width="small"),
+                "Affecté NET": st.column_config.TextColumn("Affecté (T)", width="small", help="Tonnes NET affectées"),
+                "Stock LAVÉ": st.column_config.TextColumn("LAVÉ (T)", width="small", help="Stock déjà lavé"),
+                "Jobs prévus": st.column_config.TextColumn("Jobs (T)", width="small", help="Jobs PRÉVU/EN_COURS"),
+                "🎯 Besoin NET": st.column_config.TextColumn("🎯 Besoin", width="small", help="Besoin de lavage NET"),
+                "BRUT dispo": st.column_config.NumberColumn("Pallox", format="%d", width="small", help="Pallox BRUT disponibles"),
+                "BRUT (T)": st.column_config.TextColumn("BRUT (T)", width="small", help="Tonnes BRUT disponibles")
+            }
+            
+            event_besoins = st.dataframe(
+                df_display_besoins, 
+                column_config=column_config_besoins, 
+                use_container_width=True, 
+                hide_index=True, 
+                on_select="rerun", 
+                selection_mode="single-row", 
+                key="besoins_create"
+            )
+            
+            selected_besoins = event_besoins.selection.rows if hasattr(event_besoins, 'selection') else []
+            
+            if len(selected_besoins) > 0:
+                row_besoin = df_besoins.iloc[selected_besoins[0]]
+                lot_id_besoin = int(row_besoin['lot_id'])
+                
+                st.markdown("---")
+                st.success(f"✅ **{row_besoin['code_lot_interne']}** - {row_besoin['variete']} | Besoin NET: **{row_besoin['besoin_lavage_net_tonnes']:.1f} T**")
+                
+                # Afficher les produits concernés
+                if row_besoin['produits_liste']:
+                    st.caption(f"📦 Produits : {row_besoin['produits_liste']}")
+                
+                # Récupérer les emplacements BRUT disponibles pour ce lot
+                emplacements_lot = lots_dispo[lots_dispo['lot_id'] == lot_id_besoin]
+                
+                if emplacements_lot.empty:
+                    st.warning("⚠️ Aucun emplacement BRUT disponible pour ce lot")
+                else:
+                    st.markdown("##### 📍 Emplacements BRUT disponibles")
+                    
+                    # Tableau emplacements
+                    df_empl = emplacements_lot[['emplacement_id', 'site_stockage', 'emplacement_stockage', 'stock_total', 'pallox_reserves', 'nombre_unites', 'poids_total_kg', 'type_conditionnement']].copy()
+                    df_empl = df_empl.rename(columns={
+                        'site_stockage': 'Site',
+                        'emplacement_stockage': 'Emplacement',
+                        'stock_total': 'Stock',
+                        'pallox_reserves': 'Réservés',
+                        'nombre_unites': 'Dispo',
+                        'poids_total_kg': 'Poids (kg)',
+                        'type_conditionnement': 'Type'
+                    })
+                    df_empl = df_empl.reset_index(drop=True)
+                    
+                    event_empl = st.dataframe(
+                        df_empl,
+                        column_config={
+                            "emplacement_id": None,
+                            "Site": st.column_config.TextColumn("Site", width="small"),
+                            "Emplacement": st.column_config.TextColumn("Empl.", width="small"),
+                            "Stock": st.column_config.NumberColumn("Stock", format="%d"),
+                            "Réservés": st.column_config.NumberColumn("Rés.", format="%d"),
+                            "Dispo": st.column_config.NumberColumn("Dispo", format="%d"),
+                            "Poids (kg)": st.column_config.NumberColumn("Poids", format="%.0f"),
+                            "Type": st.column_config.TextColumn("Type", width="small")
+                        },
+                        use_container_width=True,
+                        hide_index=True,
+                        on_select="rerun",
+                        selection_mode="single-row",
+                        key="empl_besoins_create"
+                    )
+                    
+                    selected_empl = event_empl.selection.rows if hasattr(event_empl, 'selection') else []
+                    
+                    if len(selected_empl) > 0:
+                        empl_data = emplacements_lot.iloc[selected_empl[0]]
+                        empl_id = int(empl_data['emplacement_id'])
+                        dispo = int(empl_data['nombre_unites'])
+                        
+                        st.markdown("---")
+                        st.info(f"📍 Emplacement sélectionné : **{empl_data['site_stockage']} / {empl_data['emplacement_stockage']}** - {dispo} pallox disponibles")
+                        
+                        # Calculer quantité suggérée basée sur le besoin
+                        besoin_tonnes = float(row_besoin['besoin_lavage_net_tonnes'])
+                        poids_unit = {'Pallox': 1900, 'Petit Pallox': 800, 'Big Bag': 1600}.get(empl_data['type_conditionnement'], 1900)
+                        rendement = 0.78  # Rendement moyen
+                        
+                        # Pallox suggérés pour couvrir le besoin NET
+                        pallox_suggeres = math.ceil(besoin_tonnes * 1000 / (poids_unit * rendement))
+                        pallox_suggeres = min(pallox_suggeres, dispo)  # Limiter au dispo
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            quantite = st.slider(
+                                f"Pallox à laver (suggéré: {pallox_suggeres} pour couvrir {besoin_tonnes:.1f}T NET)", 
+                                1, dispo, 
+                                min(pallox_suggeres, dispo), 
+                                key="qty_besoins_create"
+                            )
+                            date_prevue = st.date_input("Date prévue", datetime.now().date(), key="date_besoins_create")
+                        
+                        with col2:
+                            lignes = get_lignes_lavage()
+                            ligne_opts = [f"{l['code']} ({l['capacite_th']} T/h)" for l in lignes]
+                            ligne_sel = st.selectbox("Ligne de lavage", ligne_opts, key="ligne_besoins_create")
+                            
+                            poids_brut = quantite * poids_unit
+                            poids_net_estime = poids_brut * rendement
+                            ligne_idx = ligne_opts.index(ligne_sel)
+                            capacite = float(lignes[ligne_idx]['capacite_th'])
+                            temps_estime = (poids_brut / 1000) / capacite
+                            
+                            st.metric("Poids BRUT", f"{poids_brut:,.0f} kg ({poids_brut/1000:.1f} T)")
+                            st.metric("NET estimé (~78%)", f"{poids_net_estime:,.0f} kg ({poids_net_estime/1000:.1f} T)")
+                            st.metric("Temps estimé", f"{temps_estime:.1f} h")
+                        
+                        notes = st.text_input("Notes (optionnel)", key="notes_besoins_create")
+                        
+                        if st.button("✅ Créer Job de Lavage", type="primary", use_container_width=True, key="btn_create_besoins"):
+                            ligne_code = lignes[ligne_idx]['code']
+                            success, message = create_job_lavage(
+                                lot_id_besoin, empl_id, quantite, poids_brut,
+                                date_prevue, ligne_code, capacite, notes
+                            )
+                            if success:
+                                st.success(message)
+                                st.balloons()
+                                st.rerun()
+                            else:
+                                st.error(message)
+                    else:
+                        st.info("👆 Sélectionnez un emplacement ci-dessus pour créer le job")
+            else:
+                st.info("👆 Sélectionnez un lot dans le tableau ci-dessus pour voir les détails et créer un job")
+    
+    # ============================================================
+    # SOUS-ONGLET 2 : TOUS LES LOTS BRUT (original)
+    # ============================================================
+    with create_tab2:
+        st.markdown("*Tous les emplacements BRUT disponibles (avec ou sans affectation)*")
+        
+        lots_dispo = get_lots_bruts_disponibles()
+        
+        if not lots_dispo.empty:
+            # ⭐ FILTRES AMÉLIORÉS
+            st.markdown("#### 🔍 Filtres")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                varietes = ["Toutes"] + sorted(lots_dispo['variete'].dropna().unique().tolist())
+                f_var = st.selectbox("Variété", varietes, key="f_var_create")
+            with col2:
+                producteurs = ["Tous"] + sorted(lots_dispo['producteur'].dropna().unique().tolist())
+                f_prod = st.selectbox("Producteur", producteurs, key="f_prod_create")
+            with col3:
+                sites = ["Tous"] + sorted(lots_dispo['site_stockage'].dropna().unique().tolist())
+                f_site = st.selectbox("Site", sites, key="f_site_create")
+            
+            lots_f = lots_dispo.copy()
+            if f_var != "Toutes":
+                lots_f = lots_f[lots_f['variete'] == f_var]
+            if f_prod != "Tous":
+                lots_f = lots_f[lots_f['producteur'] == f_prod]
+            if f_site != "Tous":
+                lots_f = lots_f[lots_f['site_stockage'] == f_site]
+            
+            st.markdown("---")
+            
+            if not lots_f.empty:
+                st.markdown(f"**{len(lots_f)} emplacement(s) disponible(s)** - ⚠️ *Pallox Dispo = Stock - Jobs réservés (PRÉVU/EN_COURS)*")
+                st.caption("🔵 BRUT = Stock initial | 🟠 GRENAILLES_BRUTES = Grenailles à re-laver")
+                
+                # ⭐ TABLEAU AMÉLIORÉ avec nom lot et producteur
+                df_display = lots_f[['lot_id', 'emplacement_id', 'code_lot_interne', 'nom_usage', 'producteur', 'variete', 'statut_lavage', 'site_stockage', 'emplacement_stockage', 'stock_total', 'pallox_reserves', 'nombre_unites', 'poids_total_kg']].copy()
+                
+                # Formater statut_lavage pour affichage
+                df_display['statut_lavage'] = df_display['statut_lavage'].apply(
+                    lambda x: '🔵 BRUT' if x == 'BRUT' else ('🟠 GREN' if x == 'GRENAILLES_BRUTES' else x)
+                )
+                
+                # Tronquer producteur si trop long
+                df_display['producteur'] = df_display['producteur'].apply(
+                    lambda x: (x[:15] + '..') if pd.notna(x) and len(str(x)) > 17 else x
+                )
+                
+                df_display = df_display.rename(columns={
+                    'code_lot_interne': 'Code Lot',
+                    'nom_usage': 'Nom Lot',
+                    'producteur': 'Producteur',
+                    'variete': 'Variété',
+                    'statut_lavage': 'Type',
+                    'site_stockage': 'Site',
+                    'emplacement_stockage': 'Empl.',
+                    'stock_total': 'Stock',
+                    'pallox_reserves': 'Réservés',
+                    'nombre_unites': 'Dispo',
+                    'poids_total_kg': 'Poids (kg)'
+                })
+                df_display = df_display.reset_index(drop=True)
+                
+                # Config colonnes pour masquer IDs et formater nombres
+                column_config = {
+                    "lot_id": None,
+                    "emplacement_id": None,
+                    "Code Lot": st.column_config.TextColumn("Code Lot", width="small"),
+                    "Nom Lot": st.column_config.TextColumn("Nom Lot", width="medium"),
+                    "Producteur": st.column_config.TextColumn("Producteur", width="medium"),
+                    "Variété": st.column_config.TextColumn("Variété", width="small"),
+                    "Type": st.column_config.TextColumn("Type", width="small", help="BRUT ou GRENAILLES à re-laver"),
+                    "Site": st.column_config.TextColumn("Site", width="small"),
+                    "Empl.": st.column_config.TextColumn("Empl.", width="small"),
+                    "Stock": st.column_config.NumberColumn("Stock", format="%d", help="Pallox en stock physique"),
+                    "Réservés": st.column_config.NumberColumn("Rés.", format="%d", help="Pallox réservés par jobs PRÉVU/EN_COURS"),
+                    "Dispo": st.column_config.NumberColumn("Dispo", format="%d", help="Pallox disponibles pour nouveau job"),
+                    "Poids (kg)": st.column_config.NumberColumn("Poids", format="%.0f")
+                }
+                
+                event = st.dataframe(df_display, column_config=column_config, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="lots_create")
+                
+                selected_rows = event.selection.rows if hasattr(event, 'selection') else []
+                
+                if len(selected_rows) > 0:
+                    row = df_display.iloc[selected_rows[0]]
+                    lot_data = lots_dispo[(lots_dispo['lot_id'] == row['lot_id']) & (lots_dispo['emplacement_id'] == row['emplacement_id'])].iloc[0]
+                    
+                    # Afficher info stock avec réservés + type
+                    reserves = int(lot_data['pallox_reserves']) if pd.notna(lot_data['pallox_reserves']) else 0
+                    dispo = int(lot_data['nombre_unites'])
+                    total = int(lot_data['stock_total']) if pd.notna(lot_data['stock_total']) else dispo
+                    type_source = lot_data['statut_lavage'] if pd.notna(lot_data['statut_lavage']) else 'BRUT'
+                    type_emoji = '🔵' if type_source == 'BRUT' else '🟠'
+                    
+                    # ⭐ INFO COMPLÈTE avec nom lot et producteur
+                    nom_lot = lot_data['nom_usage'] if pd.notna(lot_data['nom_usage']) else ''
+                    producteur = lot_data['producteur'] if pd.notna(lot_data['producteur']) else ''
+                    
+                    st.markdown("---")
+                    if reserves > 0:
+                        st.warning(f"⚠️ {type_emoji} **{lot_data['code_lot_interne']}** - {nom_lot} | Producteur: {producteur} | {type_source} | Stock: {total}, Réservés: {reserves}, **Disponible: {dispo}**")
+                    else:
+                        st.success(f"✅ {type_emoji} **{lot_data['code_lot_interne']}** - {nom_lot} | {lot_data['variete']} | Producteur: {producteur} | **{dispo} pallox disponibles**")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        # Le slider utilise le stock disponible (déjà calculé)
+                        quantite = st.slider("Pallox à laver", 1, dispo, min(5, dispo), key="qty_create")
+                        date_prevue = st.date_input("Date prévue", datetime.now().date(), key="date_create")
+                    with col2:
+                        lignes = get_lignes_lavage()
+                        ligne_opts = [f"{l['code']} ({l['capacite_th']} T/h)" for l in lignes]
+                        ligne_sel = st.selectbox("Ligne de lavage", ligne_opts, key="ligne_create")
+                        
+                        # ⭐ POIDS UNITAIRES CORRECTS
+                        poids_unit = {'Pallox': 1900, 'Petit Pallox': 800, 'Big Bag': 1600}.get(lot_data['type_conditionnement'], 1900)
+                        poids_brut = quantite * poids_unit
+                        ligne_idx = ligne_opts.index(ligne_sel)
+                        capacite = float(lignes[ligne_idx]['capacite_th'])
+                        temps_est = (poids_brut / 1000) / capacite
+                        
+                        st.metric("Poids total", f"{poids_brut:,} kg")
+                        st.metric("Temps estimé", f"{temps_est:.1f}h")
+                    
+                    notes = st.text_input("Notes (optionnel)", key="notes_create_all")
+                    
+                    if st.button("✅ Créer Job", type="primary", use_container_width=True, key="btn_create_job_all"):
+                        success, msg = create_job_lavage(lot_data['lot_id'], lot_data['emplacement_id'], quantite, poids_brut, date_prevue, lignes[ligne_idx]['code'], capacite, notes)
+                        if success:
+                            st.success(msg)
+                            st.balloons()
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                else:
+                    st.info("👆 Sélectionnez un lot dans le tableau ci-dessus")
+            else:
+                st.warning("Aucun lot avec ces filtres")
+        else:
+            st.warning("Aucun lot BRUT disponible")
+
+# ============================================================
+# ONGLET 4 : STATS & RECAP
+# ============================================================
+
+with tab4:
+    st.subheader("📊 Statistiques & Récapitulatif")
+    st.caption("*Vue d'ensemble des affectations et tonnages*")
+    
+    # ============ KPIs DÉTAILLÉS ============
+    st.markdown("### 📈 Statistiques détaillées")
+    
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Stats jobs par statut
+        cursor.execute("""
+            SELECT 
+                statut,
+                COUNT(*) as nb_jobs,
+                COALESCE(SUM(quantite_pallox), 0) as total_pallox,
+                COALESCE(SUM(poids_brut_kg), 0) as total_poids,
+                COALESCE(SUM(temps_estime_heures), 0) as total_temps
+            FROM lavages_jobs
+            GROUP BY statut
+            ORDER BY 
+                CASE statut 
+                    WHEN 'PRÉVU' THEN 1 
+                    WHEN 'EN_COURS' THEN 2 
+                    WHEN 'TERMINÉ' THEN 3 
+                    ELSE 4 
+                END
+        """)
+        stats_statut = cursor.fetchall()
+        
+        if stats_statut:
+            col1, col2, col3 = st.columns(3)
+            for stat in stats_statut:
+                if stat['statut'] == 'PRÉVU':
+                    with col1:
+                        st.markdown("#### 🎯 PRÉVU")
+                        st.metric("Jobs", stat['nb_jobs'])
+                        st.metric("Pallox", f"{int(stat['total_pallox']):,}")
+                        st.metric("Tonnage", f"{stat['total_poids']/1000:.1f} T")
+                        st.metric("Temps prévu", f"{float(stat['total_temps']):.1f}h")
+                elif stat['statut'] == 'EN_COURS':
+                    with col2:
+                        st.markdown("#### ⚙️ EN COURS")
+                        st.metric("Jobs", stat['nb_jobs'])
+                        st.metric("Pallox", f"{int(stat['total_pallox']):,}")
+                        st.metric("Tonnage", f"{stat['total_poids']/1000:.1f} T")
+                        st.metric("Temps prévu", f"{float(stat['total_temps']):.1f}h")
+                elif stat['statut'] == 'TERMINÉ':
+                    with col3:
+                        st.markdown("#### ✅ TERMINÉ")
+                        st.metric("Jobs", stat['nb_jobs'])
+                        st.metric("Pallox", f"{int(stat['total_pallox']):,}")
+                        st.metric("Tonnage", f"{stat['total_poids']/1000:.1f} T")
+                        
+        st.markdown("---")
+        
+        # ============ RECAP AFFECTATION PAR LOT ============
+        st.markdown("### 📦 Récapitulatif affectation des lots")
+        st.caption("*Jobs PRÉVU et EN_COURS par lot*")
+        
+        cursor.execute("""
+            SELECT 
+                lj.code_lot_interne,
+                l.nom_usage,
+                COALESCE(p.nom, l.code_producteur) as producteur,
+                lj.variete,
+                COUNT(*) as nb_jobs,
+                SUM(lj.quantite_pallox) as pallox_reserves,
+                SUM(lj.poids_brut_kg) as poids_reserve,
+                SUM(lj.temps_estime_heures) as temps_total,
+                STRING_AGG(DISTINCT lj.statut, ', ') as statuts
+            FROM lavages_jobs lj
+            JOIN lots_bruts l ON lj.lot_id = l.id
+            LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
+            WHERE lj.statut IN ('PRÉVU', 'EN_COURS')
+            GROUP BY lj.code_lot_interne, l.nom_usage, p.nom, l.code_producteur, lj.variete
+            ORDER BY poids_reserve DESC
+        """)
+        recap_lots = cursor.fetchall()
+        
+        if recap_lots:
+            df_recap = pd.DataFrame(recap_lots)
+            df_recap = df_recap.rename(columns={
+                'code_lot_interne': 'Code Lot',
+                'nom_usage': 'Nom Lot',
+                'producteur': 'Producteur',
+                'variete': 'Variété',
+                'nb_jobs': 'Jobs',
+                'pallox_reserves': 'Pallox',
+                'poids_reserve': 'Poids (kg)',
+                'temps_total': 'Temps (h)',
+                'statuts': 'Statuts'
+            })
+            
+            # Formater
+            df_recap['Poids (kg)'] = pd.to_numeric(df_recap['Poids (kg)'], errors='coerce').fillna(0).astype(int)
+            df_recap['Pallox'] = pd.to_numeric(df_recap['Pallox'], errors='coerce').fillna(0).astype(int)
+            df_recap['Temps (h)'] = pd.to_numeric(df_recap['Temps (h)'], errors='coerce').fillna(0).round(1)
+            
+            # Afficher
+            st.dataframe(df_recap, use_container_width=True, hide_index=True)
+            
+            # Totaux
+            total_pallox = df_recap['Pallox'].sum()
+            total_poids = df_recap['Poids (kg)'].sum()
+            total_temps = df_recap['Temps (h)'].sum()
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("📦 Total Pallox réservés", f"{total_pallox:,}")
+            col2.metric("⚖️ Tonnage attendu", f"{total_poids/1000:.1f} T")
+            col3.metric("⏱️ Temps de travail", f"{total_temps:.1f}h")
+        else:
+            st.info("Aucun job PRÉVU ou EN_COURS actuellement")
+        
+        st.markdown("---")
+        
+        # ============ TONNAGE PAR SEMAINE ============
+        st.markdown("### 📅 Tonnage prévu par semaine")
+        
+        cursor.execute("""
+            SELECT 
+                DATE_TRUNC('week', date_prevue) as semaine,
+                COUNT(*) as nb_jobs,
+                SUM(quantite_pallox) as pallox,
+                SUM(poids_brut_kg) as poids,
+                SUM(temps_estime_heures) as temps
+            FROM lavages_jobs
+            WHERE statut IN ('PRÉVU', 'EN_COURS')
+              AND date_prevue >= CURRENT_DATE - INTERVAL '7 days'
+              AND date_prevue <= CURRENT_DATE + INTERVAL '28 days'
+            GROUP BY DATE_TRUNC('week', date_prevue)
+            ORDER BY semaine
+        """)
+        stats_semaine = cursor.fetchall()
+        
+        if stats_semaine:
+            df_sem = pd.DataFrame(stats_semaine)
+            df_sem['semaine'] = pd.to_datetime(df_sem['semaine']).dt.strftime('S%W - %d/%m')
+            df_sem = df_sem.rename(columns={
+                'semaine': 'Semaine',
+                'nb_jobs': 'Jobs',
+                'pallox': 'Pallox',
+                'poids': 'Poids (kg)',
+                'temps': 'Temps (h)'
+            })
+            df_sem['Poids (kg)'] = pd.to_numeric(df_sem['Poids (kg)'], errors='coerce').fillna(0).astype(int)
+            df_sem['Pallox'] = pd.to_numeric(df_sem['Pallox'], errors='coerce').fillna(0).astype(int)
+            df_sem['Temps (h)'] = pd.to_numeric(df_sem['Temps (h)'], errors='coerce').fillna(0).round(1)
+            df_sem['Tonnage'] = (df_sem['Poids (kg)'] / 1000).round(1)
+            
+            st.dataframe(df_sem[['Semaine', 'Jobs', 'Pallox', 'Tonnage', 'Temps (h)']], use_container_width=True, hide_index=True)
+        else:
+            st.info("Aucun job prévu dans les 4 prochaines semaines")
+        
+        st.markdown("---")
+        
+        # ============ STATS PAR VARIÉTÉ ============
+        st.markdown("### 🌱 Statistiques par variété (jobs terminés)")
+        
+        cursor.execute("""
+            SELECT 
+                variete,
+                COUNT(*) as nb_jobs,
+                SUM(poids_brut_kg) as poids_brut_total,
+                SUM(poids_lave_net_kg) as poids_lave_total,
+                AVG(rendement_pct) as rendement_moyen,
+                AVG(tare_reelle_pct) as tare_moyenne
+            FROM lavages_jobs
+            WHERE statut = 'TERMINÉ'
+              AND poids_lave_net_kg IS NOT NULL
+            GROUP BY variete
+            ORDER BY poids_brut_total DESC
+            LIMIT 10
+        """)
+        stats_variete = cursor.fetchall()
+        
+        if stats_variete:
+            df_var = pd.DataFrame(stats_variete)
+            df_var = df_var.rename(columns={
+                'variete': 'Variété',
+                'nb_jobs': 'Jobs',
+                'poids_brut_total': 'Brut (kg)',
+                'poids_lave_total': 'Lavé (kg)',
+                'rendement_moyen': 'Rendement %',
+                'tare_moyenne': 'Tare %'
+            })
+            df_var['Brut (kg)'] = pd.to_numeric(df_var['Brut (kg)'], errors='coerce').fillna(0).astype(int)
+            df_var['Lavé (kg)'] = pd.to_numeric(df_var['Lavé (kg)'], errors='coerce').fillna(0).astype(int)
+            df_var['Rendement %'] = pd.to_numeric(df_var['Rendement %'], errors='coerce').fillna(0).round(1)
+            df_var['Tare %'] = pd.to_numeric(df_var['Tare %'], errors='coerce').fillna(0).round(1)
+            
+            st.dataframe(df_var, use_container_width=True, hide_index=True)
+        else:
+            st.info("Aucun job terminé avec données de rendement")
+        
+        cursor.close()
+        conn.close()
+        
+    except Exception as e:
+        st.error(f"Erreur chargement stats : {str(e)}")
+
+# ============================================================
+# ONGLET 5 : IMPRIMER
+# ============================================================
+
+with tab5:
+    st.subheader("🖨️ Imprimer Planning Journée")
+    st.caption("*Générer une fiche imprimable pour une équipe de lavage*")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    # Charger les lignes de lavage
+    lignes_print = get_lignes_lavage()
+    
+    with col1:
+        date_print = st.date_input("📅 Jour", datetime.now().date(), key="print_date")
+    
+    with col2:
+        if lignes_print:
+            ligne_print_options = [f"{l['code']} - {l['libelle']} ({l['capacite_th']}T/h)" for l in lignes_print]
+            selected_ligne_print = st.selectbox("🔵 Ligne de lavage", ligne_print_options, key="print_ligne")
+            ligne_print_idx = ligne_print_options.index(selected_ligne_print)
+            ligne_print_code = lignes_print[ligne_print_idx]['code']
+            ligne_print_libelle = lignes_print[ligne_print_idx]['libelle']
+            ligne_print_capacite = lignes_print[ligne_print_idx]['capacite_th']
+        else:
+            st.warning("Aucune ligne de lavage")
+            ligne_print_code = None
+    
+    with col3:
+        amplitude_options = ["Journée complète (5h-22h)", "Matin (5h-13h)", "Après-midi (13h-22h)"]
+        selected_amplitude = st.selectbox("⏰ Amplitude", amplitude_options, key="print_amplitude")
+        
+        if selected_amplitude == "Matin (5h-13h)":
+            heure_debut_print = time(5, 0)
+            heure_fin_print = time(13, 0)
+        elif selected_amplitude == "Après-midi (13h-22h)":
+            heure_debut_print = time(13, 0)
+            heure_fin_print = time(22, 0)
+        else:
+            heure_debut_print = time(5, 0)
+            heure_fin_print = time(22, 0)
+    
+    st.markdown("---")
+    
+    # Charger les éléments planifiés pour ce jour/ligne
+    if ligne_print_code:
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    lpe.id,
+                    lpe.type_element,
+                    lpe.heure_debut,
+                    lpe.heure_fin,
+                    lpe.duree_minutes,
+                    lpe.ordre_jour,
+                    lj.id as job_id,
+                    lj.code_lot_interne,
+                    lj.variete,
+                    lj.quantite_pallox,
+                    lj.poids_brut_kg,
+                    lj.statut as job_statut,
+                    ltc.libelle as custom_libelle,
+                    ltc.emoji as custom_emoji
+                FROM lavages_planning_elements lpe
+                LEFT JOIN lavages_jobs lj ON lpe.job_id = lj.id
+                LEFT JOIN lavages_temps_customs ltc ON lpe.temps_custom_id = ltc.id
+                WHERE lpe.date_prevue = %s 
+                  AND lpe.ligne_lavage = %s
+                ORDER BY lpe.heure_debut, lpe.ordre_jour
+            """, (date_print, ligne_print_code))
+            
+            elements_print = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            
+            # Filtrer par amplitude horaire
+            elements_filtres = []
+            for el in elements_print:
+                if el['heure_debut']:
+                    h = el['heure_debut']
+                    if isinstance(h, str):
+                        h = datetime.strptime(h, "%H:%M:%S").time()
+                    if heure_debut_print <= h < heure_fin_print:
+                        elements_filtres.append(el)
+                else:
+                    elements_filtres.append(el)
+            
+            # Aperçu
+            jour_fr = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+            jour_nom = jour_fr[date_print.weekday()]
+            st.markdown(f"### 📋 Aperçu : {jour_nom} {date_print.strftime('%d/%m/%Y')} - {ligne_print_libelle}")
+            st.markdown(f"**Amplitude** : {heure_debut_print.strftime('%H:%M')} → {heure_fin_print.strftime('%H:%M')} | **Capacité** : {ligne_print_capacite} T/h")
+            
+            if elements_filtres:
+                st.markdown("---")
+                
+                for el in elements_filtres:
+                    heure_deb = el['heure_debut'].strftime('%H:%M') if el['heure_debut'] else "--:--"
+                    heure_f = el['heure_fin'].strftime('%H:%M') if el['heure_fin'] else "--:--"
+                    duree = el['duree_minutes'] or 0
+                    
+                    if el['type_element'] == 'JOB':
+                        statut_emoji = "🟢" if el['job_statut'] == 'PRÉVU' else ("🟠" if el['job_statut'] == 'EN_COURS' else "✅")
+                        poids_t = (el['poids_brut_kg'] or 0) / 1000
+                        st.markdown(f"""
+                        **{heure_deb} → {heure_f}** ({duree} min) {statut_emoji}  
+                        📦 **Job #{el['job_id']}** - {el['code_lot_interne']}  
+                        🥔 {el['variete']}  
+                        ⚖️ {el['quantite_pallox']} pallox ({poids_t:.2f} T)
+                        """)
+                    else:
+                        st.markdown(f"""
+                        **{heure_deb} → {heure_f}** ({duree} min)  
+                        {el['custom_emoji'] or '⚙️'} **{el['custom_libelle']}**
+                        """)
+                    st.markdown("---")
+                
+                # Calcul temps total
+                temps_total_min = sum(el['duree_minutes'] or 0 for el in elements_filtres)
+                temps_jobs = sum(el['duree_minutes'] or 0 for el in elements_filtres if el['type_element'] == 'JOB')
+                nb_jobs = len([el for el in elements_filtres if el['type_element'] == 'JOB'])
+                poids_total = sum((el['poids_brut_kg'] or 0) for el in elements_filtres if el['type_element'] == 'JOB') / 1000
+                
+                st.markdown(f"**Résumé** : {nb_jobs} job(s) | {poids_total:.1f} T | Temps total : {temps_total_min} min ({temps_total_min/60:.1f}h)")
+                
+                st.markdown("---")
+                
+                # Bouton imprimer avec HTML
+                if st.button("🖨️ Générer fiche imprimable", type="primary", use_container_width=True):
+                    
+                    # Générer HTML
+                    rows_html = ""
+                    for el in elements_filtres:
+                        heure_deb = el['heure_debut'].strftime('%H:%M') if el['heure_debut'] else "--:--"
+                        heure_f = el['heure_fin'].strftime('%H:%M') if el['heure_fin'] else "--:--"
+                        duree = el['duree_minutes'] or 0
+                        
+                        if el['type_element'] == 'JOB':
+                            statut = el['job_statut'] or ''
+                            poids_t = (el['poids_brut_kg'] or 0) / 1000
+                            rows_html += f"""
+                            <tr>
+                                <td style="text-align:center;font-weight:bold;">{heure_deb}</td>
+                                <td style="text-align:center;">{heure_f}</td>
+                                <td style="text-align:center;">{duree}</td>
+                                <td>Job #{el['job_id']} - {el['code_lot_interne']}</td>
+                                <td>{el['variete']}</td>
+                                <td style="text-align:center;">{el['quantite_pallox']}</td>
+                                <td style="text-align:center;">{poids_t:.2f} T</td>
+                                <td style="text-align:center;">{statut}</td>
+                                <td></td>
+                            </tr>
+                            """
+                        else:
+                            rows_html += f"""
+                            <tr style="background-color:#e8f5e9;">
+                                <td style="text-align:center;font-weight:bold;">{heure_deb}</td>
+                                <td style="text-align:center;">{heure_f}</td>
+                                <td style="text-align:center;">{duree}</td>
+                                <td colspan="5">{el['custom_emoji'] or '⚙️'} {el['custom_libelle']}</td>
+                                <td></td>
+                            </tr>
+                            """
+                    
+                    amplitude_txt = f"{heure_debut_print.strftime('%H:%M')} - {heure_fin_print.strftime('%H:%M')}"
+                    jour_txt = f"{jour_nom} {date_print.strftime('%d/%m/%Y')}"
+                    
+                    html_content = f"""
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <meta charset="UTF-8">
+                        <title>Planning Lavage - {jour_txt}</title>
+                        <style>
+                            body {{ font-family: Arial, sans-serif; margin: 20px; font-size: 12px; }}
+                            h1 {{ text-align: center; color: #333; margin-bottom: 5px; font-size: 18px; }}
+                            h2 {{ text-align: center; color: #666; margin-top: 0; font-size: 14px; }}
+                            .header-info {{ display: flex; justify-content: space-between; margin-bottom: 15px; padding: 10px; background: #f5f5f5; border-radius: 5px; }}
+                            .header-info div {{ text-align: center; }}
+                            .header-info strong {{ display: block; font-size: 14px; }}
+                            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+                            th {{ background: #1976d2; color: white; padding: 8px; text-align: left; font-size: 11px; }}
+                            td {{ border: 1px solid #ddd; padding: 6px; font-size: 11px; }}
+                            tr:nth-child(even) {{ background: #fafafa; }}
+                            .footer {{ margin-top: 20px; text-align: center; font-size: 10px; color: #999; }}
+                            .signature {{ margin-top: 30px; display: flex; justify-content: space-around; }}
+                            .signature div {{ width: 200px; border-top: 1px solid #333; padding-top: 5px; text-align: center; }}
+                            @media print {{
+                                body {{ margin: 10px; }}
+                                .no-print {{ display: none; }}
+                            }}
+                        </style>
+                    </head>
+                    <body>
+                        <h1>🧼 Planning Lavage</h1>
+                        <h2>{ligne_print_libelle} ({ligne_print_code})</h2>
+                        
+                        <div class="header-info">
+                            <div><strong>📅 Date</strong>{jour_txt}</div>
+                            <div><strong>⏰ Amplitude</strong>{amplitude_txt}</div>
+                            <div><strong>⚡ Capacité</strong>{ligne_print_capacite} T/h</div>
+                            <div><strong>📦 Jobs</strong>{nb_jobs}</div>
+                            <div><strong>⚖️ Tonnage</strong>{poids_total:.1f} T</div>
+                        </div>
+                        
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="width:60px;">Début</th>
+                                    <th style="width:60px;">Fin</th>
+                                    <th style="width:50px;">Durée</th>
+                                    <th>Lot / Opération</th>
+                                    <th>Variété</th>
+                                    <th style="width:60px;">Pallox</th>
+                                    <th style="width:60px;">Poids</th>
+                                    <th style="width:70px;">Statut</th>
+                                    <th style="width:80px;">Validé ✓</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {rows_html}
+                            </tbody>
+                        </table>
+                        
+                        <div class="signature">
+                            <div>Chef d'équipe</div>
+                            <div>Opérateur lavage</div>
+                            <div>Contrôle qualité</div>
+                        </div>
+                        
+                        <div class="footer">
+                            Imprimé le {datetime.now().strftime('%d/%m/%Y à %H:%M')} - Culture Pom
+                        </div>
+                        
+                        <script>
+                            window.onload = function() {{ window.print(); }}
+                        </script>
+                    </body>
+                    </html>
+                    """
+                    
+                    # Afficher dans un composant HTML avec bouton print
+                    stc.html(f"""
+                    <button onclick="openPrint()" style="background:#1976d2;color:white;border:none;padding:10px 20px;border-radius:5px;cursor:pointer;font-size:14px;">
+                        🖨️ Ouvrir fenêtre d'impression
+                    </button>
+                    <script>
+                        function openPrint() {{
+                            var win = window.open('', '_blank');
+                            win.document.write(`{html_content.replace('`', "'")}`);
+                            win.document.close();
+                        }}
+                    </script>
+                    """, height=60)
+                    
+                    st.success("✅ Cliquez sur le bouton ci-dessus pour ouvrir la fiche imprimable")
+            
+            else:
+                st.info(f"📭 Aucun élément planifié pour {date_print.strftime('%d/%m/%Y')} sur {ligne_print_libelle} ({heure_debut_print.strftime('%H:%M')}-{heure_fin_print.strftime('%H:%M')})")
+        
+        except Exception as e:
+            st.error(f"❌ Erreur : {str(e)}")
+
+# ============================================================
+# ONGLET 6 : ADMIN
+# ============================================================
+
+with tab6:
     if not is_admin():
         st.warning("⚠️ Accès réservé aux administrateurs")
     else:
@@ -1350,7 +2600,6 @@ with tab3:
             
             col_prevus, col_encours, col_termines = st.columns(3)
             
-            # PRÉVU
             with col_prevus:
                 st.markdown("#### 🟢 PRÉVU")
                 st.caption("Supprimer définitivement")
@@ -1364,15 +2613,15 @@ with tab3:
                         ORDER BY date_prevue DESC
                         LIMIT 15
                     """)
-                    jobs_prevus_admin = cursor.fetchall()
+                    jobs_prevus = cursor.fetchall()
                     cursor.close()
                     conn.close()
                     
-                    if jobs_prevus_admin:
-                        for job in jobs_prevus_admin:
+                    if jobs_prevus:
+                        for job in jobs_prevus:
                             col_info, col_btn = st.columns([4, 1])
                             with col_info:
-                                st.markdown(f"**#{job['id']}** {job['variete']} {int(job['quantite_pallox'])}p")
+                                st.markdown(f"**#{job['id']}** {job['variete']} {job['quantite_pallox']}p")
                             with col_btn:
                                 if st.button("🗑️", key=f"del_job_{job['id']}", help="Supprimer"):
                                     success, msg = supprimer_job(job['id'])
@@ -1386,7 +2635,6 @@ with tab3:
                 except Exception as e:
                     st.error(f"Erreur : {str(e)}")
             
-            # EN_COURS
             with col_encours:
                 st.markdown("#### 🟠 EN_COURS")
                 st.caption("Remettre en PRÉVU")
@@ -1400,15 +2648,15 @@ with tab3:
                         ORDER BY date_activation DESC
                         LIMIT 15
                     """)
-                    jobs_encours_admin = cursor.fetchall()
+                    jobs_encours = cursor.fetchall()
                     cursor.close()
                     conn.close()
                     
-                    if jobs_encours_admin:
-                        for job in jobs_encours_admin:
+                    if jobs_encours:
+                        for job in jobs_encours:
                             col_info, col_btn = st.columns([4, 1])
                             with col_info:
-                                st.markdown(f"**#{job['id']}** {job['variete']} {int(job['quantite_pallox'])}p")
+                                st.markdown(f"**#{job['id']}** {job['variete']} {job['quantite_pallox']}p")
                             with col_btn:
                                 if st.button("↩️", key=f"cancel_encours_{job['id']}", help="Annuler"):
                                     success, msg = annuler_job_en_cours(job['id'])
@@ -1422,7 +2670,6 @@ with tab3:
                 except Exception as e:
                     st.error(f"Erreur : {str(e)}")
             
-            # TERMINÉ
             with col_termines:
                 st.markdown("#### ⬜ TERMINÉ")
                 st.caption("✅ Restaure le stock BRUT")
@@ -1437,16 +2684,16 @@ with tab3:
                         ORDER BY date_terminaison DESC
                         LIMIT 20
                     """)
-                    jobs_termines_admin = cursor.fetchall()
+                    jobs_termines = cursor.fetchall()
                     cursor.close()
                     conn.close()
                     
-                    if jobs_termines_admin:
-                        for job in jobs_termines_admin:
+                    if jobs_termines:
+                        for job in jobs_termines:
                             col_info, col_btn = st.columns([4, 1])
                             with col_info:
                                 rend = f"{job['rendement_pct']:.1f}%" if job['rendement_pct'] else "N/A"
-                                st.markdown(f"**#{job['id']}** {job['code_lot_interne']} - Rend: {rend}")
+                                st.markdown(f"**Job #{job['id']}** - {job['code_lot_interne']} - Rend: {rend}")
                             with col_btn:
                                 if st.button("↩️", key=f"cancel_job_{job['id']}", help="Annuler"):
                                     success, msg = annuler_job_termine(job['id'])
@@ -1463,8 +2710,8 @@ with tab3:
         # --- TEMPS CUSTOMS ---
         with admin_tab2:
             st.markdown("### 🔧 Temps Customs")
-            temps_customs_all = get_temps_customs()
-            for tc in temps_customs_all:
+            temps_customs = get_temps_customs()
+            for tc in temps_customs:
                 col_info, col_del = st.columns([5, 1])
                 with col_info:
                     st.markdown(f"- {tc['emoji']} **{tc['libelle']}** ({tc['duree_minutes']} min)")
@@ -1538,230 +2785,5 @@ with tab3:
                 conn.close()
             except Exception as e:
                 st.error(f"Erreur : {str(e)}")
-
-# ============================================================
-# ONGLET 4 : CRÉER JOB ✅ PHASE 4
-# ============================================================
-
-with tab4:
-    st.subheader("➕ Créer un Job de Lavage")
-    
-    # Choix type source
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        type_source = st.radio(
-            "Type de source",
-            options=["BRUT 🥔", "GRENAILLES 🔄"],
-            horizontal=True,
-            key="type_source_create"
-        )
-    
-    statut_source = "BRUT" if "BRUT" in type_source else "GRENAILLES_BRUTES"
-    
-    st.markdown("---")
-    
-    # Charger lots selon type
-    if statut_source == "BRUT":
-        lots_dispo = get_lots_bruts_disponibles()
-        st.info("📦 Sélection de **pommes de terre brutes** (BRUT) pour lavage primaire")
-    else:
-        lots_dispo = get_lots_grenailles_disponibles()
-        st.info("🔄 Sélection de **grenailles brutes** (GRENAILLES_BRUTES) pour lavage secondaire")
-    
-    if not lots_dispo.empty:
-        # Filtres
-        col_f1, col_f2 = st.columns(2)
-        
-        with col_f1:
-            varietes = ["Tous"] + sorted(lots_dispo['variete'].dropna().unique().tolist())
-            filtre_var = st.selectbox("Filtrer par variété", varietes, key="fvar_create")
-        
-        with col_f2:
-            sites = ["Tous"] + sorted(lots_dispo['site_stockage'].dropna().unique().tolist())
-            filtre_site = st.selectbox("Filtrer par site", sites, key="fsite_create")
-        
-        # Appliquer filtres
-        lots_filtres = lots_dispo.copy()
-        if filtre_var != "Tous":
-            lots_filtres = lots_filtres[lots_filtres['variete'] == filtre_var]
-        if filtre_site != "Tous":
-            lots_filtres = lots_filtres[lots_filtres['site_stockage'] == filtre_site]
-        
-        if not lots_filtres.empty:
-            st.markdown(f"**{len(lots_filtres)} emplacement(s) disponible(s)**")
-            
-            # Tableau sélection
-            df_display = lots_filtres[[
-                'emplacement_id', 'lot_id', 'code_lot_interne', 'nom_usage',
-                'variete', 'calibre_min', 'calibre_max', 'producteur',
-                'site_stockage', 'emplacement_stockage',
-                'nombre_unites', 'poids_total_kg', 'type_conditionnement'
-            ]].copy()
-            
-            df_display = df_display.reset_index(drop=False).rename(columns={'index': '_idx'})
-            
-            df_display = df_display.rename(columns={
-                'code_lot_interne': 'Code Lot',
-                'nom_usage': 'Nom Lot',
-                'variete': 'Variété',
-                'calibre_min': 'Cal Min',
-                'calibre_max': 'Cal Max',
-                'producteur': 'Producteur',
-                'site_stockage': 'Site',
-                'emplacement_stockage': 'Empl',
-                'nombre_unites': 'Unités',
-                'poids_total_kg': 'Poids (kg)',
-                'type_conditionnement': 'Type'
-            })
-            
-            column_config = {
-                "_idx": None,
-                "emplacement_id": None,
-                "lot_id": None,
-                "Code Lot": st.column_config.TextColumn("Code Lot", width="medium"),
-                "Nom Lot": st.column_config.TextColumn("Nom Lot", width="medium"),
-                "Variété": st.column_config.TextColumn("Variété", width="medium"),
-                "Cal Min": st.column_config.NumberColumn("Cal Min", format="%d"),
-                "Cal Max": st.column_config.NumberColumn("Cal Max", format="%d"),
-                "Producteur": st.column_config.TextColumn("Producteur", width="medium"),
-                "Site": st.column_config.TextColumn("Site", width="small"),
-                "Empl": st.column_config.TextColumn("Empl", width="small"),
-                "Unités": st.column_config.NumberColumn("Unités", format="%d"),
-                "Poids (kg)": st.column_config.NumberColumn("Poids (kg)", format="%.0f"),
-                "Type": st.column_config.TextColumn("Type", width="small")
-            }
-            
-            event = st.dataframe(
-                df_display,
-                column_config=column_config,
-                use_container_width=True,
-                hide_index=True,
-                on_select="rerun",
-                selection_mode="single-row",
-                key="lots_create_table"
-            )
-            
-            selected_rows = event.selection.rows if hasattr(event, 'selection') else []
-            
-            st.markdown("---")
-            
-            if len(selected_rows) > 0:
-                selected_idx = selected_rows[0]
-                selected_row = df_display.iloc[selected_idx]
-                
-                badge = "🥔" if statut_source == "BRUT" else "🔄"
-                st.success(f"✅ Sélectionné : **{selected_row['Code Lot']}** - {selected_row['Variété']} ({int(selected_row['Unités'])} unités) {badge}")
-                
-                if st.button("➕ Créer Job de Lavage", type="primary", use_container_width=True, key="btn_show_form_create"):
-                    st.session_state['selected_empl_idx_create'] = selected_row['_idx']
-                    st.session_state['show_create_form_job'] = True
-                    st.rerun()
-            else:
-                st.info("👆 Sélectionnez un emplacement dans le tableau")
-                st.button("➕ Créer Job de Lavage", type="primary", use_container_width=True, disabled=True, key="btn_create_disabled")
-            
-            # Formulaire création
-            if st.session_state.get('show_create_form_job', False) and 'selected_empl_idx_create' in st.session_state:
-                st.markdown("---")
-                st.markdown("### 📋 Paramètres du Job")
-                
-                original_idx = st.session_state['selected_empl_idx_create']
-                empl_data = lots_filtres.loc[original_idx]
-                
-                badge = "🥔 BRUT" if statut_source == "BRUT" else "🔄 GRENAILLES"
-                st.info(f"**Source** : {badge}  \n**Lot** : {empl_data['code_lot_interne']} - {empl_data['variete']}  \n**Emplacement** : {empl_data['site_stockage']}/{empl_data['emplacement_stockage']}")
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    quantite = st.slider(
-                        "Quantité à laver *",
-                        min_value=1,
-                        max_value=int(empl_data['nombre_unites']),
-                        value=min(5, int(empl_data['nombre_unites'])),
-                        key="qte_create"
-                    )
-                    
-                    date_prevue = st.date_input(
-                        "Date prévue *",
-                        value=datetime.now().date(),
-                        key="date_create"
-                    )
-                
-                with col2:
-                    lignes = get_lignes_lavage()
-                    if lignes:
-                        ligne_opts = [f"{l['code']} ({l['capacite_th']} T/h)" for l in lignes]
-                        sel_ligne = st.selectbox("Ligne de lavage *", ligne_opts, key="ligne_create")
-                        
-                        # Calcul poids
-                        type_cond = empl_data['type_conditionnement']
-                        if type_cond == 'Pallox':
-                            poids_unit = 1900
-                        elif type_cond == 'Petit Pallox':
-                            poids_unit = 1200
-                        elif type_cond == 'Big Bag':
-                            poids_unit = 1600
-                        else:
-                            poids_unit = 1900
-                        
-                        poids_brut = quantite * poids_unit
-                        
-                        ligne_idx = ligne_opts.index(sel_ligne)
-                        capacite = float(lignes[ligne_idx]['capacite_th'])
-                        temps_est = (poids_brut / 1000) / capacite
-                        ligne_code = lignes[ligne_idx]['code']
-                        
-                        st.metric("Poids brut", f"{poids_brut:,.0f} kg ({poids_brut/1000:.1f} T)")
-                        st.metric("Temps estimé", f"{temps_est:.1f} heures")
-                    else:
-                        st.error("❌ Aucune ligne disponible")
-                
-                notes = st.text_area("Notes (optionnel)", key="notes_create_job")
-                
-                col_save, col_cancel = st.columns(2)
-                
-                with col_save:
-                    if st.button("✅ Créer le Job", type="primary", use_container_width=True, key="btn_save_create"):
-                        if lignes:
-                            producteur = empl_data.get('producteur', '')
-                            
-                            success, message = create_job_lavage(
-                                empl_data['lot_id'],
-                                empl_data['emplacement_id'],
-                                ligne_code,
-                                quantite,
-                                poids_brut,
-                                date_prevue,
-                                capacite,
-                                statut_source,
-                                producteur,
-                                notes
-                            )
-                            
-                            if success:
-                                st.success(message)
-                                st.balloons()
-                                st.session_state.pop('show_create_form_job', None)
-                                st.session_state.pop('selected_empl_idx_create', None)
-                                st.rerun()
-                            else:
-                                st.error(message)
-                        else:
-                            st.error("❌ Impossible : aucune ligne")
-                
-                with col_cancel:
-                    if st.button("❌ Annuler", use_container_width=True, key="btn_cancel_create"):
-                        st.session_state.pop('show_create_form_job', None)
-                        st.session_state.pop('selected_empl_idx_create', None)
-                        st.rerun()
-        else:
-            st.warning(f"⚠️ Aucun emplacement avec filtres : {filtre_var} / {filtre_site}")
-    else:
-        if statut_source == "BRUT":
-            st.warning("⚠️ Aucun lot BRUT disponible")
-        else:
-            st.warning("⚠️ Aucun lot GRENAILLES disponible")
 
 show_footer()
