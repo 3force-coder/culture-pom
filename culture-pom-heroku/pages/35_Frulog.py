@@ -375,55 +375,80 @@ with tab1:
     imp_type = st.radio("Type :", ["📈 Condi", "🏪 Négoce", "🛒 Achats"], horizontal=True, key="imp_type")
     st.markdown("---")
 
+    # Lecture unique par fichier — évite double pd.read_excel et erreur 400 Heroku
+    def _lire_fichier_unique(up, cache_key):
+        """Lit le fichier Excel une seule fois et le met en cache session_state."""
+        file_id = f"{up.name}_{up.size}"
+        if st.session_state.get(cache_key + "_id") != file_id:
+            with st.spinner("Lecture du fichier..."):
+                up.seek(0)
+                dfc = pd.read_excel(up, sheet_name=0)
+                st.session_state[cache_key] = dfc
+                st.session_state[cache_key + "_id"] = file_id
+                st.session_state[cache_key + "_obj"] = up
+        return st.session_state.get(cache_key)
+
     if imp_type == "📈 Condi":
         up = st.file_uploader("Fichier Excel Ventes Condi", type=['xlsx','xls'], key="up_condi")
         if up:
             try:
-                up.seek(0); dfc = pd.read_excel(up, sheet_name=0)
-                c1,c2,c3,c4 = st.columns(4)
-                with c1: st.metric("Lignes", len(dfc))
-                with c2: st.metric("E", len(dfc[dfc['Type']=='E']) if 'Type' in dfc.columns else 0)
-                with c3: st.metric("C", len(dfc[dfc['Type']=='C']) if 'Type' in dfc.columns else 0)
-                with c4: st.metric("A", len(dfc[dfc['Type']=='A']) if 'Type' in dfc.columns else 0)
-                st.dataframe(dfc.head(3), use_container_width=True, hide_index=True)
-                if st.button("🚀 Importer CONDI", type="primary", use_container_width=True):
-                    up.seek(0)
-                    with st.spinner("Import..."): ok, msg = importer_ventes(up, 'CONDI', st.session_state.get('username','?'))
-                    if ok: st.success(f"✅ {msg}"); st.rerun()
-                    else: st.error(f"❌ {msg}")
+                dfc = _lire_fichier_unique(up, "frulog_cache_condi")
+                if dfc is not None:
+                    c1,c2,c3,c4 = st.columns(4)
+                    with c1: st.metric("Lignes", len(dfc))
+                    with c2: st.metric("E", len(dfc[dfc['Type']=='E']) if 'Type' in dfc.columns else 0)
+                    with c3: st.metric("C", len(dfc[dfc['Type']=='C']) if 'Type' in dfc.columns else 0)
+                    with c4: st.metric("A", len(dfc[dfc['Type']=='A']) if 'Type' in dfc.columns else 0)
+                    st.dataframe(dfc.head(3), use_container_width=True, hide_index=True)
+                    if st.button("🚀 Importer CONDI", type="primary", use_container_width=True):
+                        up.seek(0)
+                        with st.spinner("Import..."): ok, msg = importer_ventes(up, 'CONDI', st.session_state.get('username','?'))
+                        if ok:
+                            st.session_state.pop("frulog_cache_condi", None)
+                            st.session_state.pop("frulog_cache_condi_id", None)
+                            st.success(f"✅ {msg}"); st.rerun()
+                        else: st.error(f"❌ {msg}")
             except Exception as e: st.error(str(e))
 
     elif imp_type == "🏪 Négoce":
         up = st.file_uploader("Fichier Excel Ventes Négoce", type=['xlsx','xls'], key="up_negoce")
         if up:
             try:
-                up.seek(0); dfc = pd.read_excel(up, sheet_name=0)
-                c1,c2 = st.columns(2)
-                with c1: st.metric("Lignes", len(dfc))
-                with c2: st.metric("E", len(dfc[dfc['Type']=='E']) if 'Type' in dfc.columns else 0)
-                st.dataframe(dfc.head(3), use_container_width=True, hide_index=True)
-                if st.button("🚀 Importer NÉGOCE", type="primary", use_container_width=True):
-                    up.seek(0)
-                    with st.spinner("Import..."): ok, msg = importer_ventes(up, 'NEGOCE', st.session_state.get('username','?'))
-                    if ok: st.success(f"✅ {msg}"); st.rerun()
-                    else: st.error(f"❌ {msg}")
+                dfc = _lire_fichier_unique(up, "frulog_cache_negoce")
+                if dfc is not None:
+                    c1,c2 = st.columns(2)
+                    with c1: st.metric("Lignes", len(dfc))
+                    with c2: st.metric("E", len(dfc[dfc['Type']=='E']) if 'Type' in dfc.columns else 0)
+                    st.dataframe(dfc.head(3), use_container_width=True, hide_index=True)
+                    if st.button("🚀 Importer NÉGOCE", type="primary", use_container_width=True):
+                        up.seek(0)
+                        with st.spinner("Import..."): ok, msg = importer_ventes(up, 'NEGOCE', st.session_state.get('username','?'))
+                        if ok:
+                            st.session_state.pop("frulog_cache_negoce", None)
+                            st.session_state.pop("frulog_cache_negoce_id", None)
+                            st.success(f"✅ {msg}"); st.rerun()
+                        else: st.error(f"❌ {msg}")
             except Exception as e: st.error(str(e))
 
     else:
         up = st.file_uploader("Fichier Excel Achats", type=['xlsx','xls'], key="up_achat")
         if up:
             try:
-                up.seek(0); dfc = pd.read_excel(up, sheet_name=0)
-                c1,c2,c3 = st.columns(3)
-                with c1: st.metric("Lignes", len(dfc))
-                with c2: st.metric("S", len(dfc[dfc['Type']=='S']) if 'Type' in dfc.columns else 0)
-                with c3: st.metric("A", len(dfc[dfc['Type']=='A']) if 'Type' in dfc.columns else 0)
-                st.dataframe(dfc.head(3), use_container_width=True, hide_index=True)
-                if st.button("🚀 Importer ACHATS", type="primary", use_container_width=True):
-                    up.seek(0)
-                    with st.spinner("Import..."): ok, msg = importer_achat(up, st.session_state.get('username','?'))
-                    if ok: st.success(f"✅ {msg}"); st.rerun()
-                    else: st.error(f"❌ {msg}")
+                dfc = _lire_fichier_unique(up, "frulog_cache_achat")
+                if dfc is not None:
+                    c1,c2,c3 = st.columns(3)
+                    with c1: st.metric("Lignes", len(dfc))
+                    with c2: st.metric("S", len(dfc[dfc['Type']=='S']) if 'Type' in dfc.columns else 0)
+                    with c3: st.metric("A", len(dfc[dfc['Type']=='A']) if 'Type' in dfc.columns else 0)
+                    st.dataframe(dfc.head(3), use_container_width=True, hide_index=True)
+                    if st.button("🚀 Importer ACHATS", type="primary", use_container_width=True):
+                        up.seek(0)
+                        with st.spinner("Import..."): ok, msg = importer_achat(up, st.session_state.get('username','?'))
+                        if ok:
+                            st.session_state.pop("frulog_cache_achat", None)
+                            st.session_state.pop("frulog_cache_achat_id", None)
+                            st.success(f"✅ {msg}"); st.rerun()
+                        else: st.error(f"❌ {msg}")
             except Exception as e: st.error(str(e))
 
     st.markdown("---")
