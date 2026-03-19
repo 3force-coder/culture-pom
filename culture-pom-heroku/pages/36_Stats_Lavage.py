@@ -299,7 +299,7 @@ def get_historique_bdd():
 # FONCTIONS DONNÉES POMI (BDD)
 # ============================================================
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def get_jobs_termines_pomi():
     """Récupère tous les jobs TERMINÉ avec leurs données de résultat"""
     try:
@@ -331,7 +331,6 @@ def get_jobs_termines_pomi():
             LEFT JOIN lots_bruts lb ON lj.lot_id = lb.id
             LEFT JOIN ref_producteurs p ON lb.code_producteur = p.code_producteur
             WHERE lj.statut = 'TERMINÉ'
-              AND lj.poids_brut_kg > 0
             ORDER BY lj.date_terminaison DESC
         """)
         rows = cursor.fetchall()
@@ -1051,8 +1050,8 @@ with tab_pomi:
         st.markdown("**Parametres objectif cadence**")
         obj_th_p = st.number_input("Obj. cadence (T/h)", 1.0, 30.0, 13.0, 0.5, key="obj_p")
         h_jour_p = st.number_input("Heures marche / jour", 1.0, 24.0, 13.0, 0.5, key="hj_p")
-        if st.button("Rafraichir", key="refresh_pomi"):
-            st.cache_data.clear()
+        if st.button("🔄 Rafraîchir", key="refresh_pomi"):
+            get_jobs_termines_pomi.clear()
             st.rerun()
 
     with col_p1:
