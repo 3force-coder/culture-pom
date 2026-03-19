@@ -19,3 +19,11 @@ font = "sans serif"
 
 # Couleurs supplémentaires (référence)
 # Jaune secondaire : #FFEC00 (pour accents si besoin custom CSS)
+[server]
+maxUploadSize = 500
+headless = true
+enableCORS = false
+enableXsrfProtection = false
+
+[browser]
+gatherUsageStats = false
