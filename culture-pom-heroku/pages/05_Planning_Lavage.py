@@ -1940,11 +1940,22 @@ with tab3:
                             ligne_opts = [f"{l['code']} ({l['capacite_th']} T/h)" for l in lignes]
                             ligne_sel = st.selectbox("Ligne de lavage", ligne_opts, key="ligne_besoins_create")
                             
+                            ligne_idx = ligne_opts.index(ligne_sel)
+                            capacite_ligne = float(lignes[ligne_idx]['capacite_th'])
+                            
+                            cadence = st.number_input(
+                                "⚡ Cadence (T/h)",
+                                min_value=0.5,
+                                max_value=float(capacite_ligne),
+                                value=float(capacite_ligne),
+                                step=0.5,
+                                key="cadence_besoins_create",
+                                help=f"Capacité max ligne : {capacite_ligne} T/h. Réduire si lot difficile (petit calibre, terre...)"
+                            )
+                            
                             poids_brut = quantite * poids_unit
                             poids_net_estime = poids_brut * rendement
-                            ligne_idx = ligne_opts.index(ligne_sel)
-                            capacite = float(lignes[ligne_idx]['capacite_th'])
-                            temps_estime = (poids_brut / 1000) / capacite
+                            temps_estime = (poids_brut / 1000) / cadence
                             
                             st.metric("Poids BRUT", f"{poids_brut:,.0f} kg ({poids_brut/1000:.1f} T)")
                             st.metric("NET estimé (~78%)", f"{poids_net_estime:,.0f} kg ({poids_net_estime/1000:.1f} T)")
@@ -1956,7 +1967,7 @@ with tab3:
                             ligne_code = lignes[ligne_idx]['code']
                             success, message = create_job_lavage(
                                 lot_id_besoin, empl_id, quantite, poids_brut,
-                                date_prevue, ligne_code, capacite, notes
+                                date_prevue, ligne_code, cadence, notes
                             )
                             if success:
                                 st.success(message)
@@ -2089,8 +2100,19 @@ with tab3:
                         poids_unit = {'Pallox': 1900, 'Petit Pallox': 800, 'Big Bag': 1600}.get(lot_data['type_conditionnement'], 1900)
                         poids_brut = quantite * poids_unit
                         ligne_idx = ligne_opts.index(ligne_sel)
-                        capacite = float(lignes[ligne_idx]['capacite_th'])
-                        temps_est = (poids_brut / 1000) / capacite
+                        capacite_ligne = float(lignes[ligne_idx]['capacite_th'])
+                        
+                        cadence = st.number_input(
+                            "⚡ Cadence (T/h)",
+                            min_value=0.5,
+                            max_value=float(capacite_ligne),
+                            value=float(capacite_ligne),
+                            step=0.5,
+                            key="cadence_create",
+                            help=f"Capacité max ligne : {capacite_ligne} T/h. Réduire si lot difficile (petit calibre, terre...)"
+                        )
+                        
+                        temps_est = (poids_brut / 1000) / cadence
                         
                         st.metric("Poids total", f"{poids_brut:,} kg")
                         st.metric("Temps estimé", f"{temps_est:.1f}h")
@@ -2098,7 +2120,7 @@ with tab3:
                     notes = st.text_input("Notes (optionnel)", key="notes_create_all")
                     
                     if st.button("✅ Créer Job", type="primary", use_container_width=True, key="btn_create_job_all"):
-                        success, msg = create_job_lavage(lot_data['lot_id'], lot_data['emplacement_id'], quantite, poids_brut, date_prevue, lignes[ligne_idx]['code'], capacite, notes)
+                        success, msg = create_job_lavage(lot_data['lot_id'], lot_data['emplacement_id'], quantite, poids_brut, date_prevue, lignes[ligne_idx]['code'], cadence, notes)
                         if success:
                             st.success(msg)
                             st.balloons()
