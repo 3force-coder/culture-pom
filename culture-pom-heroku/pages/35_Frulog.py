@@ -377,15 +377,16 @@ with tab1:
 
     # Lecture unique par fichier — évite double pd.read_excel et erreur 400 Heroku
     def _lire_fichier_unique(up, cache_key):
-        """Lit le fichier Excel une seule fois et le met en cache session_state."""
+        """Lit le fichier Excel une seule fois et le met en cache session_state.
+        Utilise getvalue() pour éviter l'erreur 400 sur Heroku."""
         file_id = f"{up.name}_{up.size}"
         if st.session_state.get(cache_key + "_id") != file_id:
             with st.spinner("Lecture du fichier..."):
-                up.seek(0)
-                dfc = pd.read_excel(up, sheet_name=0)
+                import io as _sio
+                file_bytes = up.getvalue()
+                dfc = pd.read_excel(_sio.BytesIO(file_bytes), sheet_name=0)
                 st.session_state[cache_key] = dfc
                 st.session_state[cache_key + "_id"] = file_id
-                st.session_state[cache_key + "_obj"] = up
         return st.session_state.get(cache_key)
 
     if imp_type == "📈 Condi":
@@ -401,8 +402,9 @@ with tab1:
                     with c4: st.metric("A", len(dfc[dfc['Type']=='A']) if 'Type' in dfc.columns else 0)
                     st.dataframe(dfc.head(3), use_container_width=True, hide_index=True)
                     if st.button("🚀 Importer CONDI", type="primary", use_container_width=True):
-                        up.seek(0)
-                        with st.spinner("Import..."): ok, msg = importer_ventes(up, 'CONDI', st.session_state.get('username','?'))
+                        import io as _sio2
+                        up_bytes = _sio2.BytesIO(up.getvalue()); up_bytes.name = up.name
+                        with st.spinner("Import..."): ok, msg = importer_ventes(up_bytes, 'CONDI', st.session_state.get('username','?'))
                         if ok:
                             st.session_state.pop("frulog_cache_condi", None)
                             st.session_state.pop("frulog_cache_condi_id", None)
@@ -421,8 +423,9 @@ with tab1:
                     with c2: st.metric("E", len(dfc[dfc['Type']=='E']) if 'Type' in dfc.columns else 0)
                     st.dataframe(dfc.head(3), use_container_width=True, hide_index=True)
                     if st.button("🚀 Importer NÉGOCE", type="primary", use_container_width=True):
-                        up.seek(0)
-                        with st.spinner("Import..."): ok, msg = importer_ventes(up, 'NEGOCE', st.session_state.get('username','?'))
+                        import io as _sio3
+                        up_bytes = _sio3.BytesIO(up.getvalue()); up_bytes.name = up.name
+                        with st.spinner("Import..."): ok, msg = importer_ventes(up_bytes, 'NEGOCE', st.session_state.get('username','?'))
                         if ok:
                             st.session_state.pop("frulog_cache_negoce", None)
                             st.session_state.pop("frulog_cache_negoce_id", None)
@@ -442,8 +445,9 @@ with tab1:
                     with c3: st.metric("A", len(dfc[dfc['Type']=='A']) if 'Type' in dfc.columns else 0)
                     st.dataframe(dfc.head(3), use_container_width=True, hide_index=True)
                     if st.button("🚀 Importer ACHATS", type="primary", use_container_width=True):
-                        up.seek(0)
-                        with st.spinner("Import..."): ok, msg = importer_achat(up, st.session_state.get('username','?'))
+                        import io as _sio4
+                        up_bytes = _sio4.BytesIO(up.getvalue()); up_bytes.name = up.name
+                        with st.spinner("Import..."): ok, msg = importer_achat(up_bytes, st.session_state.get('username','?'))
                         if ok:
                             st.session_state.pop("frulog_cache_achat", None)
                             st.session_state.pop("frulog_cache_achat_id", None)
