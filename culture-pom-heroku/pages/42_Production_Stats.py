@@ -45,15 +45,20 @@ def load_objectifs_historique():
     """Charge tous les objectifs depuis la BDD avec leur plage de validité."""
     try:
         conn = get_connection()
-        df = pd.read_sql("""
+        cursor = conn.cursor()
+        cursor.execute("""
             SELECT ligne, objectif_cadence, date_debut, date_fin, created_by, created_at
             FROM production_objectifs
             ORDER BY ligne, date_debut DESC
-        """, conn)
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
         conn.close()
-        if not df.empty:
-            df['date_debut'] = pd.to_datetime(df['date_debut']).dt.date
-            df['date_fin']   = pd.to_datetime(df['date_fin']).dt.date
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame([dict(r) for r in rows])
+        df['date_debut'] = pd.to_datetime(df['date_debut']).dt.date
+        df['date_fin']   = pd.to_datetime(df['date_fin']).dt.date
         return df
     except Exception:
         return pd.DataFrame()
