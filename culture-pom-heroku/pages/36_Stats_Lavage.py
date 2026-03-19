@@ -72,7 +72,6 @@ def kpi_delta(val, ref, unit="%", invert=False):
 # FONCTIONS IMPORT FICHIER
 # ============================================================
 
-@st.cache_data(show_spinner=False)
 def charger_fichier_excel(file_bytes):
     """Charge et nettoie le fichier Excel historique"""
     df = pd.read_excel(io.BytesIO(file_bytes),
@@ -936,42 +935,54 @@ with tab_import:
         h_jour_f = st.number_input("Heures marche / jour", 1.0, 24.0, 13.0, 0.5, key="hj_f")
 
     if uploaded:
-        try:
-            with st.spinner("Chargement et nettoyage du fichier..."):
-                file_bytes = uploaded.read()
-                df_hist = charger_fichier_excel(file_bytes)
+        # Cache manuel : éviter de retraiter si le même fichier est déjà en session
+        nom_fichier = uploaded.name
+        deja_charge = (
+            st.session_state.get("df_historique_courant") is not None
+            and st.session_state.get("dernier_fichier_importe") == nom_fichier
+        )
 
-            nb_lignes  = len(df_hist)
-            nb_annees  = df_hist["annee"].nunique()
-            nb_var     = df_hist["variete"].nunique()
-            annees_str = ", ".join(str(int(a)) for a in sorted(df_hist["annee"].dropna().unique()))
+        if not deja_charge:
+            try:
+                with st.spinner("Chargement et nettoyage du fichier..."):
+                    file_bytes = uploaded.read()
+                    df_hist = charger_fichier_excel(file_bytes)
 
-            st.success(f"✅ **{nb_lignes} lignes** chargées — {nb_annees} année(s) : {annees_str} — {nb_var} variétés")
+                nb_lignes  = len(df_hist)
+                nb_annees  = df_hist["annee"].nunique()
+                nb_var     = df_hist["variete"].nunique()
+                annees_str = ", ".join(str(int(a)) for a in sorted(df_hist["annee"].dropna().unique()))
 
-            # Stocker en session pour l'onglet stats (accès rapide sans re-lecture BDD)
-            st.session_state.df_historique_courant = df_hist
-            st.session_state.obj_th_f = obj_th_f
-            st.session_state.h_jour_f = h_jour_f
+                # Stocker en session
+                st.session_state.df_historique_courant = df_hist
+                st.session_state.dernier_fichier_importe = nom_fichier
+                st.session_state.obj_th_f = obj_th_f
+                st.session_state.h_jour_f = h_jour_f
 
-            # Persister en BDD
-            with st.spinner("Sauvegarde en base de données..."):
-                imported_by = st.session_state.get("username", "system")
-                ok, import_id, nb_ins, nb_ign, err = sauvegarder_import_bdd(
-                    df_hist, uploaded.name, imported_by
-                )
+                st.success(f"✅ **{nb_lignes} lignes** chargées — {nb_annees} année(s) : {annees_str} — {nb_var} variétés")
 
-            if ok:
-                st.success(f"💾 Sauvegardé en BDD — {nb_ins} lignes insérées, {nb_ign} ignorées (doublons)")
-                # Vider le cache pour que l'onglet stats recharge les nouvelles données
-                get_imports_historique.clear()
-                get_historique_bdd.clear()
-            else:
-                st.warning(f"⚠️ Analyse disponible mais sauvegarde BDD échouée : {err}")
+                # Persister en BDD
+                with st.spinner("Sauvegarde en base de données..."):
+                    imported_by = st.session_state.get("username", "system")
+                    ok, import_id, nb_ins, nb_ign, err = sauvegarder_import_bdd(
+                        df_hist, nom_fichier, imported_by
+                    )
 
-            st.info("Allez dans **Stats Historique** pour lancer l'analyse.")
+                if ok:
+                    st.success(f"💾 Sauvegardé en BDD — {nb_ins} lignes insérées, {nb_ign} ignorées (doublons)")
+                    get_imports_historique.clear()
+                    get_historique_bdd.clear()
+                else:
+                    st.warning(f"⚠️ Analyse disponible mais sauvegarde BDD échouée : {err}")
 
-        except Exception as e:
-            st.error(f"Erreur à l'import : {str(e)}")
+                st.info("Allez dans **Stats Historique** pour lancer l'analyse.")
+
+            except Exception as e:
+                st.error(f"Erreur à l'import : {str(e)}")
+        else:
+            df_hist = st.session_state.df_historique_courant
+            nb_lignes = len(df_hist)
+            st.success(f"✅ **{nom_fichier}** déjà chargé ({nb_lignes} lignes) — allez dans **Stats Historique**.")
     else:
         st.info("Sélectionnez le fichier Excel pour commencer.")
 
