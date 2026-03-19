@@ -73,15 +73,18 @@ def kpi_delta(val, ref, unit="%", invert=False):
 # ============================================================
 
 def charger_fichier_excel(file_bytes):
-    """Charge et nettoie le fichier Excel historique"""
+    """Charge et nettoie le fichier Excel historique.
+
+    Source de vérité : colonne D (date réelle du lavage).
+    annee et semaine sont reconstruits depuis D via calendrier ISO.
+    La colonne ANNEES du fichier est ignorée (souvent vide ou fausse).
+    """
     df = pd.read_excel(io.BytesIO(file_bytes),
                        sheet_name='Saisi des données écarts de tri')
 
-    # Nettoyage colonnes
+    # Renommage colonnes
     df = df.rename(columns={
-        'SEM': 'semaine',
         'D': 'date',
-        'ANNEES': 'annee',
         'VARIETE': 'variete',
         'Unnamed: 4': 'producteur',
         'NBR PALOX TRAVAILLE': 'pallox',
@@ -96,14 +99,20 @@ def charger_fichier_excel(file_bytes):
         'OBSERVATION': 'observation',
     })
 
-    # Normalisation
+    # Normalisation texte
     df['variete']    = df['variete'].apply(clean_variete)
-    df['producteur'] = df['producteur'].apply(lambda x: str(x).strip().upper() if pd.notna(x) else '')
-    df['date']       = pd.to_datetime(df['date'], errors='coerce')
-    df['annee']      = pd.to_numeric(df['annee'], errors='coerce')
-    df['semaine']    = pd.to_numeric(df['semaine'], errors='coerce')
+    df['producteur'] = df['producteur'].apply(
+        lambda x: str(x).strip().upper() if pd.notna(x) else '')
 
-    # Filtrer données exploitables (annee valide >= 2020, poids_brut renseigné)
+    # Source de vérité : colonne date (D)
+    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+
+    # Reconstruire annee + semaine depuis la date ISO (ignore colonne ANNEES)
+    iso = df['date'].dt.isocalendar()
+    df['annee']   = iso.year.astype('Int64')
+    df['semaine'] = iso.week.astype('Int64')
+
+    # Filtrer : date valide >= 2020 et poids_brut renseigné
     df = df[df['annee'] >= 2020].copy()
     df = df[df['poids_brut'].notna() & (df['poids_brut'] > 0)].copy()
 
@@ -114,13 +123,17 @@ def charger_fichier_excel(file_bytes):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
 
-    # Calculs dérivés
-    df['rendement_pct']  = np.where(df['poids_brut'] > 0, df['poids_lave']  / df['poids_brut'] * 100, np.nan)
-    df['pct_dechets']    = np.where(df['poids_brut'] > 0, df['poids_dechets'] / df['poids_brut'] * 100, np.nan)
-    df['pct_grenailles'] = np.where(df['poids_brut'] > 0, df['poids_grenailles'] / df['poids_brut'] * 100, np.nan)
-    df['pct_terre']      = np.where(df['poids_brut'] > 0, df['poids_terre']  / df['poids_brut'] * 100, np.nan)
+    # Indicateurs calculés
+    df['rendement_pct']  = np.where(df['poids_brut'] > 0,
+                                    df['poids_lave'] / df['poids_brut'] * 100, np.nan)
+    df['pct_dechets']    = np.where(df['poids_brut'] > 0,
+                                    df['poids_dechets'] / df['poids_brut'] * 100, np.nan)
+    df['pct_grenailles'] = np.where(df['poids_brut'] > 0,
+                                    df['poids_grenailles'] / df['poids_brut'] * 100, np.nan)
+    df['pct_terre']      = np.where(df['poids_brut'] > 0,
+                                    df['poids_terre'] / df['poids_brut'] * 100, np.nan)
 
-    # Clip rendement aberrant
+    # Clip valeurs aberrantes
     df['rendement_pct']  = df['rendement_pct'].clip(0, 110)
     df['pct_dechets']    = df['pct_dechets'].clip(0, 100)
     df['pct_grenailles'] = df['pct_grenailles'].clip(0, 100)
@@ -183,8 +196,8 @@ def sauvegarder_import_bdd(df, nom_fichier, imported_by="system"):
                     ON CONFLICT ON CONSTRAINT uq_lavage_historique DO NOTHING
                 """, (
                     import_id,
-                    int(row["semaine"]) if pd.notna(row["semaine"]) else None,
-                    int(row["annee"])   if pd.notna(row["annee"])   else None,
+                    int(row["semaine"]) if pd.notna(row["semaine"]) and row["semaine"] is not pd.NA else None,
+                    int(row["annee"])   if pd.notna(row["annee"])   and row["annee"]   is not pd.NA else None,
                     date_ligne,
                     str(row["variete"])    if pd.notna(row["variete"])    else None,
                     str(row["producteur"]) if pd.notna(row["producteur"]) else None,
