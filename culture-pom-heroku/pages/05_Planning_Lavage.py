@@ -1827,24 +1827,20 @@ with tab1:
         with col_dech:
             st.markdown("### 🗑️ Déchets")
 
-            TYPES_CONT_DECH = {"Benne (5000 kg)": 5000, "Big Bag (1000 kg)": 1000,
-                               "Caisse (500 kg)": 500, "Autre": 0}
-
             col_nd1, col_nd2 = st.columns([1, 2])
             with col_nd1:
-                nb_cont_dech = st.number_input("Nb contenants", min_value=0,
-                    value=0, key=f"nb_cont_dech_{job_en_terminaison}")
+                nb_pallox_dech = st.number_input("Nb Pallox", min_value=0,
+                    value=0, key=f"nb_pallox_dech_{job_en_terminaison}")
             with col_nd2:
-                type_cont_dech = st.selectbox("Type contenant", list(TYPES_CONT_DECH.keys()),
-                    key=f"type_cont_dech_{job_en_terminaison}")
+                type_dech = st.selectbox("Type conditionnement", TYPES_COND,
+                    key=f"type_dech_full_{job_en_terminaison}")
 
-            poids_unit_dech = TYPES_CONT_DECH[type_cont_dech]
+            poids_unit_dech = POIDS_UNIT[type_dech]
 
-            # Calculateur pesées individuelles déchets
             with st.expander("🔢 Calculer depuis pesées individuelles"):
-                st.caption("Saisir le poids de chaque contenant pesé (kg) — espaces ou virgules")
+                st.caption("Saisir le poids de chaque pallox pesé (kg) — espaces ou virgules")
                 pesees_dech_raw = st.text_input(
-                    "Pesées déchets (kg)", placeholder="ex: 4800 5100 4950",
+                    "Pesées déchets (kg)", placeholder="ex: 1850 1920 1800",
                     key=f"pesees_dech_{job_en_terminaison}")
                 pesees_dech = []
                 if pesees_dech_raw:
@@ -1858,28 +1854,21 @@ with tab1:
                             pass
                 if pesees_dech:
                     moy_dech = sum(pesees_dech) / len(pesees_dech)
-                    poids_dech_calc = sum(pesees_dech)  # total direct des pesées
+                    poids_dech_calc = moy_dech * nb_pallox_dech
                     col_dd1, col_dd2, col_dd3 = st.columns(3)
                     col_dd1.metric("Nb pesées", len(pesees_dech))
-                    col_dd2.metric("Poids moyen", f"{moy_dech:,.0f} kg")
-                    col_dd3.metric("→ Total", f"{poids_dech_calc:,.0f} kg")
+                    col_dd2.metric("Poids moyen/pallox", f"{moy_dech:,.0f} kg")
+                    col_dd3.metric(f"→ Total ({nb_pallox_dech}p)", f"{poids_dech_calc:,.0f} kg")
                     poids_dech_auto = poids_dech_calc
                 else:
-                    poids_dech_auto = (nb_cont_dech * poids_unit_dech
-                                       if poids_unit_dech > 0 else 0)
+                    poids_dech_auto = nb_pallox_dech * poids_unit_dech
 
-            # Calcul auto si pas de pesées
             if not pesees_dech_raw or not pesees_dech:
-                poids_dech_auto = (nb_cont_dech * poids_unit_dech
-                                   if poids_unit_dech > 0 and nb_cont_dech > 0 else 0)
+                poids_dech_auto = nb_pallox_dech * poids_unit_dech
 
-            # Ajustement manuel si nécessaire
-            p_dech = st.number_input(
-                "Poids déchets (kg) — ajustable",
-                min_value=0.0, max_value=float(poids_brut),
-                value=float(poids_dech_auto),
-                step=50.0, key=f"p_dech_full_{job_en_terminaison}",
-                help="Calculé automatiquement — modifiable si besoin")
+            st.metric("⚖️ Poids retenu", f"{poids_dech_auto:,.0f} kg",
+                help=f"{nb_pallox_dech} × {poids_unit_dech if not pesees_dech else int(sum(pesees_dech)/len(pesees_dech))} kg")
+            p_dech = poids_dech_auto
 
             p_terre = poids_brut - p_lave - p_gren - p_dech
 
