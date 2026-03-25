@@ -294,18 +294,34 @@ def get_planning_semaine(annee, semaine):
                 pe.id, pe.type_element, pe.job_id, pe.temps_custom_id,
                 pe.date_prevue, pe.ligne_lavage, pe.ordre_jour,
                 pe.heure_debut, pe.heure_fin, pe.duree_minutes,
-                lj.code_lot_interne, lj.variete, lj.quantite_pallox,
-                lj.poids_brut_kg, lj.statut as job_statut,
+                lj.id as lj_id, lj.code_lot_interne, lj.variete, lj.quantite_pallox,
+                lj.poids_brut_kg, lj.capacite_th, lj.statut as job_statut,
                 lj.date_activation, lj.date_terminaison,
-                lj.temps_estime_heures, lj.statut_source,
+                lj.temps_estime_heures, lj.statut_source, lj.emplacement_id,
                 COALESCE(p.nom, lj.producteur) as producteur,
+                se.site_stockage as empl_site,
+                se.emplacement_stockage as empl_code,
+                STRING_AGG(DISTINCT pc.marque || ' ' || pc.libelle, ', ') as produits_affectes,
                 tc.libelle as custom_libelle, tc.emoji as custom_emoji
             FROM lavages_planning_elements pe
             LEFT JOIN lavages_jobs lj ON pe.job_id = lj.id
             LEFT JOIN lots_bruts lb ON lj.lot_id = lb.id
             LEFT JOIN ref_producteurs p ON lb.code_producteur = p.code_producteur
+            LEFT JOIN stock_emplacements se ON lj.emplacement_id = se.id
+            LEFT JOIN previsions_affectations pa ON pa.lot_id = lj.lot_id
+                AND pa.is_active = TRUE AND pa.statut_stock = 'BRUT'
+            LEFT JOIN ref_produits_commerciaux pc ON pa.code_produit_commercial = pc.code_produit
             LEFT JOIN lavages_temps_customs tc ON pe.temps_custom_id = tc.id
             WHERE pe.annee = %s AND pe.semaine = %s
+            GROUP BY pe.id, pe.type_element, pe.job_id, pe.temps_custom_id,
+                pe.date_prevue, pe.ligne_lavage, pe.ordre_jour,
+                pe.heure_debut, pe.heure_fin, pe.duree_minutes,
+                lj.id, lj.code_lot_interne, lj.variete, lj.quantite_pallox,
+                lj.poids_brut_kg, lj.capacite_th, lj.statut,
+                lj.date_activation, lj.date_terminaison,
+                lj.temps_estime_heures, lj.statut_source, lj.emplacement_id,
+                p.nom, lj.producteur, se.site_stockage, se.emplacement_stockage,
+                tc.libelle, tc.emoji
             ORDER BY pe.date_prevue, pe.ligne_lavage, pe.ordre_jour
         """, (annee, semaine))
         rows = cursor.fetchall()
@@ -542,6 +558,70 @@ def deplacer_element_planning(element_id, nouvelle_date, nouvelle_heure, plannin
         if 'conn' in locals():
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
+
+def modifier_job(job_id, elem_planning_id, nouveau_pallox, poids_unit, nouvelle_cadence):
+    """
+    Modifie quantité + cadence d'un job PRÉVU.
+    Recalcule poids_brut_kg, temps_estime_heures et met à jour
+    la durée dans lavages_planning_elements (heure_fin incluse).
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        # Vérifier que le job est bien PRÉVU
+        cursor.execute("SELECT statut, heure_debut FROM lavages_jobs lj "
+                       "LEFT JOIN lavages_planning_elements pe ON pe.job_id = lj.id "
+                       "WHERE lj.id = %s AND pe.id = %s", (job_id, elem_planning_id))
+        row = cursor.fetchone()
+        if not row:
+            return False, "❌ Job ou élément planning introuvable"
+        if row['statut'] != 'PRÉVU':
+            return False, f"❌ Impossible de modifier un job {row['statut']}"
+
+        nouveau_poids = float(nouveau_pallox) * float(poids_unit)
+        nouveau_temps_h = (nouveau_poids / 1000) / float(nouvelle_cadence)
+        nouveau_duree_min = int(round(nouveau_temps_h * 60))
+
+        # Mettre à jour lavages_jobs
+        cursor.execute("""
+            UPDATE lavages_jobs
+            SET quantite_pallox = %s,
+                poids_brut_kg   = %s,
+                capacite_th     = %s,
+                temps_estime_heures = %s
+            WHERE id = %s AND statut = 'PRÉVU'
+        """, (int(nouveau_pallox), nouveau_poids, float(nouvelle_cadence),
+              nouveau_temps_h, job_id))
+
+        # Recalculer heure_fin dans planning_elements
+        cursor.execute("""
+            SELECT heure_debut FROM lavages_planning_elements WHERE id = %s
+        """, (elem_planning_id,))
+        pe_row = cursor.fetchone()
+        if pe_row and pe_row['heure_debut']:
+            h_deb = pe_row['heure_debut']
+            debut_min = h_deb.hour * 60 + h_deb.minute
+            fin_min = debut_min + nouveau_duree_min
+            from datetime import time as dtime
+            nouvelle_heure_fin = dtime(min(23, fin_min // 60), fin_min % 60)
+            cursor.execute("""
+                UPDATE lavages_planning_elements
+                SET duree_minutes = %s, heure_fin = %s
+                WHERE id = %s
+            """, (nouveau_duree_min, nouvelle_heure_fin, elem_planning_id))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, (f"✅ Job #{job_id} modifié — {int(nouveau_pallox)} pallox, "
+                      f"{nouveau_poids/1000:.1f} T, {nouveau_temps_h:.1f}h")
+
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
 
 def demarrer_job(job_id):
     """Démarre un job (PRÉVU → EN_COURS)"""
@@ -1783,17 +1863,25 @@ with tab1:
                                     css_class = "planned-prevu"
                                     statut_emoji = "🟢"
                                 
+                                # Emplacement source
+                                empl_site = elem.get('empl_site') or ''
+                                empl_code = elem.get('empl_code') or ''
+                                empl_ligne = f"<br>📍 {empl_site}/{empl_code}" if empl_code else ""
+                                # Produit affecté
+                                produits_aff = elem.get('produits_affectes') or ''
+                                produit_ligne = f"<br>🛒 {produits_aff}" if produits_aff else "<br><small>Sans affectation</small>"
+
                                 st.markdown(f"""<div class="{css_class}">
                                     <strong>{h_deb}</strong> {statut_emoji}<br>
                                     Job #{int(elem['job_id'])}{badge_source}<br>
-                                    🌱 {elem['variete']}{producteur_ligne}<br>
+                                    🌱 {elem['variete']}{producteur_ligne}{empl_ligne}{produit_ligne}<br>
                                     📦 {int(elem['quantite_pallox']) if pd.notna(elem['quantite_pallox']) else '?'}p<br>
                                     <small>→{h_fin}</small>
                                 </div>""", unsafe_allow_html=True)
                                 
                                 # Boutons action selon statut
                                 if job_statut == 'PRÉVU':
-                                    col_start, col_move, col_del = st.columns(3)
+                                    col_start, col_edit, col_move, col_del = st.columns(4)
                                     with col_start:
                                         if st.button("▶️", key=f"start_{elem['id']}", help="Démarrer"):
                                             success, msg = demarrer_job(int(elem['job_id']))
@@ -1802,6 +1890,10 @@ with tab1:
                                                 st.rerun()
                                             else:
                                                 st.error(msg)
+                                    with col_edit:
+                                        if st.button("✏️", key=f"edit_{elem['id']}", help="Modifier quantité / cadence"):
+                                            st.session_state[f'show_edit_{elem["id"]}'] = not st.session_state.get(f'show_edit_{elem["id"]}', False)
+                                            st.rerun()
                                     with col_move:
                                         if st.button("🔀", key=f"move_{elem['id']}", help="Déplacer"):
                                             st.session_state[f'show_move_{elem["id"]}'] = not st.session_state.get(f'show_move_{elem["id"]}', False)
@@ -1810,6 +1902,64 @@ with tab1:
                                         if st.button("❌", key=f"del_{elem['id']}", help="Retirer"):
                                             retirer_element_planning(int(elem['id']))
                                             st.rerun()
+                                    
+                                    # Formulaire inline modification quantité / cadence
+                                    if st.session_state.get(f'show_edit_{elem["id"]}', False):
+                                        elem_id_edit = int(elem['id'])
+                                        job_id_edit  = int(elem['job_id'])
+                                        pallox_actuel  = int(elem['quantite_pallox']) if pd.notna(elem['quantite_pallox']) else 1
+                                        poids_brut_act = float(elem['poids_brut_kg'])  if pd.notna(elem['poids_brut_kg'])  else 0
+                                        cadence_act    = float(elem['capacite_th'])    if pd.notna(elem.get('capacite_th')) and elem.get('capacite_th') else 13.0
+                                        # Poids unitaire déduit
+                                        poids_unit_act = round(poids_brut_act / pallox_actuel) if pallox_actuel > 0 else 1900
+
+                                        st.markdown("**✏️ Modifier le job**")
+                                        col_e1, col_e2 = st.columns(2)
+                                        with col_e1:
+                                            POIDS_UNIT_OPTS = {"Pallox (1900 kg)": 1900,
+                                                               "Petit Pallox (800 kg)": 800,
+                                                               "Big Bag (1600 kg)": 1600}
+                                            # Pré-sélection type conditionnement le plus proche
+                                            closest_key = min(POIDS_UNIT_OPTS, key=lambda k: abs(POIDS_UNIT_OPTS[k] - poids_unit_act))
+                                            type_cond_edit = st.selectbox("Type cond.", list(POIDS_UNIT_OPTS.keys()),
+                                                index=list(POIDS_UNIT_OPTS.keys()).index(closest_key),
+                                                key=f"edit_type_{elem_id_edit}")
+                                            poids_unit_sel = POIDS_UNIT_OPTS[type_cond_edit]
+                                            nouveau_pallox = st.number_input(
+                                                "Nb pallox", min_value=1, value=pallox_actuel,
+                                                key=f"edit_pallox_{elem_id_edit}")
+                                        with col_e2:
+                                            lignes_cap = {l['code']: float(l['capacite_th']) for l in get_lignes_lavage()}
+                                            cap_max = lignes_cap.get(elem['ligne_lavage'], 13.0)
+                                            nouvelle_cadence = st.number_input(
+                                                "Cadence (T/h)", min_value=0.5,
+                                                max_value=float(cap_max),
+                                                value=min(cadence_act, cap_max),
+                                                step=0.5, key=f"edit_cadence_{elem_id_edit}")
+                                            nouveau_poids = nouveau_pallox * poids_unit_sel
+                                            nouveau_temps = (nouveau_poids / 1000) / nouvelle_cadence
+                                            st.metric("Nouveau poids", f"{nouveau_poids/1000:.1f} T")
+                                            st.metric("Nouveau temps", f"{nouveau_temps:.1f} h")
+
+                                        col_ok_e, col_ann_e = st.columns(2)
+                                        with col_ok_e:
+                                            if st.button("✅ Valider", key=f"edit_ok_{elem_id_edit}",
+                                                         type="primary", use_container_width=True):
+                                                ok, msg_e = modifier_job(
+                                                    job_id_edit, elem_id_edit,
+                                                    nouveau_pallox, poids_unit_sel, nouvelle_cadence
+                                                )
+                                                if ok:
+                                                    st.session_state.pop(f'show_edit_{elem_id_edit}', None)
+                                                    st.success(msg_e)
+                                                    st.rerun()
+                                                else:
+                                                    st.error(msg_e)
+                                        with col_ann_e:
+                                            if st.button("✖", key=f"edit_ann_{elem_id_edit}",
+                                                         use_container_width=True):
+                                                st.session_state.pop(f'show_edit_{elem_id_edit}', None)
+                                                st.rerun()
                                     
                                     # Formulaire inline de déplacement
                                     if st.session_state.get(f'show_move_{elem["id"]}', False):
