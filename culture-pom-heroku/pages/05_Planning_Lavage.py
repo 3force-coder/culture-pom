@@ -412,6 +412,120 @@ def trouver_prochain_creneau_libre(planning_df, date_cible, ligne, heure_souhait
     message = f"ℹ️ Repositionné à {heure_proposee.strftime('%H:%M')} (créneau {heure_souhaitee.strftime('%H:%M')} occupé)"
     return heure_proposee, True, message
 
+def inserer_pause_dans_job(job_planning_id, temps_custom_id, duree_pause_min, annee, semaine):
+    """
+    Insère une pause à l'intérieur d'un job planifié.
+    - La pause démarre immédiatement après heure_debut du job
+    - heure_fin du job est étendue de duree_pause_min
+    - Les éléments suivants (même date/ligne, heure_debut >= heure_fin originale du job)
+      sont décalés en cascade de duree_pause_min
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        # Récupérer le job planifié
+        cursor.execute("""
+            SELECT id, job_id, date_prevue, ligne_lavage,
+                   heure_debut, heure_fin, duree_minutes
+            FROM lavages_planning_elements
+            WHERE id = %s AND type_element = 'JOB'
+        """, (job_planning_id,))
+        job_elem = cursor.fetchone()
+        if not job_elem:
+            return False, "❌ Élément job introuvable"
+
+        h_deb_job = job_elem['heure_debut']
+        h_fin_job = job_elem['heure_fin']
+        if h_deb_job is None or h_fin_job is None:
+            return False, "❌ Heures du job non définies"
+
+        # Pause : commence immédiatement après heure_debut du job
+        pause_debut_min = h_deb_job.hour * 60 + h_deb_job.minute
+        pause_fin_min   = pause_debut_min + duree_pause_min
+        pause_h_debut   = time(min(23, pause_debut_min // 60), pause_debut_min % 60)
+        pause_h_fin     = time(min(23, pause_fin_min   // 60), pause_fin_min   % 60)
+
+        # Nouvelle heure_fin du job = ancienne + durée pause
+        job_fin_min_orig = h_fin_job.hour * 60 + h_fin_job.minute
+        new_job_fin_min  = job_fin_min_orig + duree_pause_min
+        new_job_h_fin    = time(min(23, new_job_fin_min // 60), new_job_fin_min % 60)
+
+        created_by = st.session_state.get('username', 'system')
+
+        # 1. Étendre heure_fin du job
+        cursor.execute("""
+            UPDATE lavages_planning_elements
+            SET heure_fin = %s
+            WHERE id = %s
+        """, (new_job_h_fin, job_planning_id))
+
+        # 2. Insérer la pause comme élément CUSTOM
+        cursor.execute("""
+            SELECT COALESCE(MAX(ordre_jour), 0) as max_ordre
+            FROM lavages_planning_elements
+            WHERE date_prevue = %s AND ligne_lavage = %s
+        """, (job_elem['date_prevue'], job_elem['ligne_lavage']))
+        next_ordre = (cursor.fetchone()['max_ordre'] or 0) + 1
+
+        cursor.execute("""
+            INSERT INTO lavages_planning_elements
+            (type_element, job_id, temps_custom_id, annee, semaine,
+             date_prevue, ligne_lavage, ordre_jour,
+             heure_debut, heure_fin, duree_minutes, created_by)
+            VALUES ('CUSTOM', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (job_elem['job_id'], temps_custom_id, annee, semaine,
+              job_elem['date_prevue'], job_elem['ligne_lavage'], next_ordre,
+              pause_h_debut, pause_h_fin, duree_pause_min, created_by))
+
+        # 3. Cascade : décaler tous les éléments suivants
+        # (heure_debut >= heure_fin ORIGINALE du job, exclu le job lui-même)
+        cursor.execute("""
+            SELECT id, heure_debut, heure_fin, duree_minutes
+            FROM lavages_planning_elements
+            WHERE date_prevue = %s
+              AND ligne_lavage = %s
+              AND id != %s
+              AND heure_debut >= %s
+            ORDER BY heure_debut
+        """, (job_elem['date_prevue'], job_elem['ligne_lavage'],
+              job_planning_id, h_fin_job))
+
+        suivants = cursor.fetchall()
+        nb_decales = 0
+        for s in suivants:
+            if s['heure_debut'] is None:
+                continue
+            s_debut_min = s['heure_debut'].hour * 60 + s['heure_debut'].minute
+            s_duree     = int(s['duree_minutes'])
+            new_s_debut = s_debut_min + duree_pause_min
+            new_s_fin   = new_s_debut + s_duree
+            new_s_h_deb = time(min(23, new_s_debut // 60), new_s_debut % 60)
+            new_s_h_fin = time(min(23, new_s_fin   // 60), new_s_fin   % 60)
+            cursor.execute("""
+                UPDATE lavages_planning_elements
+                SET heure_debut = %s, heure_fin = %s
+                WHERE id = %s
+            """, (new_s_h_deb, new_s_h_fin, s['id']))
+            nb_decales += 1
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        msg = (f"✅ Pause insérée dans Job #{job_elem['job_id']} "
+               f"({pause_h_debut.strftime('%H:%M')}→{pause_h_fin.strftime('%H:%M')}) "
+               f"— Job étendu jusqu'à {new_job_h_fin.strftime('%H:%M')}")
+        if nb_decales:
+            msg += f" — {nb_decales} élément(s) suivant(s) décalé(s)"
+        return True, msg
+
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+
 def ajouter_element_planning(type_element, job_id, temps_custom_id, date_prevue, ligne_lavage, 
                              duree_minutes, annee, semaine, heure_debut_choisie):
     """Ajoute un élément au planning"""
@@ -1996,21 +2110,82 @@ with tab1:
                 if is_admin() and st.button("🗑️", key=f"del_tc_{tc['id']}"):
                     supprimer_temps_custom(tc['id'])
                     st.rerun()
-            
+
+            # Mode : créneau libre ou dans un job
+            mode_tc = st.radio(
+                "Insérer",
+                ["Créneau libre", "Dans un job"],
+                key=f"mode_tc_{tc['id']}",
+                horizontal=True,
+                label_visibility="collapsed"
+            )
+
             jours_tc = ["Sélectionner..."] + [f"{['Lun','Mar','Mer','Jeu','Ven','Sam'][i]} {(week_start + timedelta(days=i)).strftime('%d/%m')}" for i in range(6)]
             jour_tc = st.selectbox("Jour", jours_tc, key=f"jour_tc_{tc['id']}", label_visibility="collapsed")
+
             if jour_tc != "Sélectionner...":
                 jour_idx = jours_tc.index(jour_tc) - 1
                 date_cible = week_start + timedelta(days=jour_idx)
-                h_debut = horaires_config.get(jour_idx, {}).get('debut', time(5, 0))
-                heure_tc = st.time_input("Heure", value=h_debut, step=900, key=f"heure_tc_{tc['id']}", label_visibility="collapsed")
-                heure_optimale_tc, _, msg_info_tc = trouver_prochain_creneau_libre(planning_df, date_cible, st.session_state.selected_ligne, heure_tc, tc['duree_minutes'])
-                if msg_info_tc:
-                    st.info(msg_info_tc)
-                if st.button("✅", key=f"confirm_tc_{tc['id']}", use_container_width=True):
-                    success, msg = ajouter_element_planning('CUSTOM', None, int(tc['id']), date_cible, st.session_state.selected_ligne, tc['duree_minutes'], annee, semaine, heure_optimale_tc)
-                    if success:
-                        st.rerun()
+                jour_str_tc = str(date_cible)
+
+                if mode_tc == "Créneau libre":
+                    # Comportement existant
+                    h_debut = horaires_config.get(jour_idx, {}).get('debut', time(5, 0))
+                    heure_tc = st.time_input("Heure", value=h_debut, step=900, key=f"heure_tc_{tc['id']}", label_visibility="collapsed")
+                    heure_optimale_tc, _, msg_info_tc = trouver_prochain_creneau_libre(
+                        planning_df, date_cible, st.session_state.selected_ligne,
+                        heure_tc, tc['duree_minutes'])
+                    if msg_info_tc:
+                        st.info(msg_info_tc)
+                    if st.button("✅", key=f"confirm_tc_{tc['id']}", use_container_width=True):
+                        success, msg = ajouter_element_planning(
+                            'CUSTOM', None, int(tc['id']), date_cible,
+                            st.session_state.selected_ligne,
+                            tc['duree_minutes'], annee, semaine, heure_optimale_tc)
+                        if success:
+                            st.rerun()
+                        else:
+                            st.error(msg)
+
+                else:
+                    # Mode "Dans un job" — lister les jobs PRÉVU/EN_COURS du jour/ligne
+                    if not planning_df.empty:
+                        mask_jobs = (
+                            (planning_df['date_prevue'].astype(str) == jour_str_tc) &
+                            (planning_df['ligne_lavage'] == st.session_state.selected_ligne) &
+                            (planning_df['type_element'] == 'JOB') &
+                            (planning_df['job_statut'].isin(['PRÉVU', 'EN_COURS']))
+                        )
+                        jobs_du_jour = planning_df[mask_jobs]
+                    else:
+                        jobs_du_jour = pd.DataFrame()
+
+                    if jobs_du_jour.empty:
+                        st.caption("Aucun job PRÉVU/EN_COURS ce jour sur cette ligne")
+                    else:
+                        job_opts = {
+                            f"Job #{int(r['job_id'])} — {r['variete']} ({r['heure_debut'].strftime('%H:%M') if pd.notna(r['heure_debut']) else '?'})": int(r['id'])
+                            for _, r in jobs_du_jour.iterrows()
+                        }
+                        job_sel_label = st.selectbox(
+                            "Choisir le job",
+                            list(job_opts.keys()),
+                            key=f"job_cible_tc_{tc['id']}",
+                            label_visibility="collapsed"
+                        )
+                        job_planning_id_sel = job_opts[job_sel_label]
+
+                        st.caption(f"⏸️ Pause de {tc['duree_minutes']} min insérée au début du job — heure_fin étendue + éléments suivants décalés")
+
+                        if st.button("✅ Insérer pause", key=f"confirm_tc_job_{tc['id']}", type="primary", use_container_width=True):
+                            success, msg = inserer_pause_dans_job(
+                                job_planning_id_sel, int(tc['id']),
+                                tc['duree_minutes'], annee, semaine)
+                            if success:
+                                st.success(msg)
+                                st.rerun()
+                            else:
+                                st.error(msg)
         
         with st.expander("➕ Créer temps"):
             new_lib = st.text_input("Libellé", key="new_tc_lib")
