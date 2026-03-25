@@ -1605,19 +1605,58 @@ with tab1:
             
             col_nb, col_type = st.columns([1, 2])
             with col_nb:
-                nb_pallox_lave = st.number_input("Nb Pallox", min_value=0, value=max(1, int(poids_brut * 0.75 / 1900)), key=f"nb_lave_full_{job_en_terminaison}")
+                nb_pallox_lave = st.number_input("Nb Pallox", min_value=0,
+                    value=max(1, int(poids_brut * 0.75 / 1900)),
+                    key=f"nb_lave_full_{job_en_terminaison}")
             with col_type:
-                type_lave = st.selectbox("Type conditionnement", TYPES_COND, key=f"type_lave_full_{job_en_terminaison}")
+                type_lave = st.selectbox("Type conditionnement", TYPES_COND,
+                    key=f"type_lave_full_{job_en_terminaison}")
             
-            poids_lave_auto = nb_pallox_lave * POIDS_UNIT[type_lave]
-            st.metric("Poids calculé", f"{poids_lave_auto:,.0f} kg", help=f"{nb_pallox_lave} × {POIDS_UNIT[type_lave]} kg")
-            p_lave = st.number_input("Poids réel (kg)", 0.0, poids_brut*1.2, float(poids_lave_auto), step=100.0, key=f"p_lave_full_{job_en_terminaison}")
-            
+            poids_unit_lave = POIDS_UNIT[type_lave]
+
+            # ── Calculateur pesées individuelles ──
+            with st.expander("🔢 Calculer depuis pesées individuelles"):
+                st.caption("Saisir le poids de chaque pallox pesé (kg) séparé par des espaces ou virgules")
+                pesees_lave_raw = st.text_input(
+                    "Pesées (kg)", placeholder="ex: 1920 1850 1935 1780",
+                    key=f"pesees_lave_{job_en_terminaison}")
+                pesees_lave = []
+                if pesees_lave_raw:
+                    import re as _re
+                    tokens = _re.split(r"[,;\s]+", pesees_lave_raw.strip())
+                    for t in tokens:
+                        try:
+                            v = float(t)
+                            if v > 0:
+                                pesees_lave.append(v)
+                        except ValueError:
+                            pass
+                if pesees_lave:
+                    moy_lave = sum(pesees_lave) / len(pesees_lave)
+                    poids_moy_lave_calc = moy_lave * nb_pallox_lave
+                    col_pm1, col_pm2, col_pm3 = st.columns(3)
+                    col_pm1.metric(f"Nb pesées", len(pesees_lave))
+                    col_pm2.metric("Poids moyen/pallox", f"{moy_lave:,.0f} kg")
+                    col_pm3.metric(f"→ Total ({nb_pallox_lave}p)", f"{poids_moy_lave_calc:,.0f} kg")
+                    poids_lave_auto = poids_moy_lave_calc
+                else:
+                    poids_lave_auto = nb_pallox_lave * poids_unit_lave
+
+            # Si pas de pesées, calcul auto
+            if not pesees_lave_raw or not pesees_lave:
+                poids_lave_auto = nb_pallox_lave * poids_unit_lave
+
+            st.metric("⚖️ Poids retenu", f"{poids_lave_auto:,.0f} kg",
+                help=f"{nb_pallox_lave} × {poids_unit_lave if not pesees_lave else int(sum(pesees_lave)/len(pesees_lave))} kg")
+            p_lave = poids_lave_auto  # synchronisation automatique
+
             col_cal1, col_cal2 = st.columns(2)
             with col_cal1:
-                cal_min_lave = st.number_input("Calibre min (mm)", 0, 100, 35, key=f"cal_min_lave_full_{job_en_terminaison}")
+                cal_min_lave = st.number_input("Calibre min (mm)", 0, 100, 35,
+                    key=f"cal_min_lave_full_{job_en_terminaison}")
             with col_cal2:
-                cal_max_lave = st.number_input("Calibre max (mm)", 0, 100, 75, key=f"cal_max_lave_full_{job_en_terminaison}")
+                cal_max_lave = st.number_input("Calibre max (mm)", 0, 100, 75,
+                    key=f"cal_max_lave_full_{job_en_terminaison}")
         
         # ============ COLONNE GRENAILLES ============
         with col_gren:
@@ -1625,26 +1664,62 @@ with tab1:
             
             col_nb_g, col_type_g = st.columns([1, 2])
             with col_nb_g:
-                nb_pallox_gren = st.number_input("Nb Pallox", min_value=0, value=0, key=f"nb_gren_full_{job_en_terminaison}")
+                nb_pallox_gren = st.number_input("Nb Pallox", min_value=0, value=0,
+                    key=f"nb_gren_full_{job_en_terminaison}")
             with col_type_g:
-                type_gren = st.selectbox("Type conditionnement", TYPES_COND, key=f"type_gren_full_{job_en_terminaison}")
-            
-            poids_gren_auto = nb_pallox_gren * POIDS_UNIT[type_gren]
-            
+                type_gren = st.selectbox("Type conditionnement", TYPES_COND,
+                    key=f"type_gren_full_{job_en_terminaison}")
+
             if nb_pallox_gren > 0:
-                st.metric("Poids calculé", f"{poids_gren_auto:,.0f} kg", help=f"{nb_pallox_gren} × {POIDS_UNIT[type_gren]} kg")
-                p_gren = st.number_input("Poids réel (kg)", 0.0, poids_brut, float(poids_gren_auto), step=100.0, key=f"p_gren_full_{job_en_terminaison}")
-                
+                poids_unit_gren = POIDS_UNIT[type_gren]
+
+                # ── Calculateur pesées individuelles grenailles ──
+                with st.expander("🔢 Calculer depuis pesées individuelles"):
+                    st.caption("Saisir le poids de chaque pallox pesé (kg) séparé par des espaces ou virgules")
+                    pesees_gren_raw = st.text_input(
+                        "Pesées grenailles (kg)", placeholder="ex: 850 820 835",
+                        key=f"pesees_gren_{job_en_terminaison}")
+                    pesees_gren = []
+                    if pesees_gren_raw:
+                        import re as _re2
+                        tokens_g = _re2.split("[,; ]+", pesees_gren_raw.strip())
+                        for t in tokens_g:
+                            try:
+                                v = float(t)
+                                if v > 0:
+                                    pesees_gren.append(v)
+                            except ValueError:
+                                pass
+                    if pesees_gren:
+                        moy_gren = sum(pesees_gren) / len(pesees_gren)
+                        poids_moy_gren_calc = moy_gren * nb_pallox_gren
+                        col_gm1, col_gm2, col_gm3 = st.columns(3)
+                        col_gm1.metric("Nb pesées", len(pesees_gren))
+                        col_gm2.metric("Poids moyen/pallox", f"{moy_gren:,.0f} kg")
+                        col_gm3.metric(f"→ Total ({nb_pallox_gren}p)", f"{poids_moy_gren_calc:,.0f} kg")
+                        poids_gren_auto = poids_moy_gren_calc
+                    else:
+                        poids_gren_auto = nb_pallox_gren * poids_unit_gren
+
+                if not pesees_gren_raw or not pesees_gren:
+                    poids_gren_auto = nb_pallox_gren * poids_unit_gren
+
+                st.metric("⚖️ Poids retenu", f"{poids_gren_auto:,.0f} kg",
+                    help=f"{nb_pallox_gren} × {poids_unit_gren if not pesees_gren else int(sum(pesees_gren)/len(pesees_gren))} kg")
+                p_gren = poids_gren_auto  # synchronisation automatique
+
                 col_cal1_g, col_cal2_g = st.columns(2)
                 with col_cal1_g:
-                    cal_min_gren = st.number_input("Calibre min (mm)", 0, 100, 20, key=f"cal_min_gren_full_{job_en_terminaison}")
+                    cal_min_gren = st.number_input("Calibre min (mm)", 0, 100, 20,
+                        key=f"cal_min_gren_full_{job_en_terminaison}")
                 with col_cal2_g:
-                    cal_max_gren = st.number_input("Calibre max (mm)", 0, 100, 35, key=f"cal_max_gren_full_{job_en_terminaison}")
+                    cal_max_gren = st.number_input("Calibre max (mm)", 0, 100, 35,
+                        key=f"cal_max_gren_full_{job_en_terminaison}")
             else:
                 p_gren = 0.0
                 cal_min_gren = 20
                 cal_max_gren = 35
-                st.caption("ℹ️ Pas de grenailles - mettez Nb Pallox > 0 si besoin")
+                st.caption("ℹ️ Pas de grenailles — mettez Nb Pallox > 0 si besoin")
         
         st.markdown("---")
         
