@@ -1826,10 +1826,63 @@ with tab1:
         
         with col_dech:
             st.markdown("### 🗑️ Déchets")
-            p_dech = st.number_input("Poids déchets (kg)", 0.0, poids_brut, poids_brut*0.05, step=50.0, key=f"p_dech_full_{job_en_terminaison}")
-            
+
+            TYPES_CONT_DECH = {"Benne (5000 kg)": 5000, "Big Bag (1000 kg)": 1000,
+                               "Caisse (500 kg)": 500, "Autre": 0}
+
+            col_nd1, col_nd2 = st.columns([1, 2])
+            with col_nd1:
+                nb_cont_dech = st.number_input("Nb contenants", min_value=0,
+                    value=0, key=f"nb_cont_dech_{job_en_terminaison}")
+            with col_nd2:
+                type_cont_dech = st.selectbox("Type contenant", list(TYPES_CONT_DECH.keys()),
+                    key=f"type_cont_dech_{job_en_terminaison}")
+
+            poids_unit_dech = TYPES_CONT_DECH[type_cont_dech]
+
+            # Calculateur pesées individuelles déchets
+            with st.expander("🔢 Calculer depuis pesées individuelles"):
+                st.caption("Saisir le poids de chaque contenant pesé (kg) — espaces ou virgules")
+                pesees_dech_raw = st.text_input(
+                    "Pesées déchets (kg)", placeholder="ex: 4800 5100 4950",
+                    key=f"pesees_dech_{job_en_terminaison}")
+                pesees_dech = []
+                if pesees_dech_raw:
+                    import re as _re3
+                    for t in _re3.split("[,; ]+", pesees_dech_raw.strip()):
+                        try:
+                            v = float(t)
+                            if v > 0:
+                                pesees_dech.append(v)
+                        except ValueError:
+                            pass
+                if pesees_dech:
+                    moy_dech = sum(pesees_dech) / len(pesees_dech)
+                    poids_dech_calc = sum(pesees_dech)  # total direct des pesées
+                    col_dd1, col_dd2, col_dd3 = st.columns(3)
+                    col_dd1.metric("Nb pesées", len(pesees_dech))
+                    col_dd2.metric("Poids moyen", f"{moy_dech:,.0f} kg")
+                    col_dd3.metric("→ Total", f"{poids_dech_calc:,.0f} kg")
+                    poids_dech_auto = poids_dech_calc
+                else:
+                    poids_dech_auto = (nb_cont_dech * poids_unit_dech
+                                       if poids_unit_dech > 0 else 0)
+
+            # Calcul auto si pas de pesées
+            if not pesees_dech_raw or not pesees_dech:
+                poids_dech_auto = (nb_cont_dech * poids_unit_dech
+                                   if poids_unit_dech > 0 and nb_cont_dech > 0 else 0)
+
+            # Ajustement manuel si nécessaire
+            p_dech = st.number_input(
+                "Poids déchets (kg) — ajustable",
+                min_value=0.0, max_value=float(poids_brut),
+                value=float(poids_dech_auto),
+                step=50.0, key=f"p_dech_full_{job_en_terminaison}",
+                help="Calculé automatiquement — modifiable si besoin")
+
             p_terre = poids_brut - p_lave - p_gren - p_dech
-            
+
             if p_terre < 0:
                 st.error(f"❌ Terre : {p_terre:,.0f} kg (NÉGATIF !)")
                 terre_ok = False
