@@ -1237,29 +1237,78 @@ with tab_maj:
             )
 
             st.markdown("---")
-            df_merged  = df_edited.merge(df_original, on='id', how='left')
-            df_merged['nombre_unites']  = pd.to_numeric(df_merged['nombre_unites'],  errors='coerce').fillna(0)
-            df_merged['poids_total_kg'] = pd.to_numeric(df_merged['poids_total_kg'], errors='coerce').fillna(0)
-            df_merged['nb_old']         = pd.to_numeric(df_merged['nb_old'],         errors='coerce').fillna(0)
-            df_merged['poids_old']      = pd.to_numeric(df_merged['poids_old'],      errors='coerce').fillna(0)
+
+            # ── Recalcul cohérence poids / pallox ────────────────────────
+            # data_editor peut retourner des colonnes numériques en object → forcer la conversion
+            df_calc = df_edited.copy()
+            df_calc['nombre_unites']       = pd.to_numeric(df_calc['nombre_unites'],       errors='coerce').fillna(0)
+            df_calc['poids_total_kg']      = pd.to_numeric(df_calc['poids_total_kg'],      errors='coerce').fillna(0)
+            df_calc['poids_unitaire_reel'] = pd.to_numeric(df_calc['poids_unitaire_reel'], errors='coerce')
+
+            # Valeurs originales pour détecter ce qui a changé
+            df_merged = df_calc.merge(df_original, on='id', how='left')
+            df_merged['nb_old']    = pd.to_numeric(df_merged['nb_old'],    errors='coerce').fillna(0)
+            df_merged['poids_old'] = pd.to_numeric(df_merged['poids_old'], errors='coerce').fillna(0)
+            df_merged['pu_old']    = pd.to_numeric(
+                df_maj.set_index('id')['poids_unitaire_reel'].reindex(df_merged['id']).values,
+                errors='coerce'
+            )
+
+            pallox_change = df_merged['nombre_unites']       != df_merged['nb_old']
+            poids_change  = df_merged['poids_total_kg'].round(1) != df_merged['poids_old'].round(1)
+            pu_change     = df_merged['poids_unitaire_reel'].round(1) != df_merged['pu_old'].fillna(0).round(1)
+
+            # Règles de recalcul (appliquées ligne par ligne) :
+            #   1. pallox change OU poids_unitaire change (sans que poids_total ait changé)
+            #      → poids_total = pallox × poids_unitaire
+            #   2. poids_total change seul (pallox et poids_unitaire inchangés)
+            #      → poids_unitaire = poids_total / pallox  (si pallox > 0)
+            #   3. tout change en même temps → règle 1 prime (pallox × poids_unitaire)
+            recalc_total = (pallox_change | pu_change) & ~(poids_change & ~pallox_change & ~pu_change)
+            recalc_pu    = poids_change & ~pallox_change & ~pu_change
+
+            for idx in df_merged[recalc_total].index:
+                nb  = df_merged.at[idx, 'nombre_unites']
+                pu  = df_merged.at[idx, 'poids_unitaire_reel']
+                if pd.notna(pu) and pu > 0:
+                    df_merged.at[idx, 'poids_total_kg'] = round(nb * pu, 1)
+
+            for idx in df_merged[recalc_pu].index:
+                nb  = df_merged.at[idx, 'nombre_unites']
+                pds = df_merged.at[idx, 'poids_total_kg']
+                if nb > 0:
+                    df_merged.at[idx, 'poids_unitaire_reel'] = round(pds / nb, 1)
+
+            # ── Détection lignes réellement modifiées (après recalcul) ───
             df_changed = df_merged[
-                (df_merged['nombre_unites'] != df_merged['nb_old']) |
-                (df_merged['poids_total_kg'].round(1) != df_merged['poids_old'].round(1))
+                (df_merged['nombre_unites']       != df_merged['nb_old']) |
+                (df_merged['poids_total_kg'].round(1) != df_merged['poids_old'].round(1)) |
+                (df_merged['statut_lavage']        != df_maj.set_index('id')['statut_lavage'].reindex(df_merged['id']).values)
             ]
 
             if df_changed.empty:
                 st.info("Aucune modification détectée.")
             else:
-                st.markdown(f"**{len(df_changed)} ligne(s) modifiée(s) :**")
+                st.markdown(f"**{len(df_changed)} ligne(s) modifiée(s) — valeurs après recalcul :**")
                 st.dataframe(
                     df_changed[['code_lot_interne','nom_usage','site_stockage','emplacement_stockage',
-                                'nb_old','nombre_unites','poids_old','poids_total_kg']].rename(columns={
-                        'code_lot_interne':'Code lot','nom_usage':'Nom lot',
-                        'site_stockage':'Site','emplacement_stockage':'Emplacement',
-                        'nb_old':'Pallox avant','nombre_unites':'Pallox après',
-                        'poids_old':'Poids avant (kg)','poids_total_kg':'Poids après (kg)',
+                                'nb_old','nombre_unites','poids_old','poids_total_kg','poids_unitaire_reel']].rename(columns={
+                        'code_lot_interne':    'Code lot',
+                        'nom_usage':           'Nom lot',
+                        'site_stockage':       'Site',
+                        'emplacement_stockage':'Emplacement',
+                        'nb_old':              'Pallox avant',
+                        'nombre_unites':       'Pallox après',
+                        'poids_old':           'Poids avant (kg)',
+                        'poids_total_kg':      'Poids après (kg)',
+                        'poids_unitaire_reel': 'Poids unit. (kg)',
                     }),
                     use_container_width=True, hide_index=True,
+                    column_config={
+                        "Poids avant (kg)":  st.column_config.NumberColumn(format="%.1f"),
+                        "Poids après (kg)":  st.column_config.NumberColumn(format="%.1f"),
+                        "Poids unit. (kg)":  st.column_config.NumberColumn(format="%.1f"),
+                    }
                 )
 
                 if st.button(f"💾 Confirmer {len(df_changed)} modification(s)",
