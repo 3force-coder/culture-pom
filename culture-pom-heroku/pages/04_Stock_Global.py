@@ -1238,6 +1238,10 @@ with tab_maj:
 
             st.markdown("---")
             df_merged  = df_edited.merge(df_original, on='id', how='left')
+            df_merged['nombre_unites']  = pd.to_numeric(df_merged['nombre_unites'],  errors='coerce').fillna(0)
+            df_merged['poids_total_kg'] = pd.to_numeric(df_merged['poids_total_kg'], errors='coerce').fillna(0)
+            df_merged['nb_old']         = pd.to_numeric(df_merged['nb_old'],         errors='coerce').fillna(0)
+            df_merged['poids_old']      = pd.to_numeric(df_merged['poids_old'],      errors='coerce').fillna(0)
             df_changed = df_merged[
                 (df_merged['nombre_unites'] != df_merged['nb_old']) |
                 (df_merged['poids_total_kg'].round(1) != df_merged['poids_old'].round(1))
@@ -1262,11 +1266,11 @@ with tab_maj:
                              key="btn_confirmer_maj_masse", type="primary"):
                     modifications = [{
                         'id':                    int(row['id']),
-                        'nombre_unites_new':     int(row['nombre_unites']),
+                        'nombre_unites_new':     int(float(row['nombre_unites'])),
                         'poids_total_kg_new':    float(row['poids_total_kg']),
                         'poids_unitaire_reel_new': float(row['poids_unitaire_reel']) if pd.notna(row.get('poids_unitaire_reel')) else None,
                         'statut_lavage_new':     row.get('statut_lavage'),
-                        'nombre_unites_old':     int(row['nb_old']),
+                        'nombre_unites_old':     int(float(row['nb_old'])),
                         'poids_total_kg_old':    float(row['poids_old']),
                     } for _, row in df_changed.iterrows()]
 
