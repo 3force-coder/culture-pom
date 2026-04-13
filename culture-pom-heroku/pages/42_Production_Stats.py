@@ -439,7 +439,11 @@ def calc_journalier(df):
                      'tonnage': t, 'duree_h': h,
                      'cadence': cad, 'objectif': obj, 'ro_pct': ro,
                      'date': g['date_production'].iloc[0]})
-    return pd.DataFrame(rows).sort_values('date')
+    if not rows:
+        return pd.DataFrame()
+    df_out = pd.DataFrame(rows)
+    df_out['date'] = pd.to_datetime(df_out['date'], errors='coerce')
+    return df_out.sort_values('date')
 
 def ro_badge(val):
     if val is None: return "—"
