@@ -819,7 +819,13 @@ with tab1:
         # Formatage
         df_d = df_f.copy()
         df_d['Stock (T)'] = df_d['stock_tonnes'].apply(lambda x: f"{x:+.3f}")
-        df_d['Sur-Emb.'] = df_d['total_sur_emb'].apply(lambda x: f"{int(x):+d}" if pd.notna(x) else "0")
+        def _fmt_sur_emb(row):
+            se = int(row['total_sur_emb']) if pd.notna(row['total_sur_emb']) else 0
+            if se == 0 and row.get('total_uvc', 0) > 0:
+                uvc_se = int(row['uvc_par_suremb']) if pd.notna(row.get('uvc_par_suremb')) and row['uvc_par_suremb'] > 0 else 1
+                se = round(int(row['total_uvc']) / uvc_se)
+            return f"{se:+d}"
+        df_d['Sur-Emb.'] = df_d.apply(_fmt_sur_emb, axis=1)
         df_d['UVC'] = df_d['total_uvc'].apply(lambda x: f"{int(x):,}".replace(',', ' ') if pd.notna(x) else "0")
         
         def format_fraicheur(age):
@@ -866,13 +872,17 @@ with tab1:
             marque_sel = sel_row.get('marque', '')
             libelle_sel = sel_row.get('libelle', code_sel)
             date_prod_sel = sel_row.get('date_production')
-            stock_se = int(sel_row.get('total_sur_emb', 0))
             stock_uvc = int(sel_row.get('total_uvc', 0))
             stock_t = float(sel_row.get('stock_tonnes', 0))
             se_id_sel = sel_row.get('sur_emballage_id')
             se_lib_sel = sel_row.get('sur_emballage_libelle', 'N/A')
             poids_unit_sel = float(sel_row.get('poids_unitaire_kg', 0)) if sel_row.get('poids_unitaire_kg') else 0
             uvc_par_se_sel = int(sel_row.get('uvc_par_suremb', 1)) if sel_row.get('uvc_par_suremb') else 1
+            # Sur-emballages : utiliser la valeur BDD, ou recalculer depuis UVC si vaut 0
+            _total_se_raw = int(sel_row.get('total_sur_emb', 0))
+            stock_se = _total_se_raw if _total_se_raw != 0 else (
+                round(stock_uvc / uvc_par_se_sel) if uvc_par_se_sel > 0 and stock_uvc > 0 else 0
+            )
             
             date_prod_str = date_prod_sel.strftime('%d/%m/%Y') if pd.notna(date_prod_sel) else "N/A"
             
@@ -887,8 +897,10 @@ with tab1:
             if stock_reserve_t > 0:
                 st.info(f"⚠️ Stock réservé : **{stock_reserve_t:.3f} T** — Stock disponible réel : **{stock_dispo_t:.3f} T**")
 
-            if stock_se <= 0:
+            if stock_t <= 0:
                 st.warning("Stock à 0 — aucune sortie possible")
+            elif stock_se <= 0:
+                st.warning("⚠️ Nombre de sur-emballages non renseigné — vérifiez les mouvements de ce produit.")
             else:
                 sc1, sc2, sc3 = st.columns(3)
                 
@@ -1277,10 +1289,19 @@ with tab3:
         # --- Validation ---
         can_save = True
         if poids_uvc_kg <= 0.001:
-            st.error("Le poids unitaire doit être supérieur à 0")
+            st.error("❌ Le poids unitaire doit être supérieur à 0")
             can_save = False
         if total_tonnes <= 0:
-            st.error("Le tonnage calculé est nul")
+            st.error("❌ Le tonnage calculé est nul")
+            can_save = False
+        if nb_se <= 0:
+            st.error("❌ Le nombre de sur-emballages doit être supérieur à 0")
+            can_save = False
+        if not se_id or se_id <= 0:
+            st.error("❌ Un sur-emballage valide est obligatoire pour enregistrer une entrée en stock")
+            can_save = False
+        if nb_uvc_par_se <= 0:
+            st.error("❌ Le nombre d'UVC par sur-emballage doit être supérieur à 0")
             can_save = False
         
         # --- Enregistrer ---
@@ -1441,11 +1462,20 @@ with tab4:
             with rb1:
                 poids_unit_r = float(row_r.get('poids_unitaire_kg', 0)) or 1.0
                 uvc_par_se_r = int(row_r.get('uvc_par_suremb', 1)) or 1
-                stock_se_r = int(row_r.get('total_sur_emb', 0))
-                nb_se_r = st.number_input(
-                    f"Nb sur-emballages * (dispo: {stock_se_r})",
-                    min_value=1, max_value=max(stock_se_r, 1),
-                    value=min(1, stock_se_r), step=1, key="res_nb")
+                _se_raw_r = int(row_r.get('total_sur_emb', 0))
+                # Fallback : recalculer depuis UVC si total_sur_emb vaut 0
+                stock_se_r = _se_raw_r if _se_raw_r > 0 else (
+                    round(int(row_r.get('total_uvc', 0)) / uvc_par_se_r)
+                    if uvc_par_se_r > 0 and int(row_r.get('total_uvc', 0)) > 0 else 0
+                )
+                if stock_se_r <= 0:
+                    st.warning("⚠️ Nombre de sur-emballages non calculable pour ce lot.")
+                    nb_se_r = 1
+                else:
+                    nb_se_r = st.number_input(
+                        f"Nb sur-emballages * (dispo: {stock_se_r})",
+                        min_value=1, max_value=max(stock_se_r, 1),
+                        value=1, step=1, key="res_nb")
             with rb2:
                 duree_r = st.selectbox("Durée réservation", [6, 12, 24, 48],
                                        index=2, format_func=lambda x: f"{x}h", key="res_duree")
