@@ -130,6 +130,7 @@ def get_stock_actuel():
                 ON m.sur_emballage_id = se.id
             GROUP BY m.code_produit_commercial, pc.marque, pc.libelle, pc.code_variete, 
                      m.date_production, m.sur_emballage_id, se.libelle
+            HAVING ROUND(SUM(m.quantite_tonnes)::numeric, 6) != 0
             ORDER BY m.date_production ASC NULLS LAST, SUM(m.quantite_tonnes) DESC
         """)
         rows = cursor.fetchall()
@@ -381,6 +382,250 @@ def widget_client(key_prefix, label="Client"):
         return choix
 
 
+
+def init_reservations_table():
+    """Crée la table pf_reservations si elle n'existe pas."""
+    try:
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS pf_reservations (
+                id                      SERIAL PRIMARY KEY,
+                code_produit_commercial VARCHAR(100) NOT NULL,
+                date_production         DATE,
+                sur_emballage_id        INTEGER,
+                nb_sur_emballages       INTEGER NOT NULL,
+                quantite_tonnes         NUMERIC(10,4) NOT NULL,
+                client                  VARCHAR(200),
+                vendeur                 VARCHAR(100),
+                reference_commande      VARCHAR(100),
+                notes                   TEXT,
+                statut                  VARCHAR(20) DEFAULT 'ACTIVE',
+                created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expire_at               TIMESTAMP NOT NULL,
+                converted_at            TIMESTAMP,
+                converted_by            VARCHAR(100)
+            )
+        """)
+        conn.commit(); cur.close(); conn.close()
+    except Exception:
+        pass
+
+
+def get_reservations_actives():
+    """Retourne les réservations actives non expirées."""
+    try:
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("""
+            SELECT r.*, 
+                   COALESCE(pc.marque, r.code_produit_commercial) as marque,
+                   COALESCE(pc.libelle, r.code_produit_commercial) as libelle,
+                   COALESCE(se.libelle, 'N/A') as sur_emb_libelle,
+                   EXTRACT(EPOCH FROM (r.expire_at - NOW())) / 3600 as heures_restantes
+            FROM pf_reservations r
+            LEFT JOIN ref_produits_commerciaux pc ON pc.code_produit = r.code_produit_commercial
+            LEFT JOIN ref_sur_emballages se ON se.id = r.sur_emballage_id
+            WHERE r.statut = 'ACTIVE' AND r.expire_at > NOW()
+            ORDER BY r.expire_at ASC
+        """)
+        rows = cur.fetchall(); cur.close(); conn.close()
+        return pd.DataFrame([dict(r) for r in rows]) if rows else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+def creer_reservation(code_produit, date_production, sur_emballage_id,
+                       nb_se, quantite_t, client, vendeur, ref, notes, duree_heures=24):
+    try:
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO pf_reservations
+                (code_produit_commercial, date_production, sur_emballage_id,
+                 nb_sur_emballages, quantite_tonnes, client, vendeur,
+                 reference_commande, notes, statut, expire_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'ACTIVE', NOW() + INTERVAL '%s hours')
+            RETURNING id
+        """, (code_produit, date_production, sur_emballage_id,
+              nb_se, quantite_t, client, vendeur, ref, notes, duree_heures))
+        new_id = cur.fetchone()['id']
+        conn.commit(); cur.close(); conn.close()
+        return True, f"✅ Réservation #{new_id} créée ({quantite_t:.3f} T pour {client})"
+    except Exception as e:
+        return False, f"❌ {str(e)}"
+
+
+def annuler_reservation(reservation_id):
+    try:
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute(
+            "UPDATE pf_reservations SET statut='ANNULEE' WHERE id=%s AND statut='ACTIVE'",
+            (reservation_id,)
+        )
+        conn.commit(); cur.close(); conn.close()
+        return True, f"Réservation #{reservation_id} annulée"
+    except Exception as e:
+        return False, str(e)
+
+
+def convertir_reservation_en_sortie(reservation_id, username):
+    """Annule la réservation et crée le mouvement de sortie correspondant."""
+    try:
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("""
+            SELECT * FROM pf_reservations WHERE id=%s AND statut='ACTIVE'
+        """, (reservation_id,))
+        r = cur.fetchone()
+        if not r:
+            cur.close(); conn.close()
+            return False, "Réservation introuvable ou déjà convertie"
+        # Créer le mouvement
+        iso = date.today().isocalendar()
+        cur.execute("""
+            INSERT INTO mouvements_produits_finis
+                (code_produit_commercial, type_mouvement, quantite_tonnes,
+                 date_mouvement, annee, semaine, sur_emballage_id,
+                 nb_sur_emballages, nb_uvc, poids_unitaire_kg, poids_total_kg,
+                 date_production, source, reference, client, notes, created_by)
+            VALUES (%s,'EXPEDITION',%s,NOW(),%s,%s,%s,%s,0,0,%s,%s,
+                    'RESERVATION',%s,%s,%s,%s)
+        """, (r['code_produit_commercial'],
+              -abs(float(r['quantite_tonnes'])),
+              iso[0], iso[1], r['sur_emballage_id'],
+              -abs(int(r['nb_sur_emballages'])),
+              -abs(float(r['quantite_tonnes'])) * 1000,
+              r['date_production'], r['reference_commande'],
+              r['client'], f"Depuis réservation #{reservation_id}", username))
+        # Marquer convertie
+        cur.execute("""
+            UPDATE pf_reservations
+            SET statut='CONVERTIE', converted_at=NOW(), converted_by=%s
+            WHERE id=%s
+        """, (username, reservation_id))
+        conn.commit(); cur.close(); conn.close()
+        return True, f"✅ Réservation #{reservation_id} convertie en sortie"
+    except Exception as e:
+        if 'conn' in locals(): conn.rollback()
+        return False, str(e)
+
+
+def get_stats_rotation(nb_semaines=8):
+    """Rotation par produit sur les N dernières semaines."""
+    try:
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                m.code_produit_commercial,
+                COALESCE(pc.marque,'') as marque,
+                COALESCE(pc.libelle, m.code_produit_commercial) as libelle,
+                SUM(m.quantite_tonnes) FILTER (WHERE m.quantite_tonnes > 0) as entrees_t,
+                ABS(SUM(m.quantite_tonnes) FILTER (WHERE m.quantite_tonnes < 0)) as sorties_t,
+                COUNT(DISTINCT CASE WHEN m.quantite_tonnes < 0 THEN m.date_mouvement END) as nb_jours_sortie,
+                MIN(m.date_mouvement) FILTER (WHERE m.quantite_tonnes > 0) as premiere_entree,
+                MAX(m.date_mouvement) FILTER (WHERE m.quantite_tonnes < 0) as derniere_sortie
+            FROM mouvements_produits_finis m
+            LEFT JOIN ref_produits_commerciaux pc ON pc.code_produit = m.code_produit_commercial
+            WHERE m.date_mouvement >= CURRENT_DATE - (%s * 7)
+            GROUP BY m.code_produit_commercial, pc.marque, pc.libelle
+            ORDER BY sorties_t DESC NULLS LAST
+        """, (nb_semaines,))
+        rows = cur.fetchall(); cur.close(); conn.close()
+        if not rows: return pd.DataFrame()
+        df = pd.DataFrame([dict(r) for r in rows])
+        for c in ['entrees_t', 'sorties_t']:
+            df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+        # Cadence journalière moyenne
+        df['cadence_j'] = df.apply(
+            lambda r: r['sorties_t'] / max(r['nb_jours_sortie'], 1), axis=1
+        )
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_alertes_stock_faible(seuil_t=1.0):
+    """Produits avec stock positif mais sous le seuil d'alerte."""
+    try:
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                m.code_produit_commercial,
+                COALESCE(pc.marque,'') as marque,
+                COALESCE(pc.libelle, m.code_produit_commercial) as libelle,
+                ROUND(SUM(m.quantite_tonnes)::numeric, 4) as stock_t,
+                MAX(m.date_mouvement) FILTER (WHERE m.quantite_tonnes < 0) as derniere_sortie
+            FROM mouvements_produits_finis m
+            LEFT JOIN ref_produits_commerciaux pc ON pc.code_produit = m.code_produit_commercial
+            GROUP BY m.code_produit_commercial, pc.marque, pc.libelle
+            HAVING ROUND(SUM(m.quantite_tonnes)::numeric, 4) > 0
+               AND ROUND(SUM(m.quantite_tonnes)::numeric, 4) < %s
+            ORDER BY stock_t ASC
+        """, (seuil_t,))
+        rows = cur.fetchall(); cur.close(); conn.close()
+        return pd.DataFrame([dict(r) for r in rows]) if rows else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_evolution_par_produit(nb_semaines=12):
+    """Évolution du stock par produit et par semaine."""
+    try:
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                code_produit_commercial,
+                annee, semaine,
+                CONCAT(annee, '-S', LPAD(semaine::text, 2, '0')) as semaine_label,
+                SUM(quantite_tonnes) FILTER (WHERE quantite_tonnes > 0) as entrees,
+                ABS(SUM(quantite_tonnes) FILTER (WHERE quantite_tonnes < 0)) as sorties,
+                SUM(quantite_tonnes) as mvt_net
+            FROM mouvements_produits_finis
+            WHERE date_mouvement >= CURRENT_DATE - (%s * 7)
+            GROUP BY code_produit_commercial, annee, semaine
+            ORDER BY code_produit_commercial, annee, semaine
+        """, (nb_semaines,))
+        rows = cur.fetchall(); cur.close(); conn.close()
+        return pd.DataFrame([dict(r) for r in rows]) if rows else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+
+def get_stock_disponible(code_produit, date_production=None, sur_emballage_id=None):
+    """Retourne le stock disponible (réel - réservations actives) pour un produit/lot."""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        # Stock réel
+        if date_production:
+            cursor.execute("""
+                SELECT COALESCE(ROUND(SUM(quantite_tonnes)::numeric, 6), 0) as stock
+                FROM mouvements_produits_finis
+                WHERE code_produit_commercial = %s
+                  AND date_production = %s
+                  AND (%s IS NULL OR sur_emballage_id = %s)
+            """, (code_produit, date_production, sur_emballage_id, sur_emballage_id))
+        else:
+            cursor.execute("""
+                SELECT COALESCE(ROUND(SUM(quantite_tonnes)::numeric, 6), 0) as stock
+                FROM mouvements_produits_finis
+                WHERE code_produit_commercial = %s
+            """, (code_produit,))
+        stock_reel = float(cursor.fetchone()['stock'])
+        # Réservations actives (non expirées, non converties)
+        cursor.execute("""
+            SELECT COALESCE(SUM(quantite_tonnes), 0) as reserv
+            FROM pf_reservations
+            WHERE code_produit_commercial = %s
+              AND statut = 'ACTIVE'
+              AND expire_at > NOW()
+              AND (%s IS NULL OR date_production = %s)
+        """, (code_produit, date_production, date_production))
+        stock_reserve = float(cursor.fetchone()['reserv'])
+        cursor.close(); conn.close()
+        return round(stock_reel - stock_reserve, 6)
+    except Exception:
+        return None
+
+
 def ajouter_mouvement(code_produit, type_mouvement, date_mouvement,
                       sur_emballage_id, nb_sur_emballages, nb_uvc, 
                       poids_unitaire_kg, poids_total_kg, quantite_tonnes,
@@ -497,8 +742,12 @@ st.markdown("---")
 # ONGLETS
 # ============================================================================
 
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📊 Stock Actuel", "📋 Historique", "📥 Entrée en Stock", "📈 Évolution"
+# Initialiser la table réservations si besoin
+init_reservations_table()
+
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "📊 Stock Actuel", "📋 Historique", "📥 Entrée en Stock",
+    "🔒 Réservations", "📈 Statistiques", "📊 Évolution"
 ])
 
 # ============================================================================
@@ -532,7 +781,7 @@ with tab1:
             marques = ["Toutes"] + sorted(df_stock['marque'].unique().tolist())
             filtre_marque = st.selectbox("Marque", marques, key="stock_filtre_marque")
         with col_f2:
-            opts_niv = ["Tous", "En stock (>0)", "Épuisé (≤0)"]
+            opts_niv = ["En stock (>0)", "Tous", "Épuisé (≤0)"]
             filtre_stock = st.selectbox("Niveau", opts_niv, key="stock_filtre_niveau")
         with col_f3:
             opts_fraich = ["Toutes", "🟢 J+0/J+1", "🟠 J+2", "🔴 J+3+"]
@@ -632,6 +881,12 @@ with tab1:
             st.markdown(f"**{marque_sel} {libelle_sel}** — "
                        f"Stock actuel : **{stock_se} {se_lib_sel}(s)** / {stock_uvc} UVC / {stock_t:.3f} T")
             
+            # Stock disponible réel (stock - réservations actives)
+            stock_dispo_t = get_stock_disponible(code_sel, date_prod_sel, int(se_id_sel) if se_id_sel else None)
+            stock_reserve_t = round(stock_t - (stock_dispo_t or stock_t), 6)
+            if stock_reserve_t > 0:
+                st.info(f"⚠️ Stock réservé : **{stock_reserve_t:.3f} T** — Stock disponible réel : **{stock_dispo_t:.3f} T**")
+
             if stock_se <= 0:
                 st.warning("Stock à 0 — aucune sortie possible")
             else:
@@ -677,7 +932,22 @@ with tab1:
                     f"**Reste** : {reste_se} {se_lib_sel}(s) / {reste_t:.3f} T"
                 )
                 
-                if st.button("📤 Valider la sortie", type="primary", use_container_width=True, key="btn_sortie"):
+                # Avertissement stock négatif avec confirmation
+                will_go_negative = (stock_t - t_sortie) < -0.001
+                if will_go_negative:
+                    st.warning(
+                        f"⚠️ Cette sortie (**{t_sortie:.3f} T**) dépasse le stock actuel "
+                        f"(**{stock_t:.3f} T**). Le stock deviendra négatif (**{stock_t - t_sortie:.3f} T**)."
+                    )
+                    confirm_neg = st.checkbox(
+                        "Je confirme cette sortie malgré le stock insuffisant (correction d'inventaire)",
+                        key="confirm_sortie_negative"
+                    )
+                else:
+                    confirm_neg = True
+
+                if st.button("📤 Valider la sortie", type="primary", use_container_width=True,
+                             key="btn_sortie", disabled=not confirm_neg):
                     username = st.session_state.get('username', 'inconnu')
                     
                     ok, msg = ajouter_mouvement(
@@ -1047,8 +1317,8 @@ with tab3:
 # ONGLET 4 : ÉVOLUTION
 # ============================================================================
 
-with tab4:
-    st.subheader("📈 Évolution du Stock")
+with tab6:
+    st.subheader("📊 Évolution du Stock")
     
     nb_sem = st.slider("Semaines", 4, 52, 12, key="evol_sem")
     df_evol = get_evolution_stock(nb_sem)
@@ -1079,5 +1349,297 @@ with tab4:
                 use_container_width=True, hide_index=True)
     else:
         st.info("📭 Pas assez de données pour le graphique")
+
+
+# ============================================================================
+# ONGLET 4 : RÉSERVATIONS
+# ============================================================================
+
+with tab4:
+    st.subheader("🔒 Réservations de Stock")
+    st.caption("*Réservez du stock pour un client avant l'expédition — expire automatiquement après 24h*")
+
+    # ─── Sous-onglets réservations ────────────────────────────────────────────
+    r_tab1, r_tab2 = st.tabs(["📋 Réservations actives", "➕ Nouvelle réservation"])
+
+    with r_tab1:
+        df_res = get_reservations_actives()
+        if df_res.empty:
+            st.info("✅ Aucune réservation active.")
+        else:
+            st.markdown(f"**{len(df_res)} réservation(s) active(s)**")
+            for _, r in df_res.iterrows():
+                hres = float(r.get('heures_restantes', 0))
+                color = "🟢" if hres > 8 else ("🟡" if hres > 2 else "🔴")
+                with st.container():
+                    rc1, rc2, rc3, rc4, rc5 = st.columns([2, 2, 1, 1, 2])
+                    with rc1:
+                        st.markdown(f"**{r.get('marque','')} {r.get('libelle','')}**")
+                        st.caption(f"Prod: {r['date_production'].strftime('%d/%m/%Y') if r.get('date_production') else '—'}")
+                    with rc2:
+                        st.markdown(f"👤 **{r.get('client','—')}**")
+                        st.caption(f"Vendeur: {r.get('vendeur','—')}")
+                    with rc3:
+                        st.metric("Tonnes", f"{float(r['quantite_tonnes']):.3f}")
+                    with rc4:
+                        st.markdown(f"{color} **{hres:.1f}h**")
+                        st.caption("restantes")
+                    with rc5:
+                        btn_col1, btn_col2 = st.columns(2)
+                        with btn_col1:
+                            if st.button("✅ Expédier", key=f"conv_{r['id']}", use_container_width=True):
+                                ok, msg = convertir_reservation_en_sortie(
+                                    int(r['id']), st.session_state.get('username','?'))
+                                if ok:
+                                    st.success(msg)
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+                        with btn_col2:
+                            if st.button("❌ Annuler", key=f"ann_{r['id']}", use_container_width=True):
+                                ok, msg = annuler_reservation(int(r['id']))
+                                if ok:
+                                    st.warning(msg)
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+                    if r.get('reference_commande'):
+                        st.caption(f"📎 Réf: {r['reference_commande']}")
+                    st.divider()
+
+    with r_tab2:
+        st.markdown("#### ➕ Créer une réservation")
+
+        df_stock_r = get_stock_actuel()
+        if df_stock_r.empty:
+            st.warning("Aucun stock disponible.")
+        else:
+            df_stock_r = df_stock_r[df_stock_r['stock_tonnes'] > 0]
+
+            ra1, ra2 = st.columns(2)
+            with ra1:
+                # Sélection produit disponible
+                opts_prod_r = df_stock_r.apply(
+                    lambda row: f"{row['code_produit_commercial']} | "
+                                f"{row.get('marque','')} {row.get('libelle','')} | "
+                                f"Prod: {row['date_production'].strftime('%d/%m/%Y') if pd.notna(row['date_production']) else '—'} | "
+                                f"Stock: {row['stock_tonnes']:.3f}T",
+                    axis=1
+                ).tolist()
+                idx_r = st.selectbox("Produit à réserver *", range(len(opts_prod_r)),
+                                     format_func=lambda i: opts_prod_r[i], key="res_prod")
+                row_r = df_stock_r.iloc[idx_r]
+                dispo_r = float(row_r['stock_disponible']) if 'stock_disponible' in row_r else float(row_r['stock_tonnes'])
+
+            with ra2:
+                client_r = widget_client("res", "Client *")
+                vendeur_r = st.text_input("Vendeur *", value=st.session_state.get('username',''), key="res_vendeur")
+
+            rb1, rb2, rb3 = st.columns(3)
+            with rb1:
+                poids_unit_r = float(row_r.get('poids_unitaire_kg', 0)) or 1.0
+                uvc_par_se_r = int(row_r.get('uvc_par_suremb', 1)) or 1
+                stock_se_r = int(row_r.get('total_sur_emb', 0))
+                nb_se_r = st.number_input(
+                    f"Nb sur-emballages * (dispo: {stock_se_r})",
+                    min_value=1, max_value=max(stock_se_r, 1),
+                    value=min(1, stock_se_r), step=1, key="res_nb")
+            with rb2:
+                duree_r = st.selectbox("Durée réservation", [6, 12, 24, 48],
+                                       index=2, format_func=lambda x: f"{x}h", key="res_duree")
+            with rb3:
+                ref_r = st.text_input("Référence commande", key="res_ref")
+
+            notes_r = st.text_input("Notes", key="res_notes")
+
+            qte_r = (nb_se_r * uvc_par_se_r * poids_unit_r) / 1000
+            se_id_r = row_r.get('sur_emballage_id')
+
+            st.info(f"**Réservation** : {nb_se_r} sur-emb. | {qte_r:.3f} T | "
+                    f"Expire dans {duree_r}h pour **{client_r or '—'}**")
+
+            if qte_r > dispo_r + 0.001:
+                st.error(f"⛔ Quantité ({qte_r:.3f}T) dépasse le stock disponible ({dispo_r:.3f}T).")
+                can_res = False
+            else:
+                can_res = True
+
+            if st.button("🔒 Créer la réservation", type="primary",
+                         use_container_width=True, key="btn_reserver",
+                         disabled=not can_res or not client_r):
+                ok, msg = creer_reservation(
+                    code_produit=row_r['code_produit_commercial'],
+                    date_production=row_r['date_production'] if pd.notna(row_r.get('date_production')) else None,
+                    sur_emballage_id=int(se_id_r) if se_id_r else None,
+                    nb_se=nb_se_r,
+                    quantite_t=qte_r,
+                    client=client_r,
+                    vendeur=vendeur_r,
+                    ref=ref_r,
+                    notes=notes_r,
+                    duree_heures=duree_r
+                )
+                if ok:
+                    st.success(msg)
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+
+# ============================================================================
+# ONGLET 5 : STATISTIQUES
+# ============================================================================
+
+with tab5:
+    st.subheader("📈 Statistiques & Analyses")
+
+    stat_tab1, stat_tab2, stat_tab3 = st.tabs([
+        "🔄 Rotation Produits", "⚠️ Alertes Stock Faible", "📅 Prévision Épuisement"
+    ])
+
+    # ─── Rotation ──────────────────────────────────────────────────────────────
+    with stat_tab1:
+        nb_sem_rot = st.slider("Période d'analyse (semaines)", 2, 26, 8, key="rot_sem")
+        df_rot = get_stats_rotation(nb_sem_rot)
+
+        if df_rot.empty:
+            st.info("Pas de données sur cette période.")
+        else:
+            st.markdown(f"**Rotation sur les {nb_sem_rot} dernières semaines**")
+
+            # KPIs
+            kc1, kc2, kc3 = st.columns(3)
+            kc1.metric("📦 Produits actifs", len(df_rot[df_rot['sorties_t'] > 0]))
+            kc2.metric("📤 Total sorties (T)", f"{df_rot['sorties_t'].sum():.1f}")
+            kc3.metric("📥 Total entrées (T)", f"{df_rot['entrees_t'].sum():.1f}")
+
+            st.markdown("---")
+
+            # Graphique barres entrées/sorties
+            df_rot_sorted = df_rot.sort_values('sorties_t', ascending=False).head(15)
+            fig_rot = go.Figure()
+            fig_rot.add_trace(go.Bar(
+                x=df_rot_sorted['code_produit_commercial'],
+                y=df_rot_sorted['entrees_t'],
+                name="Entrées (T)", marker_color="#AFCA0A", opacity=0.85
+            ))
+            fig_rot.add_trace(go.Bar(
+                x=df_rot_sorted['code_produit_commercial'],
+                y=df_rot_sorted['sorties_t'],
+                name="Sorties (T)", marker_color="#e53935", opacity=0.85
+            ))
+            fig_rot.update_layout(
+                barmode='group', title=f"Top 15 — Entrées vs Sorties ({nb_sem_rot} sem.)",
+                xaxis_tickangle=-35, height=420,
+                plot_bgcolor='white', paper_bgcolor='white',
+                legend=dict(orientation="h", yanchor="bottom", y=1.02)
+            )
+            st.plotly_chart(fig_rot, use_container_width=True)
+
+            # Tableau détail
+            df_rot_show = df_rot[['marque', 'libelle', 'entrees_t', 'sorties_t',
+                                   'nb_jours_sortie', 'cadence_j']].copy()
+            df_rot_show.columns = ['Marque', 'Libellé', 'Entrées (T)',
+                                    'Sorties (T)', 'Jours sortie', 'Cadence J (T/j)']
+            df_rot_show['Cadence J (T/j)'] = df_rot_show['Cadence J (T/j)'].round(3)
+            st.dataframe(df_rot_show, use_container_width=True, hide_index=True)
+
+    # ─── Alertes stock faible ──────────────────────────────────────────────────
+    with stat_tab2:
+        seuil = st.slider("Seuil d'alerte (T)", 0.1, 20.0, 2.0, step=0.1, key="seuil_alerte")
+        df_alerte = get_alertes_stock_faible(seuil)
+
+        if df_alerte.empty:
+            st.success(f"✅ Aucun produit sous le seuil de {seuil} T.")
+        else:
+            st.error(f"⚠️ **{len(df_alerte)} produit(s)** avec stock < {seuil} T")
+            for _, r in df_alerte.iterrows():
+                stock = float(r['stock_t'])
+                pct = min(stock / seuil * 100, 100)
+                col_a, col_b, col_c = st.columns([3, 1, 1])
+                with col_a:
+                    st.markdown(f"**{r.get('marque','')} {r.get('libelle','')}**")
+                    st.progress(pct / 100)
+                with col_b:
+                    st.metric("Stock", f"{stock:.3f} T")
+                with col_c:
+                    dern = r.get('derniere_sortie')
+                    if dern and pd.notna(dern):
+                        try:
+                            st.caption("Dern. sortie: " + pd.to_datetime(dern).strftime('%d/%m/%Y'))
+                        except Exception:
+                            pass
+
+    # ─── Prévision épuisement ──────────────────────────────────────────────────
+    with stat_tab3:
+        st.markdown("**Prévision d'épuisement basée sur la cadence des 4 dernières semaines**")
+        df_stock_prev = get_stock_actuel()
+        df_rot_prev = get_stats_rotation(nb_semaines=4)
+
+        if df_stock_prev.empty or df_rot_prev.empty:
+            st.info("Données insuffisantes pour la prévision.")
+        else:
+            # Agréger le stock par produit (toutes dates de prod confondues)
+            stock_par_prod = df_stock_prev.groupby('code_produit_commercial').agg(
+                stock_total=('stock_tonnes', 'sum'),
+                marque=('marque', 'first'),
+                libelle=('libelle', 'first')
+            ).reset_index()
+
+            # Fusionner avec cadence
+            df_prev = stock_par_prod.merge(
+                df_rot_prev[['code_produit_commercial', 'cadence_j', 'sorties_t']],
+                on='code_produit_commercial', how='left'
+            )
+            df_prev['cadence_j'] = df_prev['cadence_j'].fillna(0)
+            df_prev['stock_total'] = df_prev['stock_total'].clip(lower=0)
+
+            # Calcul jours restants
+            df_prev['jours_restants'] = df_prev.apply(
+                lambda r: round(r['stock_total'] / r['cadence_j'])
+                if r['cadence_j'] > 0.001 else None, axis=1
+            )
+            df_prev['date_epuisement'] = df_prev['jours_restants'].apply(
+                lambda j: (date.today() + timedelta(days=int(j))).strftime('%d/%m/%Y')
+                if j is not None and j < 365 else '> 1 an'
+            )
+
+            df_prev = df_prev[df_prev['stock_total'] > 0].sort_values('jours_restants', na_position='last')
+
+            # Graphique
+            df_chart = df_prev[df_prev['jours_restants'].notna()].head(15)
+            if not df_chart.empty:
+                colors = ['#e53935' if j <= 3 else ('#ff9800' if j <= 7 else '#AFCA0A')
+                          for j in df_chart['jours_restants']]
+                fig_prev = go.Figure(go.Bar(
+                    x=df_chart['code_produit_commercial'],
+                    y=df_chart['jours_restants'],
+                    marker_color=colors,
+                    text=df_chart['jours_restants'].apply(lambda x: f"{int(x)}j"),
+                    textposition='outside'
+                ))
+                fig_prev.add_hline(y=3, line_dash='dash', line_color='#e53935',
+                                   annotation_text='3 jours')
+                fig_prev.add_hline(y=7, line_dash='dash', line_color='#ff9800',
+                                   annotation_text='7 jours')
+                fig_prev.update_layout(
+                    title="Jours avant épuisement (cadence 4 sem.)",
+                    xaxis_tickangle=-35, height=400,
+                    plot_bgcolor='white', paper_bgcolor='white'
+                )
+                st.plotly_chart(fig_prev, use_container_width=True)
+
+            # Tableau
+            df_show_prev = df_prev[['marque', 'libelle', 'stock_total',
+                                     'cadence_j', 'jours_restants', 'date_epuisement']].copy()
+            df_show_prev.columns = ['Marque', 'Libellé', 'Stock (T)',
+                                     'Cadence (T/j)', 'Jours restants', 'Épuisement estimé']
+            df_show_prev['Stock (T)'] = df_show_prev['Stock (T)'].round(3)
+            df_show_prev['Cadence (T/j)'] = df_show_prev['Cadence (T/j)'].round(4)
+            st.dataframe(df_show_prev, use_container_width=True, hide_index=True)
+
 
 show_footer()
