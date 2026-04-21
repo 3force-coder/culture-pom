@@ -145,7 +145,7 @@ pages = {
     ],
     "🔧 Admin": [
         st.Page("pages/99_Admin_Users.py", title="Admin Users", icon="👥"),
-         st.Page("pages/99_Test_Calendar_POC.py", title="Admin calendar", icon="👥"),
+         st.Page("pages/43_Setup_RH_Contrats.py", title="Setup RH Contrats", icon="⚙️")
     ],
 }
 
