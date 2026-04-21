@@ -2713,6 +2713,7 @@ with tab3:
                     st.markdown("##### 📍 Emplacements BRUT disponibles")
                     
                     # Tableau emplacements
+                    emplacements_lot = emplacements_lot.reset_index(drop=True)
                     df_empl = emplacements_lot[['emplacement_id', 'site_stockage', 'emplacement_stockage', 'stock_total', 'pallox_reserves', 'nombre_unites', 'poids_total_kg', 'type_conditionnement']].copy()
                     df_empl = df_empl.rename(columns={
                         'site_stockage': 'Site',
