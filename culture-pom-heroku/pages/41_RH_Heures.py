@@ -49,6 +49,36 @@ SEUIL_HS_BONUS2 = 8.0    # Au-delà : 50%
 JOURS_SEMAINE   = 5
 HEURES_JOUR_REF = 7.0    # Référence journée normale
 
+# Jours fériés France 2025-2026
+JOURS_FERIES = {
+    date(2025, 1,  1), date(2025, 4, 21), date(2025, 5,  1), date(2025, 5,  8),
+    date(2025, 5, 29), date(2025, 6,  9), date(2025, 7, 14), date(2025, 8, 15),
+    date(2025, 11, 1), date(2025, 11,11), date(2025, 12,25),
+    date(2026, 1,  1), date(2026, 4,  6), date(2026, 5,  1), date(2026, 5,  8),
+    date(2026, 5, 14), date(2026, 5, 25), date(2026, 7, 14), date(2026, 8, 15),
+    date(2026, 11, 1), date(2026, 11,11), date(2026, 12,25),
+}
+
+def jours_ouvres_semaine(annee: int, semaine: int) -> int:
+    """Jours ouvrables réels (lun-ven hors fériés) d'une semaine ISO."""
+    lundi = date.fromisocalendar(annee, semaine, 1)
+    return sum(1 for i in range(5) if (lundi + timedelta(days=i)) not in JOURS_FERIES)
+
+@st.cache_data(ttl=300)
+def get_contrats() -> dict:
+    """Retourne {matricule: heures_contrat} depuis rh_contrats. Défaut = 35H."""
+    try:
+        conn = get_connection()
+        if not conn:
+            return {}
+        cur = conn.cursor()
+        cur.execute("SELECT matricule, heures_contrat FROM rh_contrats WHERE is_active = TRUE")
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+        return {str(r['matricule']): float(r['heures_contrat']) for r in rows}
+    except Exception:
+        return {}
+
 # Détection intérimaires/prestataires par préfixe matricule
 PREFIXES_INTERIM = ('ANDYS', 'INT', 'EXT', 'TEMP')
 
@@ -143,9 +173,27 @@ def importer_pointages(df: pd.DataFrame, username: str) -> tuple[bool, str, int,
     if not conn:
         return False, "Connexion BDD impossible.", 0, 0
 
-    nb_insert = nb_skip = 0
+    nb_insert = nb_update = 0
     try:
         cursor = conn.cursor()
+
+        # CORRECTION BUG IMPORT MULTIPLE
+        # La cle ON CONFLICT inclut l'atelier. Si l'atelier change entre
+        # deux imports pour un meme salarie/jour, l'ancienne ligne reste
+        # en base et les heures s'accumulent.
+        # Solution : purger les lignes de la meme semaine pour ces matricules,
+        # puis reinserer proprement.
+        semaines_fichier = df['annee_semaine'].unique().tolist()
+        matricules_fichier = df['matricule'].astype(str).str.strip().unique().tolist()
+        nb_purge = 0
+        for sem in semaines_fichier:
+            cursor.execute(
+                "DELETE FROM rh_pointages WHERE annee_semaine = %s AND matricule = ANY(%s)",
+                (sem, matricules_fichier)
+            )
+            nb_purge += cursor.rowcount
+
+        # INSERTION PROPRE
         for _, r in df.iterrows():
             try:
                 cursor.execute("""
@@ -183,20 +231,20 @@ def importer_pointages(df: pd.DataFrame, username: str) -> tuple[bool, str, int,
                 if res and res['inserted']:
                     nb_insert += 1
                 else:
-                    nb_skip += 1
+                    nb_update += 1
             except Exception:
-                nb_skip += 1
+                nb_update += 1
                 conn.rollback()
 
         conn.commit()
         cursor.close()
         conn.close()
-        return True, f"✅ {nb_insert} nouvelles lignes / {nb_skip} mises à jour", nb_insert, nb_skip
+        purge_msg = f" ({nb_purge} lignes purgees avant reimport)" if nb_purge > 0 else ""
+        return True, f"✅ {nb_insert} inserees / {nb_update} mises a jour{purge_msg}", nb_insert, nb_update
     except Exception as e:
         conn.rollback()
         conn.close()
         return False, f"Erreur BDD : {str(e)}", 0, 0
-
 
 # ============================================================
 # REQUÊTES BDD
@@ -279,14 +327,20 @@ def get_pointages_periode(date_debut: date, date_fin: date) -> pd.DataFrame:
 # CALCULS MÉTIER
 # ============================================================
 
-def calcul_hebdo(df: pd.DataFrame) -> pd.DataFrame:
+def calcul_hebdo(df: pd.DataFrame, contrats: dict = None) -> pd.DataFrame:
     """
-    Agrège par salarié × semaine, calcule heures sup, statut.
+    Agrege par salarie x semaine, calcule heures sup, statut.
+    contrats : {matricule: heures_contrat} — si None, charge depuis BDD.
+    Le seuil HS est personnalise par contrat (35H ou 39H).
+    Les jours attendus tiennent compte des jours feries.
     """
     if df.empty:
         return pd.DataFrame()
 
-    # Heures totales par salarié × semaine
+    if contrats is None:
+        contrats = get_contrats()
+
+    # Heures totales par salarie x semaine
     grp = (
         df.groupby(['annee_semaine', 'annee', 'semaine', 'matricule', 'nom', 'prenom', 'type_salarie'])
         ['nb_heures'].sum()
@@ -295,7 +349,7 @@ def calcul_hebdo(df: pd.DataFrame) -> pd.DataFrame:
     )
     grp['total_heures'] = grp['total_heures'].astype(float)
 
-    # Jours travaillés
+    # Jours travailles
     jours = (
         df.groupby(['annee_semaine', 'matricule'])
         ['date_pointage'].nunique()
@@ -304,22 +358,32 @@ def calcul_hebdo(df: pd.DataFrame) -> pd.DataFrame:
     )
     grp = grp.merge(jours, on=['annee_semaine', 'matricule'], how='left')
 
-    # Heures supplémentaires
-    grp['hs_total']   = (grp['total_heures'] - SEUIL_35H).clip(lower=0)
+    # Seuil contrat par salarie (35H par defaut)
+    grp['seuil_contrat'] = grp['matricule'].apply(
+        lambda m: contrats.get(str(m), SEUIL_35H)
+    )
+
+    # Jours ouvres reels de la semaine (hors feries)
+    grp['jours_ouvres'] = grp.apply(
+        lambda r: jours_ouvres_semaine(int(r['annee']), int(r['semaine'])), axis=1
+    )
+
+    # Heures supplementaires (au-dela du contrat)
+    grp['hs_total']   = (grp['total_heures'] - grp['seuil_contrat']).clip(lower=0)
     grp['hs_25pct']   = grp['hs_total'].clip(upper=SEUIL_HS_BONUS)
     grp['hs_50pct']   = (grp['hs_total'] - SEUIL_HS_BONUS).clip(lower=0)
 
-    # Écart vs 35H
-    grp['ecart_35h']  = grp['total_heures'] - SEUIL_35H
+    # Ecart vs contrat
+    grp['ecart_35h']  = grp['total_heures'] - grp['seuil_contrat']
 
-    # Statut individuel
+    # Statut individuel — reference = jours_ouvres (et non 5 fixe)
     def statut(row):
-        if row['total_heures'] >= SEUIL_35H:
+        if row['total_heures'] >= row['seuil_contrat']:
             if row['hs_total'] > 0:
                 return 'HS'
             return 'OK'
-        # Moins de 35H → absentéisme potentiel ou temps partiel
-        if row['jours_travailles'] < JOURS_SEMAINE:
+        # Moins que le contrat -> verifier si absence ou jour ferie
+        if row['jours_travailles'] < row['jours_ouvres']:
             return 'ABSENCE'
         return 'SOUS_35H'
 
@@ -330,24 +394,32 @@ def calcul_hebdo(df: pd.DataFrame) -> pd.DataFrame:
 
     return grp
 
-
-def calcul_absenteisme(df: pd.DataFrame, nb_salaries_ref: int) -> dict:
+def calcul_absenteisme(df: pd.DataFrame, nb_salaries_ref: int,
+                       annee: int = None, semaine: int = None) -> dict:
     """
-    Calcule un taux d'absentéisme hebdomadaire simplifié.
-    nb_salaries_ref = effectif de référence (jours × salariés attendus).
+    Calcule un taux d'absenteisme hebdomadaire.
+    Tient compte des jours feries : les jours attendus = jours_ouvres x nb_salaries.
+    annee, semaine : si fournis, calcul exact des jours ouvres de la semaine.
     """
     if df.empty or nb_salaries_ref == 0:
         return {}
-    jours_total_attendus = nb_salaries_ref * JOURS_SEMAINE
+
+    # Jours ouvres reels (hors feries) si semaine connue, sinon 5 par defaut
+    if annee and semaine:
+        jo = jours_ouvres_semaine(int(annee), int(semaine))
+    else:
+        jo = JOURS_SEMAINE
+
+    jours_total_attendus = nb_salaries_ref * jo
     jours_reels = df.groupby('matricule')['date_pointage'].nunique().sum()
-    taux = max(0, (jours_total_attendus - jours_reels) / jours_total_attendus * 100)
+    taux = max(0, (jours_total_attendus - jours_reels) / jours_total_attendus * 100) if jours_total_attendus > 0 else 0
     return {
         'jours_attendus': jours_total_attendus,
+        'jours_ouvres_semaine': jo,
         'jours_reels': int(jours_reels),
-        'jours_manquants': int(jours_total_attendus - jours_reels),
+        'jours_manquants': int(max(0, jours_total_attendus - jours_reels)),
         'taux_pct': round(taux, 1),
     }
-
 
 # ============================================================
 # COMPOSANTS VISUELS
@@ -630,6 +702,9 @@ st.markdown("---")
 # ONGLETS PRINCIPAUX
 # ============================================================
 
+# Charger les contrats une fois pour toute la page
+_contrats_page = get_contrats()
+
 tab_import, tab_semaine, tab_evolution, tab_salarie, tab_ateliers = st.tabs([
     "📥 Import",
     "📅 Semaine",
@@ -683,7 +758,7 @@ with tab_import:
                 st.dataframe(df_prev[cols_ap].head(20), use_container_width=True, hide_index=True)
 
             # Résumé hebdo en aperçu
-            hebdo = calcul_hebdo(df_prev)
+            hebdo = calcul_hebdo(df_prev, contrats=_contrats_page)
             if not hebdo.empty:
                 nb_hs    = len(hebdo[hebdo['statut'] == 'HS'])
                 nb_abs   = len(hebdo[hebdo['statut'] == 'ABSENCE'])
@@ -752,7 +827,7 @@ with tab_semaine:
             if filtre_type != "Tous":
                 df_sem = df_sem[df_sem['type_salarie'] == filtre_type]
 
-            df_hebdo = calcul_hebdo(df_sem)
+            df_hebdo = calcul_hebdo(df_sem, contrats=_contrats_page)
 
             if df_hebdo.empty:
                 st.info("Aucune donnée après filtrage.")
@@ -765,7 +840,7 @@ with tab_semaine:
                 nb_sal    = len(df_hebdo)
                 nb_hs     = len(df_hebdo[df_hebdo['hs_total'] > 0])
                 nb_abs    = len(df_hebdo[df_hebdo['jours_travailles'] < JOURS_SEMAINE])
-                abs_info  = calcul_absenteisme(df_sem, nb_sal)
+                abs_info  = calcul_absenteisme(df_sem, nb_sal, annee=df_sem['annee'].iloc[0] if not df_sem.empty else None, semaine=df_sem['semaine'].iloc[0] if not df_sem.empty else None)
 
                 c1, c2, c3, c4, c5, c6 = st.columns(6)
                 c1.metric("👷 Effectif", nb_sal)
@@ -857,7 +932,7 @@ with tab_evolution:
         st.markdown("---")
         st.subheader("⬆ Évolution des heures supplémentaires")
 
-        df_hebdo_ev = calcul_hebdo(df_ev)
+        df_hebdo_ev = calcul_hebdo(df_ev, contrats=_contrats_page)
         if not df_hebdo_ev.empty:
             hs_par_sem = (
                 df_hebdo_ev.groupby('annee_semaine')
@@ -936,7 +1011,7 @@ with tab_evolution:
                 if not df_n.empty:
                     h_n  = float(df_n['nb_heures'].sum())
                     sal_n = df_n['matricule'].nunique()
-                    hs_n  = calcul_hebdo(df_n)['hs_total'].sum() if not calcul_hebdo(df_n).empty else 0
+                    hs_n  = calcul_hebdo(df_n, contrats=_contrats_page)['hs_total'].sum() if not calcul_hebdo(df_n, contrats=_contrats_page).empty else 0
                     h_n1 = float(df_n1['nb_heures'].sum()) if not df_n1.empty else None
 
                     col_c1, col_c2 = st.columns(2)
@@ -951,7 +1026,7 @@ with tab_evolution:
                             st.markdown(f"**{sem_n1} (N-1)**")
                             h1_n1 = float(df_n1['nb_heures'].sum())
                             sal_n1 = df_n1['matricule'].nunique()
-                            hs_n1 = calcul_hebdo(df_n1)['hs_total'].sum() if not calcul_hebdo(df_n1).empty else 0
+                            hs_n1 = calcul_hebdo(df_n1, contrats=_contrats_page)['hs_total'].sum() if not calcul_hebdo(df_n1, contrats=_contrats_page).empty else 0
                             st.metric("Total heures", f"{h1_n1:.0f}h")
                             st.metric("Salariés présents", sal_n1)
                             st.metric("Heures supp totales", f"{hs_n1:.1f}h")
@@ -973,7 +1048,7 @@ with tab_salarie:
         with col_sal1:
             sem_sal = st.selectbox("Semaine", semaines_sal, key="sal_sem")
         df_sal_sem = appliquer_filtre_site(get_pointages_semaine(sem_sal))
-        df_heb_sal = calcul_hebdo(df_sal_sem) if not df_sal_sem.empty else pd.DataFrame()
+        df_heb_sal = calcul_hebdo(df_sal_sem, contrats=_contrats_page) if not df_sal_sem.empty else pd.DataFrame()
 
         salaries_list = []
         if not df_heb_sal.empty:
@@ -1045,7 +1120,7 @@ with tab_salarie:
             if not df_hist.empty:
                 df_hist_sal = df_hist[df_hist['matricule'] == mat]
                 if not df_hist_sal.empty:
-                    df_hh = calcul_hebdo(df_hist_sal)
+                    df_hh = calcul_hebdo(df_hist_sal, contrats=_contrats_page)
                     if not df_hh.empty:
                         df_hh = df_hh.sort_values('annee_semaine')
                         fig_hist = go.Figure()
