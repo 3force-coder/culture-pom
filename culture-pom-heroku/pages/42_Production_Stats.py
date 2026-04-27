@@ -685,7 +685,7 @@ with tab_vue:
                                  'Obj.': obj, 'R/O %%': round(ro,1) if ro is not None else None})
                 st_df = pd.DataFrame(rows)
                 st.dataframe(
-                    st_df.style.applymap(color_ro, subset=['R/O %%']),
+                    st_df.style.map(color_ro, subset=['R/O %%']),
                     use_container_width=True, hide_index=True
                 )
 
@@ -906,7 +906,7 @@ with tab_hebdo:
             pivot_ro = df_sem.pivot_table(index='annee_semaine', columns='ligne',
                                           values='ro_pct', aggfunc='mean')
             st.dataframe(
-                pivot_ro.style.applymap(color_ro)
+                pivot_ro.style.map(color_ro)
                               .format('{:+.1f}%%', na_rep='—'),
                 use_container_width=True
             )
@@ -1382,7 +1382,7 @@ with tab_occup:
                     return 'color:#AFCA0A;font-weight:bold'
                 return 'color:#7A7A7A'
 
-            styled = pivot.style.applymap(style_taux, subset=[c for c in LIGNES if c in pivot.columns])
+            styled = pivot.style.map(style_taux, subset=[c for c in LIGNES if c in pivot.columns])
             st.dataframe(styled, use_container_width=True, hide_index=True)
 
             st.markdown("---")
