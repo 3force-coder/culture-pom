@@ -209,6 +209,84 @@ def update_producteur_adresse(producteur_id, data):
         return False, f"❌ Erreur : {e}"
 
 
+def update_producteur_identite(producteur_id, data):
+    """Update champs identité (nom, SIRET, contacts, statut, type_contrat).
+    Modifie ref_producteurs → visible aussi dans 01_Sources pour les champs
+    déjà éditables là-bas (nom, telephone, email, statut, nom_contact)."""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE ref_producteurs SET
+                nom = %s,
+                siret = %s,
+                forme_juridique = %s,
+                telephone = %s,
+                email = %s,
+                prenom_contact = %s,
+                nom_contact = %s,
+                statut = %s,
+                type_contrat = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (
+            data['nom'].strip() if data.get('nom') else None,
+            (data.get('siret') or '').strip() or None,
+            (data.get('forme_juridique') or '').strip() or None,
+            (data.get('telephone') or '').strip() or None,
+            (data.get('email') or '').strip() or None,
+            (data.get('prenom_contact') or '').strip() or None,
+            (data.get('nom_contact') or '').strip() or None,
+            (data.get('statut') or '').strip() or None,
+            (data.get('type_contrat') or '').strip() or None,
+            int(producteur_id)
+        ))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, "✅ Identité mise à jour"
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {e}"
+
+
+def get_statuts_producteur_distincts():
+    """Liste des valeurs distinctes de statut déjà présentes en base."""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT statut FROM ref_producteurs
+            WHERE statut IS NOT NULL AND TRIM(statut) <> ''
+            ORDER BY statut
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [r['statut'] for r in rows]
+    except Exception:
+        return []
+
+
+def get_types_contrat_distincts():
+    """Liste des valeurs distinctes de type_contrat déjà présentes en base."""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT type_contrat FROM ref_producteurs
+            WHERE type_contrat IS NOT NULL AND TRIM(type_contrat) <> ''
+            ORDER BY type_contrat
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [r['type_contrat'] for r in rows]
+    except Exception:
+        return []
+
+
 # ============================================================
 # FONCTIONS DB — DÉPÔTS
 # ============================================================
@@ -542,19 +620,157 @@ def afficher_fiche_producteur(prod):
         "ℹ️ Identité", "📍 Adresse siège", "✏️ Données CRM", "📦 Dépôts"
     ])
 
-    # ----- Identité (lecture seule, infos hors adresse) -----
+    # ----- Identité (édition complète) -----
     with tab_id:
-        st.markdown(f"""
-        - **Nom** : {prod.get('nom') or '—'}
-        - **SIRET** : {prod.get('siret') or '—'}
-        - **Forme juridique** : {prod.get('forme_juridique') or '—'}
-        - **Téléphone** : {prod.get('telephone') or '—'}
-        - **Email** : {prod.get('email') or '—'}
-        - **Contact** : {prod.get('prenom_contact') or ''} {prod.get('nom_contact') or '—'}
-        - **Statut** : {prod.get('statut') or '—'}
-        - **Type contrat** : {prod.get('type_contrat') or '—'}
-        """)
-        st.caption("Pour modifier ces champs, va dans **01_Sources → Producteurs**.")
+        if not CAN_EDIT:
+            st.info("Lecture seule — droits insuffisants pour modifier.")
+            st.markdown(f"""
+            - **Nom** : {prod.get('nom') or '—'}
+            - **SIRET** : {prod.get('siret') or '—'}
+            - **Forme juridique** : {prod.get('forme_juridique') or '—'}
+            - **Téléphone** : {prod.get('telephone') or '—'}
+            - **Email** : {prod.get('email') or '—'}
+            - **Contact** : {prod.get('prenom_contact') or ''} {prod.get('nom_contact') or '—'}
+            - **Statut** : {prod.get('statut') or '—'}
+            - **Type contrat** : {prod.get('type_contrat') or '—'}
+            """)
+        else:
+            # Récupérer dropdowns dynamiques (valeurs existantes en base)
+            statuts_existants = get_statuts_producteur_distincts()
+            types_contrat_existants = get_types_contrat_distincts()
+
+            i_col1, i_col2 = st.columns(2)
+
+            with i_col1:
+                st.markdown("**🏢 Entreprise**")
+                e_nom = st.text_input(
+                    "Nom / Raison sociale *",
+                    value=prod.get('nom') or '',
+                    key=f"id_nom_{prod['id']}"
+                )
+                e_siret = st.text_input(
+                    "SIRET",
+                    value=prod.get('siret') or '',
+                    key=f"id_siret_{prod['id']}",
+                    help="Format : 14 chiffres (non validé strictement)"
+                )
+                e_forme = st.text_input(
+                    "Forme juridique",
+                    value=prod.get('forme_juridique') or '',
+                    key=f"id_forme_{prod['id']}",
+                    placeholder="Ex: SARL, SAS, EARL, GAEC..."
+                )
+
+            with i_col2:
+                st.markdown("**📞 Coordonnées**")
+                e_tel = st.text_input(
+                    "Téléphone",
+                    value=prod.get('telephone') or '',
+                    key=f"id_tel_{prod['id']}"
+                )
+                e_email = st.text_input(
+                    "Email",
+                    value=prod.get('email') or '',
+                    key=f"id_email_{prod['id']}"
+                )
+
+            st.markdown("**👤 Contact référent**")
+            c_col1, c_col2 = st.columns(2)
+            with c_col1:
+                e_prenom_c = st.text_input(
+                    "Prénom contact",
+                    value=prod.get('prenom_contact') or '',
+                    key=f"id_prenom_c_{prod['id']}"
+                )
+            with c_col2:
+                e_nom_c = st.text_input(
+                    "Nom contact",
+                    value=prod.get('nom_contact') or '',
+                    key=f"id_nom_c_{prod['id']}"
+                )
+
+            st.markdown("**📋 Relation commerciale**")
+            r_col1, r_col2 = st.columns(2)
+
+            # Dropdown statut dynamique avec option "+ Saisir nouvelle valeur"
+            with r_col1:
+                statut_courant = prod.get('statut') or ''
+                options_statut = ['(non défini)'] + statuts_existants
+                if statut_courant and statut_courant not in options_statut:
+                    options_statut.append(statut_courant)
+                options_statut.append('+ Saisir nouvelle valeur')
+
+                idx_statut = 0
+                if statut_courant in options_statut:
+                    idx_statut = options_statut.index(statut_courant)
+
+                e_statut_choix = st.selectbox(
+                    "Statut",
+                    options_statut,
+                    index=idx_statut,
+                    key=f"id_statut_choix_{prod['id']}"
+                )
+                if e_statut_choix == '+ Saisir nouvelle valeur':
+                    e_statut = st.text_input(
+                        "Nouveau statut",
+                        key=f"id_statut_new_{prod['id']}"
+                    )
+                elif e_statut_choix == '(non défini)':
+                    e_statut = ''
+                else:
+                    e_statut = e_statut_choix
+
+            # Dropdown type_contrat dynamique
+            with r_col2:
+                tc_courant = prod.get('type_contrat') or ''
+                options_tc = ['(non défini)'] + types_contrat_existants
+                if tc_courant and tc_courant not in options_tc:
+                    options_tc.append(tc_courant)
+                options_tc.append('+ Saisir nouvelle valeur')
+
+                idx_tc = 0
+                if tc_courant in options_tc:
+                    idx_tc = options_tc.index(tc_courant)
+
+                e_tc_choix = st.selectbox(
+                    "Type contrat",
+                    options_tc,
+                    index=idx_tc,
+                    key=f"id_tc_choix_{prod['id']}"
+                )
+                if e_tc_choix == '+ Saisir nouvelle valeur':
+                    e_tc = st.text_input(
+                        "Nouveau type contrat",
+                        key=f"id_tc_new_{prod['id']}"
+                    )
+                elif e_tc_choix == '(non défini)':
+                    e_tc = ''
+                else:
+                    e_tc = e_tc_choix
+
+            st.markdown("---")
+
+            if st.button("💾 Enregistrer identité", type="primary",
+                         key=f"save_id_{prod['id']}"):
+                if not e_nom or not e_nom.strip():
+                    st.error("❌ Le nom est obligatoire")
+                else:
+                    ok, msg = update_producteur_identite(prod['id'], {
+                        'nom': e_nom,
+                        'siret': e_siret,
+                        'forme_juridique': e_forme,
+                        'telephone': e_tel,
+                        'email': e_email,
+                        'prenom_contact': e_prenom_c,
+                        'nom_contact': e_nom_c,
+                        'statut': e_statut,
+                        'type_contrat': e_tc,
+                    })
+                    if ok:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
     # ----- Adresse siège (édition complète) -----
     with tab_adr:
