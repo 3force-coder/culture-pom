@@ -127,6 +127,13 @@ pages = {
         st.Page("pages/25_CRM_Statistics.py", title="Statistiques", icon="📈"),
         st.Page("pages/26_CRM_Releve_prix.py", title="Relevé de Prix", icon="💰"),
     ],
+     "🌾 CRM Producteurs": [
+        st.Page("pages/50_CRM_Prod_Producteurs.py", title="Producteurs",  icon="🌾"),
+        # st.Page("pages/51_CRM_Prod_Contacts.py",    title="Contacts",     icon="👥"),
+        # st.Page("pages/52_CRM_Prod_Visites.py",     title="Visites",      icon="📅"),
+        # st.Page("pages/53_CRM_Prod_Parcelles.py",   title="Parcelles",    icon="🌱"),
+        # st.Page("pages/54_CRM_Prod_Dashboard.py",   title="Dashboard",    icon="📊"),
+    ],
     "💰 Finance": [
         st.Page("pages/09_Valorisation_Lots.py", title="Valorisation Lots", icon="💰"),
     ],
