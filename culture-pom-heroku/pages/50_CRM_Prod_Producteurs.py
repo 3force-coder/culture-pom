@@ -615,6 +615,23 @@ def afficher_fiche_producteur(prod):
     st.markdown(f"### 👨‍🌾 {prod['nom']}")
     st.caption(f"Code : `{prod.get('code_producteur', '')}`  |  ID : {prod['id']}")
 
+    # ----- Boutons accès rapide vers pages 51 / 52 -----
+    btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 3])
+    with btn_col1:
+        if st.button("👥 Contacts", key=f"goto_contacts_{prod['id']}",
+                     help="Voir / créer des contacts pour ce producteur",
+                     use_container_width=True):
+            st.session_state['new_pcontact_producteur_id'] = prod['id']
+            st.switch_page("pages/51_CRM_Prod_Contacts.py")
+    with btn_col2:
+        if st.button("📅 Planifier visite", key=f"goto_visite_{prod['id']}",
+                     help="Créer une nouvelle visite pour ce producteur",
+                     use_container_width=True):
+            st.session_state['new_pvisite_producteur_id'] = prod['id']
+            st.switch_page("pages/52_CRM_Prod_Visites.py")
+
+    st.markdown("---")
+
     # ============ Onglets fiche ============
     tab_id, tab_adr, tab_crm, tab_dep = st.tabs([
         "ℹ️ Identité", "📍 Adresse siège", "✏️ Données CRM", "📦 Dépôts"
