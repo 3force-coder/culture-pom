@@ -92,7 +92,7 @@ def get_producteurs_dropdown():
         cursor = conn.cursor()
         cursor.execute("""
             SELECT id, code_producteur,
-                   nom || COALESCE(' - ' || ville, '') AS libelle
+                   COALESCE(nom, '') || COALESCE(' - ' || ville, '') AS libelle
             FROM ref_producteurs
             WHERE is_active = TRUE
             ORDER BY nom
@@ -100,7 +100,8 @@ def get_producteurs_dropdown():
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        return [(r['id'], r['code_producteur'], r['libelle']) for r in rows]
+        return [(int(r['id']), str(r['code_producteur'] or ''),
+                 str(r['libelle'] or '(sans nom)')) for r in rows]
     except Exception as e:
         st.error(f"❌ Erreur producteurs : {e}")
         return []
@@ -120,7 +121,8 @@ def get_depots_for_producteur(producteur_id):
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        return [(r['id'], r['libelle'], r['ville']) for r in rows]
+        return [(int(r['id']), str(r['libelle'] or ''),
+                 str(r['ville'] or '')) for r in rows]
     except Exception:
         return []
 
@@ -136,27 +138,32 @@ def get_types_visite():
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        return [(r['id'], r['code'], r['libelle']) for r in rows]
+        return [(int(r['id']), str(r['code'] or ''),
+                 str(r['libelle'] or '')) for r in rows]
     except Exception as e:
         st.error(f"❌ Erreur types visite : {e}")
         return []
 
 
 def get_intervenants():
-    """Liste des utilisateurs Culture Pom pour intervenant_id (Q3)."""
+    """Liste des utilisateurs Culture Pom pour intervenant_id (Q3).
+    Garantit qu'aucun libellé n'est NULL même si prenom ou nom manque."""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, prenom || ' ' || nom AS libelle
+            SELECT id,
+                   COALESCE(NULLIF(TRIM(COALESCE(prenom, '') || ' ' || COALESCE(nom, '')), ''),
+                            username,
+                            'User #' || id::text) AS libelle
             FROM users_app
             WHERE is_active = TRUE
-            ORDER BY nom, prenom
+            ORDER BY libelle
         """)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        return [(r['id'], r['libelle']) for r in rows]
+        return [(int(r['id']), str(r['libelle'] or 'inconnu')) for r in rows]
     except Exception:
         return []
 
