@@ -9,12 +9,53 @@ from datetime import date
 
 import folium
 from streamlit_folium import st_folium
-from streamlit_geolocation import streamlit_geolocation
+from streamlit_js_eval import get_geolocation
 
 from database import get_connection
 from components import show_footer
 from auth import require_access, can_edit, can_delete
 from utils.geocoding import search_adresse, geocode_adresse, reverse_geocode
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def _safe_float_gps(v):
+    """Convertit une valeur GPS en float, ou retourne 0.0 si invalide.
+
+    Cas gérés :
+      - None → 0.0
+      - NaN (numpy.float64 issu de pandas) → 0.0
+      - '' → 0.0
+      - str non-castable → 0.0
+      - Decimal/float valide → float(v)
+    """
+    if v is None:
+        return 0.0
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    # NaN ne s'égale jamais à lui-même
+    if f != f:
+        return 0.0
+    return f
+
+
+def _has_valid_gps(lat, lng):
+    """Retourne True si lat ET lng sont des coordonnées valides (non NaN, non 0,0)."""
+    try:
+        flat = float(lat)
+        flng = float(lng)
+    except (TypeError, ValueError):
+        return False
+    if flat != flat or flng != flng:  # NaN check
+        return False
+    if flat == 0.0 and flng == 0.0:
+        return False
+    return True
+
 
 # ============================================================
 # CONFIGURATION PAGE
@@ -500,8 +541,8 @@ def adresse_editor_component(prefix, current_data, on_save_label="💾 Enregistr
         st.session_state[keys['cp']] = current_data.get('code_postal') or ''
         st.session_state[keys['ville']] = current_data.get('ville') or ''
         st.session_state[keys['dept']] = current_data.get('departement') or ''
-        st.session_state[keys['lat']] = float(current_data.get('latitude')) if current_data.get('latitude') is not None else 0.0
-        st.session_state[keys['lng']] = float(current_data.get('longitude')) if current_data.get('longitude') is not None else 0.0
+        st.session_state[keys['lat']] = _safe_float_gps(current_data.get('latitude'))
+        st.session_state[keys['lng']] = _safe_float_gps(current_data.get('longitude'))
         st.session_state[keys['init_done']] = True
 
     # ----- Recherche adresse + géoloc -----
@@ -541,18 +582,21 @@ def adresse_editor_component(prefix, current_data, on_save_label="💾 Enregistr
 
     with col_geoloc:
         st.markdown("**📍 Ma position**")
-        st.caption("Clic = utilise ma position GPS")
+        st.caption("Clic pour utiliser ma position GPS")
         if CAN_EDIT:
-            loc = streamlit_geolocation()
-            # streamlit_geolocation renvoie un dict avec latitude/longitude au top-level
+            # streamlit-js-eval get_geolocation : retourne None initialement
+            # puis {'coords': {'latitude': X, 'longitude': Y, ...}, 'timestamp': ...}
+            # ou {'error': {'code': X, 'message': Y}} si refus utilisateur.
+            # component_key unique évite les collisions multi-éditeurs (siège + dépôts).
+            loc = get_geolocation(component_key=f"geoloc_{prefix}")
+
             if loc and isinstance(loc, dict):
-                lat_user = loc.get('latitude')
-                lng_user = loc.get('longitude')
+                coords = loc.get('coords') or {}
+                lat_user = coords.get('latitude')
+                lng_user = coords.get('longitude')
                 if lat_user is not None and lng_user is not None:
-                    # Bouton pour appliquer
                     if st.button("✅ Utiliser cette position",
                                  key=f"use_geo_{prefix}", type="secondary"):
-                        # Reverse geocoding
                         rev = reverse_geocode(lat_user, lng_user)
                         st.session_state[keys['lat']] = float(lat_user)
                         st.session_state[keys['lng']] = float(lng_user)
@@ -567,6 +611,12 @@ def adresse_editor_component(prefix, current_data, on_save_label="💾 Enregistr
                         st.rerun()
                     else:
                         st.caption(f"GPS détecté : {float(lat_user):.5f}, {float(lng_user):.5f}")
+                elif loc.get('error'):
+                    err = loc['error']
+                    if err.get('code') == 1:  # PERMISSION_DENIED
+                        st.caption("⚠️ Permission refusée")
+                    else:
+                        st.caption(f"⚠️ {err.get('message', 'Erreur GPS')}")
 
     # ----- Champs adresse (édition manuelle toujours possible) -----
     f1, f2 = st.columns(2)
@@ -580,10 +630,10 @@ def adresse_editor_component(prefix, current_data, on_save_label="💾 Enregistr
         st.number_input("Longitude", key=keys['lng'], format="%.6f", disabled=not CAN_EDIT)
 
     # ----- Carte interactive avec pin déplaçable -----
-    lat_val = float(st.session_state.get(keys['lat']) or 0.0)
-    lng_val = float(st.session_state.get(keys['lng']) or 0.0)
+    lat_val = _safe_float_gps(st.session_state.get(keys['lat']))
+    lng_val = _safe_float_gps(st.session_state.get(keys['lng']))
 
-    if lat_val != 0.0 and lng_val != 0.0:
+    if _has_valid_gps(lat_val, lng_val):
         st.markdown("**🗺️ Carte (déplace le pin pour ajuster)**")
         m = folium.Map(location=[lat_val, lng_val], zoom_start=15, tiles='OpenStreetMap')
         folium.Marker(
@@ -622,13 +672,16 @@ def adresse_editor_component(prefix, current_data, on_save_label="💾 Enregistr
             save_clicked = True
 
     # ----- Retour valeurs courantes -----
+    # Pour latitude/longitude : on sanitise (NaN → 0.0 → None pour BDD)
+    final_lat = _safe_float_gps(st.session_state.get(keys['lat']))
+    final_lng = _safe_float_gps(st.session_state.get(keys['lng']))
     return {
         'adresse': st.session_state.get(keys['adresse']) or '',
         'code_postal': st.session_state.get(keys['cp']) or '',
         'ville': st.session_state.get(keys['ville']) or '',
         'departement': st.session_state.get(keys['dept']) or '',
-        'latitude': float(st.session_state[keys['lat']]) if st.session_state.get(keys['lat']) else None,
-        'longitude': float(st.session_state[keys['lng']]) if st.session_state.get(keys['lng']) else None,
+        'latitude': final_lat if final_lat != 0.0 else None,
+        'longitude': final_lng if final_lng != 0.0 else None,
         '_save_clicked': save_clicked,
     }
 
@@ -1037,18 +1090,18 @@ def afficher_depot(producteur_id, dep):
         with d2:
             cap = dep.get('capacite_tonnes')
             st.markdown(f"**Capacité** : {f'{cap} T' if cap else '—'}")
-            lat = dep.get('latitude')
-            lng = dep.get('longitude')
-            if lat is not None and lng is not None:
-                st.markdown(f"**GPS** : {float(lat):.5f}, {float(lng):.5f}")
+            dep_lat = _safe_float_gps(dep.get('latitude'))
+            dep_lng = _safe_float_gps(dep.get('longitude'))
+            if _has_valid_gps(dep_lat, dep_lng):
+                st.markdown(f"**GPS** : {dep_lat:.5f}, {dep_lng:.5f}")
             if dep.get('notes'):
                 st.markdown(f"**Notes** : {dep['notes']}")
 
-        # Mini-carte si GPS
-        if dep.get('latitude') is not None and dep.get('longitude') is not None:
-            m = folium.Map(location=[float(dep['latitude']), float(dep['longitude'])],
+        # Mini-carte si GPS valide
+        if _has_valid_gps(dep_lat, dep_lng):
+            m = folium.Map(location=[dep_lat, dep_lng],
                            zoom_start=14, tiles='OpenStreetMap')
-            folium.Marker(location=[float(dep['latitude']), float(dep['longitude'])],
+            folium.Marker(location=[dep_lat, dep_lng],
                           popup=dep.get('libelle')).add_to(m)
             st_folium(m, width=None, height=250, key=f"map_dep_view_{dep['id']}",
                       returned_objects=[])
