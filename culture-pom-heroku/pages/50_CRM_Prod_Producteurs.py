@@ -63,7 +63,7 @@ st.markdown("---")
 # ============================================================
 
 def get_producteurs(filtres=None):
-    """Liste producteurs + nb dépôts."""
+    """Liste producteurs + nb dépôts + acheteur référent (FK users_app)."""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -72,11 +72,15 @@ def get_producteurs(filtres=None):
                 p.id, p.code_producteur, p.nom,
                 p.adresse, p.code_postal, p.ville, p.departement,
                 p.latitude, p.longitude,
-                p.telephone, p.email, p.statut, p.acheteur_referent,
+                p.telephone, p.email, p.statut,
+                p.acheteur_referent,
+                p.acheteur_referent_user_id,
+                ua.username AS acheteur_username,
                 p.global_gap, p.certif_global_gap_numero, p.certif_global_gap_validite,
                 p.has_big_bag, p.has_lavage, p.has_stockage, p.notes,
                 COALESCE(d.nb_depots, 0) AS nb_depots
             FROM ref_producteurs p
+            LEFT JOIN users_app ua ON p.acheteur_referent_user_id = ua.id
             LEFT JOIN (
                 SELECT producteur_id, COUNT(*) AS nb_depots
                 FROM crm_prod_depots WHERE is_active = TRUE
@@ -130,6 +134,30 @@ def get_departements():
         return []
 
 
+def get_acheteurs_referents_dropdown():
+    """Liste des users_app qui sont déjà acheteurs référents pour au moins 1 producteur.
+    Filtre Q4 : on n'affiche pas tous les users actifs, juste ceux déjà acheteurs.
+    Retourne : list[(user_id, username)]
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT ua.id, ua.username
+            FROM users_app ua
+            JOIN ref_producteurs p ON p.acheteur_referent_user_id = ua.id
+            WHERE ua.is_active = TRUE AND p.is_active = TRUE
+            ORDER BY ua.username
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [(int(r['id']), str(r['username'] or f"User #{r['id']}")) for r in rows]
+    except Exception as e:
+        st.error(f"❌ Erreur chargement acheteurs : {e}")
+        return []
+
+
 def get_producteur_by_id(producteur_id):
     try:
         conn = get_connection()
@@ -145,7 +173,9 @@ def get_producteur_by_id(producteur_id):
 
 
 def update_producteur_enrichi(producteur_id, data):
-    """Update champs services + certifs + acheteur + notes (PAS l'adresse)."""
+    """Update champs services + certifs + notes.
+    NOTE : acheteur_referent (texte) et acheteur_referent_user_id (FK) sont gérés
+    par update_producteur_identite (onglet Identité), pas ici."""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -154,7 +184,7 @@ def update_producteur_enrichi(producteur_id, data):
                 has_big_bag = %s, has_lavage = %s, has_stockage = %s,
                 global_gap = %s, certif_global_gap_numero = %s,
                 certif_global_gap_validite = %s,
-                acheteur_referent = %s, notes = %s,
+                notes = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
         """, (
@@ -164,7 +194,6 @@ def update_producteur_enrichi(producteur_id, data):
             bool(data.get('global_gap', False)),
             data.get('certif_global_gap_numero') or None,
             data.get('certif_global_gap_validite'),
-            data.get('acheteur_referent') or None,
             data.get('notes') or None,
             int(producteur_id)
         ))
@@ -210,7 +239,9 @@ def update_producteur_adresse(producteur_id, data):
 
 
 def update_producteur_identite(producteur_id, data):
-    """Update champs identité (nom, SIRET, contacts, statut, type_contrat).
+    """Update champs identité (nom, SIRET, contacts, statut, type_contrat,
+    acheteur_referent_user_id).
+    NOTE : on ne touche PAS au champ texte acheteur_referent (legacy, info historique).
     Modifie ref_producteurs → visible aussi dans 01_Sources pour les champs
     déjà éditables là-bas (nom, telephone, email, statut, nom_contact)."""
     try:
@@ -227,6 +258,7 @@ def update_producteur_identite(producteur_id, data):
                 nom_contact = %s,
                 statut = %s,
                 type_contrat = %s,
+                acheteur_referent_user_id = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
         """, (
@@ -239,6 +271,7 @@ def update_producteur_identite(producteur_id, data):
             (data.get('nom_contact') or '').strip() or None,
             (data.get('statut') or '').strip() or None,
             (data.get('type_contrat') or '').strip() or None,
+            int(data['acheteur_referent_user_id']) if data.get('acheteur_referent_user_id') else None,
             int(producteur_id)
         ))
         conn.commit()
@@ -641,6 +674,7 @@ def afficher_fiche_producteur(prod):
     with tab_id:
         if not CAN_EDIT:
             st.info("Lecture seule — droits insuffisants pour modifier.")
+            ach_display = prod.get('acheteur_username') or prod.get('acheteur_referent') or '—'
             st.markdown(f"""
             - **Nom** : {prod.get('nom') or '—'}
             - **SIRET** : {prod.get('siret') or '—'}
@@ -650,6 +684,7 @@ def afficher_fiche_producteur(prod):
             - **Contact** : {prod.get('prenom_contact') or ''} {prod.get('nom_contact') or '—'}
             - **Statut** : {prod.get('statut') or '—'}
             - **Type contrat** : {prod.get('type_contrat') or '—'}
+            - **Acheteur** : {ach_display}
             """)
         else:
             # Récupérer dropdowns dynamiques (valeurs existantes en base)
@@ -765,6 +800,48 @@ def afficher_fiche_producteur(prod):
                 else:
                     e_tc = e_tc_choix
 
+            # Acheteur référent : dropdown users_app (Q1=A, Q4=acheteurs existants)
+            st.markdown("**👨‍💼 Acheteur référent**")
+            acheteurs_dropdown = get_acheteurs_referents_dropdown()
+            ach_options = [(None, '(non défini)')] + acheteurs_dropdown
+
+            current_ach_id = prod.get('acheteur_referent_user_id')
+            current_ach_id = int(current_ach_id) if current_ach_id is not None else None
+
+            # Trouver l'index de la valeur courante
+            idx_ach = 0
+            for i, opt in enumerate(ach_options):
+                if opt[0] == current_ach_id:
+                    idx_ach = i
+                    break
+
+            ach_col1, ach_col2 = st.columns(2)
+            with ach_col1:
+                e_ach_choix = st.selectbox(
+                    "Acheteur (compte utilisateur)",
+                    ach_options,
+                    index=idx_ach,
+                    format_func=lambda x: x[1],
+                    key=f"id_ach_user_{prod['id']}",
+                    help="Filtrage Q4 : seuls les utilisateurs déjà acheteurs apparaissent dans la liste"
+                )
+                e_ach_user_id = e_ach_choix[0]
+
+            with ach_col2:
+                # Lecture seule : ancien texte legacy (info historique)
+                legacy_text = prod.get('acheteur_referent') or ''
+                if legacy_text:
+                    st.text_input(
+                        "Valeur historique (lecture seule)",
+                        value=legacy_text,
+                        disabled=True,
+                        key=f"id_ach_legacy_{prod['id']}",
+                        help="Texte enregistré avant la bascule sur compte utilisateur. Conservé pour info."
+                    )
+                else:
+                    st.caption(" ")  # placeholder vertical
+                    st.caption("_(aucune valeur historique)_")
+
             st.markdown("---")
 
             if st.button("💾 Enregistrer identité", type="primary",
@@ -782,6 +859,7 @@ def afficher_fiche_producteur(prod):
                         'nom_contact': e_nom_c,
                         'statut': e_statut,
                         'type_contrat': e_tc,
+                        'acheteur_referent_user_id': e_ach_user_id,
                     })
                     if ok:
                         st.success(msg)
@@ -833,8 +911,15 @@ def afficher_fiche_producteur(prod):
                                disabled=not CAN_EDIT, key=f"lv_{prod['id']}")
             e_st = st.checkbox("Stockage", value=bool(prod.get('has_stockage')),
                                disabled=not CAN_EDIT, key=f"st_{prod['id']}")
-            e_ach = st.text_input("Acheteur référent", value=prod.get('acheteur_referent') or '',
-                                  disabled=not CAN_EDIT, key=f"ach_{prod['id']}")
+            # Acheteur en lecture seule (édition dans l'onglet Identité — bascule sur FK users_app)
+            ach_display = prod.get('acheteur_username') or prod.get('acheteur_referent') or '—'
+            st.text_input(
+                "Acheteur référent (lecture seule)",
+                value=ach_display,
+                disabled=True,
+                key=f"ach_ro_{prod['id']}",
+                help="Édition via l'onglet **Identité** (dropdown utilisateurs)"
+            )
         with e2:
             st.markdown("**📜 Certifications Global GAP**")
             e_gap = st.checkbox("Certifié Global GAP", value=bool(prod.get('global_gap')),
@@ -863,7 +948,7 @@ def afficher_fiche_producteur(prod):
                 'global_gap': e_gap,
                 'certif_global_gap_numero': e_gnum if e_gap else None,
                 'certif_global_gap_validite': e_gval if e_gap else None,
-                'acheteur_referent': e_ach, 'notes': e_notes,
+                'notes': e_notes,
             })
             if ok:
                 st.success(msg)
