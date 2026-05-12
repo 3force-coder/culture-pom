@@ -459,7 +459,7 @@ if not df_besoins.empty:
         "Ha Besoin": st.column_config.NumberColumn("Ha Besoin", format="%.1f"),
         "Ha Affectés": st.column_config.NumberColumn("Ha Affectés", format="%.1f"),
         "Reste": st.column_config.NumberColumn("Reste", format="%.1f"),
-        "Couverture %": st.column_config.ProgressColumn("Couverture", format="%.0f%%", min_value=0, max_value=100),
+        "Couverture %": st.column_config.ProgressColumn("Couverture", format="%.0f%%", min_value=0, max_value=200),
         "Complet": st.column_config.CheckboxColumn("✓"),
     }
     
@@ -667,72 +667,72 @@ if 'selected_besoin_id' in st.session_state and st.session_state['selected_besoi
         
         reste = info.get('reste', 0)
         
-        if reste <= 0:
-            st.success("✅ Ce besoin est entièrement couvert !")
-        else:
-            # Charger producteurs
-            producteurs = get_producteurs_actifs()
+        # Pas de blocage si reste <= 0 : dépassements >100% autorisés sans avertissement
+        # Charger producteurs
+        producteurs = get_producteurs_actifs()
+        
+        if producteurs:
+            col1, col2 = st.columns(2)
             
-            if producteurs:
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    # Dropdown producteurs avec recherche
-                    prod_options = ["-- Sélectionner --"] + [p['display'] for p in producteurs]
-                    selected_prod = st.selectbox(
-                        "Producteur *",
-                        prod_options,
-                        key="new_producteur"
-                    )
-                
-                with col2:
-                    # ✅ MODIFIÉ : Hectares décimaux par pas de 0.5
-                    hectares = st.number_input(
-                        f"Hectares * (max suggéré: {reste:.1f})",
-                        min_value=0.5,
-                        max_value=1000.0,
-                        value=min(reste, 10.0) if reste > 0 else 0.5,
-                        step=0.5,
-                        format="%.1f",
-                        key="new_hectares"
-                    )
-                
-                notes = st.text_input("Notes (optionnel)", key="new_notes")
-                
-                # Bouton ajouter
-                if st.button("✅ Ajouter l'affectation", type="primary", use_container_width=True):
-                    if selected_prod == "-- Sélectionner --":
-                        st.error("❌ Veuillez sélectionner un producteur")
-                    else:
-                        # Trouver ID producteur
-                        prod_idx = prod_options.index(selected_prod) - 1  # -1 car "-- Sélectionner --"
-                        producteur_id = producteurs[prod_idx]['id']
+            with col1:
+                # Dropdown producteurs avec recherche
+                prod_options = ["-- Sélectionner --"] + [p['display'] for p in producteurs]
+                selected_prod = st.selectbox(
+                    "Producteur *",
+                    prod_options,
+                    key="new_producteur"
+                )
+            
+            with col2:
+                # Hectares décimaux par pas de 0.5 - dépassement >100% autorisé
+                # Valeur par défaut : reste si positif (cappé à 10), sinon 0.5
+                default_ha = min(max(reste, 0.5), 10.0) if reste > 0 else 0.5
+                hectares = st.number_input(
+                    f"Hectares * (reste : {reste:.1f})",
+                    min_value=0.5,
+                    max_value=1000.0,
+                    value=default_ha,
+                    step=0.5,
+                    format="%.1f",
+                    key="new_hectares"
+                )
+            
+            notes = st.text_input("Notes (optionnel)", key="new_notes")
+            
+            # Bouton ajouter
+            if st.button("✅ Ajouter l'affectation", type="primary", use_container_width=True):
+                if selected_prod == "-- Sélectionner --":
+                    st.error("❌ Veuillez sélectionner un producteur")
+                else:
+                    # Trouver ID producteur
+                    prod_idx = prod_options.index(selected_prod) - 1  # -1 car "-- Sélectionner --"
+                    producteur_id = producteurs[prod_idx]['id']
+                    
+                    # Récupérer infos besoin
+                    besoin_info = get_besoin_info(besoin_id)
+                    
+                    if besoin_info:
+                        success, msg = ajouter_affectation(
+                            besoin_id,
+                            besoin_info['campagne'],
+                            besoin_info['mois'],
+                            besoin_info['variete'],
+                            producteur_id,
+                            hectares,
+                            notes
+                        )
                         
-                        # Récupérer infos besoin
-                        besoin_info = get_besoin_info(besoin_id)
-                        
-                        if besoin_info:
-                            success, msg = ajouter_affectation(
-                                besoin_id,
-                                besoin_info['campagne'],
-                                besoin_info['mois'],
-                                besoin_info['variete'],
-                                producteur_id,
-                                hectares,
-                                notes
-                            )
-                            
-                            if success:
-                                st.success(msg)
-                                st.balloons()
-                                # Rafraîchir infos
-                                st.rerun()
-                            else:
-                                st.error(msg)
+                        if success:
+                            st.success(msg)
+                            st.balloons()
+                            # Rafraîchir infos
+                            st.rerun()
                         else:
-                            st.error("❌ Besoin introuvable")
-            else:
-                st.warning("⚠️ Aucun producteur actif trouvé")
+                            st.error(msg)
+                    else:
+                        st.error("❌ Besoin introuvable")
+        else:
+            st.warning("⚠️ Aucun producteur actif trouvé")
     else:
         st.info("🔒 Vous n'avez pas les droits pour ajouter des affectations")
 
