@@ -3444,12 +3444,38 @@ with tab3:
                         
                         col1, col2 = st.columns(2)
                         with col1:
-                            quantite = st.slider(
-                                f"Pallox à laver (suggéré: {pallox_suggeres} pour couvrir {besoin_tonnes:.1f}T NET)", 
-                                1, dispo, 
-                                min(pallox_suggeres, dispo), 
-                                key="qty_besoins_create"
+                            # number_input + 2 boutons rapides (Tout + Suggéré)
+                            qty_key_b = "qty_besoins_create"
+                            if qty_key_b not in st.session_state:
+                                st.session_state[qty_key_b] = min(pallox_suggeres, dispo)
+                            # Plafonner si la valeur dépasse le dispo actuel
+                            if st.session_state[qty_key_b] > dispo:
+                                st.session_state[qty_key_b] = dispo
+                            
+                            st.caption(
+                                f"💡 Suggéré : **{pallox_suggeres}p** pour couvrir {besoin_tonnes:.1f}T NET"
                             )
+                            col_qty_b, col_btn_t, col_btn_s = st.columns([2, 1, 1])
+                            with col_qty_b:
+                                quantite = st.number_input(
+                                    "Pallox à laver",
+                                    min_value=1, max_value=dispo,
+                                    step=1, key=qty_key_b
+                                )
+                            with col_btn_t:
+                                st.markdown("<br>", unsafe_allow_html=True)
+                                if st.button(f"Tout ({dispo}p)", key="btn_besoins_tout",
+                                             use_container_width=True):
+                                    st.session_state[qty_key_b] = dispo
+                                    st.rerun()
+                            with col_btn_s:
+                                st.markdown("<br>", unsafe_allow_html=True)
+                                if st.button(f"Suggéré ({pallox_suggeres}p)",
+                                             key="btn_besoins_suggere",
+                                             use_container_width=True):
+                                    st.session_state[qty_key_b] = pallox_suggeres
+                                    st.rerun()
+                            
                             date_prevue = st.date_input("Date prévue", datetime.now().date(), key="date_besoins_create")
                         
                         with col2:
@@ -3717,8 +3743,28 @@ with tab3:
                                     st.metric("Poids", f"{poids_l/1000:.1f} T")
                                 qtys[ld['lot_id']] = (qty_l, poids_l, ld)
                             else:
-                                qty_l = st.slider("Pallox à laver", 1, dispo_l,
-                                                  min(5, dispo_l), key="qty_create_t2_single")
+                                # number_input + bouton "Tout" (pas de Suggéré ici : aucun calcul métier)
+                                qty_key_t2 = "qty_create_t2_single"
+                                if qty_key_t2 not in st.session_state:
+                                    st.session_state[qty_key_t2] = min(5, dispo_l)
+                                # Plafonner si la valeur en session dépasse le dispo actuel
+                                if st.session_state[qty_key_t2] > dispo_l:
+                                    st.session_state[qty_key_t2] = dispo_l
+                                
+                                col_qty, col_btn = st.columns([3, 1])
+                                with col_qty:
+                                    qty_l = st.number_input(
+                                        "Pallox à laver",
+                                        min_value=1, max_value=dispo_l,
+                                        step=1, key=qty_key_t2
+                                    )
+                                with col_btn:
+                                    st.markdown("<br>", unsafe_allow_html=True)
+                                    if st.button(f"Tout ({dispo_l}p)", key="btn_t2_tout",
+                                                 use_container_width=True):
+                                        st.session_state[qty_key_t2] = dispo_l
+                                        st.rerun()
+                                
                                 poids_l = qty_l * poids_unit_l
                                 col_m1, col_m2 = st.columns(2)
                                 col_m1.metric("Poids total", f"{poids_l:,.0f} kg")
