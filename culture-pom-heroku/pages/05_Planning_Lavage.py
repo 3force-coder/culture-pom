@@ -2707,53 +2707,83 @@ with tab1:
         st.markdown("---")
         st.markdown("### 🔧 Temps customs")
         
-        for tc in temps_customs:
-            col_tc, col_del = st.columns([5, 1])
-            with col_tc:
-                st.markdown(f"""<div class="custom-card">{tc['emoji']} {tc['libelle']} ({tc['duree_minutes']}min)</div>""", unsafe_allow_html=True)
-            with col_del:
-                if is_admin() and st.button("🗑️", key=f"del_tc_{tc['id']}"):
-                    supprimer_temps_custom(tc['id'])
-                    st.rerun()
-
-            # Mode : créneau libre ou dans un job
+        # ============================================================
+        # BLOC UNIFIÉ DE PLANIFICATION (Commit 6)
+        # 1 selectbox type + UI commune (mode, jour, heure/job, bouton)
+        # ============================================================
+        if not temps_customs:
+            st.caption("Aucun temps custom — créez-en un via 'Gérer les temps customs' ci-dessous")
+        else:
+            # 1. Selectbox type (libellé + emoji + durée)
+            tc_opts = {
+                f"{tc['emoji']} {tc['libelle']} ({tc['duree_minutes']}min)": tc
+                for tc in temps_customs
+            }
+            tc_label_sel = st.selectbox(
+                "Type de temps",
+                list(tc_opts.keys()),
+                key="tc_unified_type",
+                label_visibility="collapsed"
+            )
+            tc_sel = tc_opts[tc_label_sel]
+            
+            # 2. Mode insertion (créneau libre / dans un job)
             mode_tc = st.radio(
-                "Insérer",
+                "Mode d'insertion",
                 ["Créneau libre", "Dans un job"],
-                key=f"mode_tc_{tc['id']}",
+                key="tc_unified_mode",
                 horizontal=True,
                 label_visibility="collapsed"
             )
-
-            jours_tc = ["Sélectionner..."] + [f"{['Lun','Mar','Mer','Jeu','Ven','Sam'][i]} {(week_start + timedelta(days=i)).strftime('%d/%m')}" for i in range(6)]
-            jour_tc = st.selectbox("Jour", jours_tc, key=f"jour_tc_{tc['id']}", label_visibility="collapsed")
-
+            
+            # 3. Selectbox jour
+            jours_tc = ["Sélectionner..."] + [
+                f"{['Lun','Mar','Mer','Jeu','Ven','Sam'][i]} {(week_start + timedelta(days=i)).strftime('%d/%m')}"
+                for i in range(6)
+            ]
+            jour_tc = st.selectbox(
+                "Jour",
+                jours_tc,
+                key="tc_unified_jour",
+                label_visibility="collapsed"
+            )
+            
             if jour_tc != "Sélectionner...":
                 jour_idx = jours_tc.index(jour_tc) - 1
                 date_cible = week_start + timedelta(days=jour_idx)
                 jour_str_tc = str(date_cible)
-
+                
                 if mode_tc == "Créneau libre":
-                    # Heure par défaut : 06:00 (cohérent avec placement jobs)
-                    h_debut = time(6, 0)
-                    heure_tc = st.time_input("Heure", value=h_debut, step=900, key=f"heure_tc_{tc['id']}", label_visibility="collapsed")
+                    # 4a. Heure cible (défaut 06:00)
+                    heure_tc = st.time_input(
+                        "Heure",
+                        value=time(6, 0),
+                        step=900,
+                        key="tc_unified_heure",
+                        label_visibility="collapsed"
+                    )
                     heure_optimale_tc, _, msg_info_tc = trouver_prochain_creneau_libre(
                         planning_df, date_cible, st.session_state.selected_ligne,
-                        heure_tc, tc['duree_minutes'])
+                        heure_tc, tc_sel['duree_minutes']
+                    )
                     if msg_info_tc:
                         st.info(msg_info_tc)
-                    if st.button("✅", key=f"confirm_tc_{tc['id']}", use_container_width=True):
+                    
+                    if st.button("✅ Insérer", key="tc_unified_btn_libre",
+                                 type="primary", use_container_width=True):
                         success, msg = ajouter_element_planning(
-                            'CUSTOM', None, int(tc['id']), date_cible,
+                            'CUSTOM', None, int(tc_sel['id']), date_cible,
                             st.session_state.selected_ligne,
-                            tc['duree_minutes'], annee, semaine, heure_optimale_tc)
+                            tc_sel['duree_minutes'], annee, semaine, heure_optimale_tc
+                        )
                         if success:
+                            st.success(msg)
                             st.rerun()
                         else:
                             st.error(msg)
-
+                
                 else:
-                    # Mode "Dans un job" — lister les jobs PRÉVU/EN_COURS du jour/ligne
+                    # 4b. Mode "Dans un job" — choisir le job cible
                     if not planning_df.empty:
                         mask_jobs = (
                             (planning_df['date_prevue'].astype(str) == jour_str_tc) &
@@ -2764,41 +2794,71 @@ with tab1:
                         jobs_du_jour = planning_df[mask_jobs]
                     else:
                         jobs_du_jour = pd.DataFrame()
-
+                    
                     if jobs_du_jour.empty:
                         st.caption("Aucun job PRÉVU/EN_COURS ce jour sur cette ligne")
                     else:
                         job_opts = {
-                            f"Job #{int(r['job_id'])} — {r['variete']} ({r['heure_debut'].strftime('%H:%M') if pd.notna(r['heure_debut']) else '?'})": int(r['id'])
+                            f"Job #{int(r['job_id'])} — {r['variete']} "
+                            f"({r['heure_debut'].strftime('%H:%M') if pd.notna(r['heure_debut']) else '?'})": int(r['id'])
                             for _, r in jobs_du_jour.iterrows()
                         }
                         job_sel_label = st.selectbox(
                             "Choisir le job",
                             list(job_opts.keys()),
-                            key=f"job_cible_tc_{tc['id']}",
+                            key="tc_unified_job_cible",
                             label_visibility="collapsed"
                         )
                         job_planning_id_sel = job_opts[job_sel_label]
-
-                        st.caption(f"⏸️ Pause de {tc['duree_minutes']} min insérée au début du job — heure_fin étendue + éléments suivants décalés")
-
-                        if st.button("✅ Insérer pause", key=f"confirm_tc_job_{tc['id']}", type="primary", use_container_width=True):
+                        
+                        st.caption(
+                            f"⏸️ Pause de {tc_sel['duree_minutes']} min insérée au début du job — "
+                            f"heure_fin étendue + éléments suivants décalés"
+                        )
+                        
+                        if st.button("✅ Insérer pause", key="tc_unified_btn_job",
+                                     type="primary", use_container_width=True):
                             success, msg = inserer_pause_dans_job(
-                                job_planning_id_sel, int(tc['id']),
-                                tc['duree_minutes'], annee, semaine)
+                                job_planning_id_sel, int(tc_sel['id']),
+                                tc_sel['duree_minutes'], annee, semaine
+                            )
                             if success:
                                 st.success(msg)
                                 st.rerun()
                             else:
                                 st.error(msg)
         
-        with st.expander("➕ Créer temps"):
+        # ============================================================
+        # EXPANDER GESTION (créer + supprimer) — Commit 6
+        # ============================================================
+        with st.expander("⚙️ Gérer les temps customs"):
+            # --- Créer un nouveau temps ---
+            st.markdown("**➕ Créer un nouveau temps**")
             new_lib = st.text_input("Libellé", key="new_tc_lib")
-            new_dur = st.number_input("Durée (min)", 5, 480, 20, key="new_tc_dur")
-            new_emo = st.selectbox("Emoji", ["⚙️", "☕", "🔧", "🍽️", "⏸️"], key="new_tc_emo")
-            if st.button("Créer", key="btn_create_tc") and new_lib:
+            col_n1, col_n2 = st.columns(2)
+            with col_n1:
+                new_dur = st.number_input("Durée (min)", 5, 480, 20, key="new_tc_dur")
+            with col_n2:
+                new_emo = st.selectbox("Emoji", ["⚙️", "☕", "🔧", "🍽️", "⏸️", "🧹", "🔄"],
+                                       key="new_tc_emo")
+            if st.button("Créer", key="btn_create_tc", use_container_width=True) and new_lib:
                 creer_temps_custom(new_lib.upper().replace(" ", "_")[:20], new_lib, new_emo, new_dur)
                 st.rerun()
+            
+            # --- Supprimer un temps existant ---
+            if is_admin() and temps_customs:
+                st.markdown("---")
+                st.markdown("**🗑️ Supprimer un temps existant**")
+                for tc in temps_customs:
+                    col_lab, col_btn = st.columns([4, 1])
+                    with col_lab:
+                        st.markdown(
+                            f"{tc['emoji']} {tc['libelle']} ({tc['duree_minutes']}min)"
+                        )
+                    with col_btn:
+                        if st.button("🗑️", key=f"del_tc_mgmt_{tc['id']}"):
+                            supprimer_temps_custom(tc['id'])
+                            st.rerun()
     
     # COLONNE DROITE : CALENDRIER
     with col_right:
