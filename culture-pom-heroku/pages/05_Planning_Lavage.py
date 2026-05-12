@@ -819,6 +819,36 @@ def demarrer_job(job_id):
             conn.rollback()
         return False, f"❌ Erreur : {str(e)}"
 
+def _distribute_pro_rata(total, parts):
+    """Distribue 'total' (int) en parts proportionnelles à 'parts' (list de float).
+    
+    Utilise largest-remainder pour que sum(résultat) == total exactement.
+    Retourne une list[int] de même longueur que 'parts'.
+    
+    Ex : _distribute_pro_rata(10, [0.6, 0.4]) → [6, 4]
+    Ex : _distribute_pro_rata(10, [1, 1, 1]) → [4, 3, 3] (le 1er reçoit le reste)
+    """
+    if total == 0 or not parts:
+        return [0] * len(parts)
+    total_parts = sum(parts)
+    if total_parts == 0:
+        return [0] * len(parts)
+    # Calculer la part flottante de chacun
+    raw = [(p / total_parts) * total for p in parts]
+    # Arrondi inférieur
+    base = [int(r) for r in raw]
+    # Reste à distribuer (par ordre décroissant de partie décimale)
+    reste = total - sum(base)
+    fractions = sorted(
+        [(i, raw[i] - base[i]) for i in range(len(parts))],
+        key=lambda x: -x[1]
+    )
+    for k in range(reste):
+        idx = fractions[k % len(fractions)][0]
+        base[idx] += 1
+    return base
+
+
 def terminer_job(job_id, 
                  # Sorties LAVÉ
                  nb_pallox_lave, type_cond_lave, poids_lave, calibre_min_lave, calibre_max_lave,
@@ -828,23 +858,34 @@ def terminer_job(job_id,
                  poids_dechets,
                  # Destination
                  site_dest, emplacement_dest, notes=""):
-    """Termine un job avec création stocks LAVÉ/GRENAILLES et déduction source
+    """Termine un job avec création stocks LAVÉ/GRENAILLES et déduction source.
     
-    Nouvelle version : prend en entrée les pallox + type + calibre pour chaque sortie.
-    Le poids peut être ajusté par l'utilisateur après calcul auto.
+    SUPPORT MULTI-LOT (Commit 4) :
+      - Si job mono-lot : 1 itération sur 1 lot fille (comportement legacy)
+      - Si job multi-lot : itère sur N lots fille avec distribution pro-rata stricte
+        basée sur le poids_brut_kg de chaque lot fille
     
-    Si source = BRUT → crée LAVÉ + GRENAILLES_BRUTES
-    Si source = GRENAILLES_BRUTES → crée GRENAILLES_LAVÉES (pas de sous-grenailles)
+    Saisie GLOBALE des sorties (Q3) :
+      - nb_pallox_lave + poids_lave = total batch LAVÉ
+      - nb_pallox_gren + poids_grenailles = total batch GRENAILLES
+      - Ces totaux sont répartis pro-rata sur chaque lot fille
+    
+    Si source = BRUT → crée LAVÉ + GRENAILLES_BRUTES par lot fille
+    Si source = GRENAILLES_BRUTES → crée GRENAILLES_LAVÉES par lot fille (pas de sous-grenailles)
     """
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Récupérer job complet avec emplacement_id et statut_source
+        # ============================================================
+        # 1. Récupérer le job (parent)
+        # ============================================================
         cursor.execute("""
-            SELECT lj.lot_id, lj.quantite_pallox, lj.poids_brut_kg,
+            SELECT lj.id, lj.lot_id, lj.quantite_pallox, lj.poids_brut_kg,
                    lj.code_lot_interne, lj.ligne_lavage, lj.date_activation,
-                   lj.variete, lj.emplacement_id, lj.statut_source
+                   lj.variete, lj.emplacement_id, lj.statut_source,
+                   COALESCE(lj.is_multi_lot, FALSE) as is_multi_lot,
+                   COALESCE(lj.nb_lots, 1) as nb_lots
             FROM lavages_jobs lj
             WHERE lj.id = %s AND lj.statut = 'EN_COURS'
         """, (job_id,))
@@ -852,75 +893,90 @@ def terminer_job(job_id,
         if not job:
             return False, "❌ Job introuvable ou pas EN_COURS"
         
-        # Récupérer l'emplacement source via emplacement_id du job (si disponible)
-        # Sinon fallback sur l'ancienne méthode
-        if job['emplacement_id']:
-            # Sans is_active : l'emplacement peut avoir ete desactive si stock epuise
-            # entre la creation du job et sa terminaison
-            cursor.execute("""
-                SELECT id, nombre_unites, poids_total_kg, site_stockage, emplacement_stockage, statut_lavage
-                FROM stock_emplacements
-                WHERE id = %s
-            """, (job['emplacement_id'],))
-        else:
-            # Fallback pour anciens jobs sans emplacement_id
-            # ORDER BY is_active DESC : priorite au stock encore actif
-            cursor.execute("""
-                SELECT id, nombre_unites, poids_total_kg, site_stockage, emplacement_stockage, statut_lavage
-                FROM stock_emplacements
-                WHERE lot_id = %s 
-                  AND statut_lavage IN ('BRUT', 'GRENAILLES_BRUTES')
-                ORDER BY is_active DESC, id
-                LIMIT 1
-            """, (job['lot_id'],))
+        is_multi_lot = bool(job['is_multi_lot'])
         
-        stock_source = cursor.fetchone()
-        if not stock_source:
-            return False, "❌ Stock source introuvable (emplacement_id absent de la base)"
+        # ============================================================
+        # 2. Récupérer les lots fille (1 si mono, N si multi)
+        # ============================================================
+        cursor.execute("""
+            SELECT lot_id, emplacement_id, code_lot_interne, variete,
+                   quantite_pallox, poids_brut_kg, ordre
+            FROM lavages_jobs_lots
+            WHERE job_id = %s
+            ORDER BY ordre
+        """, (job_id,))
+        lots_fille = cursor.fetchall()
         
-        # Déterminer le type de source (BRUT ou GRENAILLES_BRUTES)
-        statut_source = job['statut_source'] or stock_source['statut_lavage'] or 'BRUT'
+        # Fallback rétrocompat : si pas de ligne fille (anciens jobs créés avant Commit 1
+        # ou si Commit 2 jamais déployé), on construit une fille fictive depuis lavages_jobs
+        if not lots_fille:
+            if not job['lot_id']:
+                return False, "❌ Job sans détail de lots (ni table fille, ni lot_id sur parent)"
+            lots_fille = [{
+                'lot_id': job['lot_id'],
+                'emplacement_id': job['emplacement_id'],
+                'code_lot_interne': job['code_lot_interne'],
+                'variete': job['variete'],
+                'quantite_pallox': int(job['quantite_pallox']),
+                'poids_brut_kg': float(job['poids_brut_kg']),
+                'ordre': 1,
+            }]
+        
+        # ============================================================
+        # 3. Vérifier cohérence poids globaux
+        # ============================================================
+        poids_brut_total = float(job['poids_brut_kg'])
+        statut_source = job['statut_source'] or 'BRUT'
         is_grenailles_source = (statut_source == 'GRENAILLES_BRUTES')
         
-        # S'assurer que le stock source a bien un statut_lavage
-        if not stock_source['statut_lavage']:
-            cursor.execute("""
-                UPDATE stock_emplacements 
-                SET statut_lavage = 'BRUT', type_stock = 'PRINCIPAL'
-                WHERE id = %s AND statut_lavage IS NULL
-            """, (stock_source['id'],))
-        
-        # Calculs tares
-        poids_brut = float(job['poids_brut_kg'])
+        # Convertir entrées en types natifs
+        nb_pallox_lave = int(nb_pallox_lave) if nb_pallox_lave else 0
+        nb_pallox_gren = int(nb_pallox_gren) if nb_pallox_gren else 0
+        poids_lave = float(poids_lave) if poids_lave else 0.0
+        poids_grenailles = float(poids_grenailles) if poids_grenailles else 0.0
+        poids_dechets = float(poids_dechets) if poids_dechets else 0.0
         
         if is_grenailles_source:
-            # Pour grenailles : pas de sous-grenailles, tout passe en lavé ou déchets
-            poids_terre = poids_brut - poids_lave - poids_dechets
-            poids_grenailles = 0  # Pas de sous-grenailles
-            tare_reelle = ((poids_dechets + poids_terre) / poids_brut) * 100
-            rendement = (poids_lave / poids_brut) * 100
+            poids_grenailles = 0.0
+            nb_pallox_gren = 0
+            poids_terre = poids_brut_total - poids_lave - poids_dechets
+            tare_reelle = ((poids_dechets + poids_terre) / poids_brut_total) * 100 if poids_brut_total > 0 else 0
+            rendement = (poids_lave / poids_brut_total) * 100 if poids_brut_total > 0 else 0
         else:
-            # Pour BRUT normal
-            poids_terre = poids_brut - poids_lave - poids_grenailles - poids_dechets
-            tare_reelle = ((poids_dechets + poids_terre) / poids_brut) * 100
-            rendement = ((poids_lave + poids_grenailles) / poids_brut) * 100
+            poids_terre = poids_brut_total - poids_lave - poids_grenailles - poids_dechets
+            tare_reelle = ((poids_dechets + poids_terre) / poids_brut_total) * 100 if poids_brut_total > 0 else 0
+            rendement = ((poids_lave + poids_grenailles) / poids_brut_total) * 100 if poids_brut_total > 0 else 0
         
-        # Validation cohérence
         total_sorties = poids_lave + poids_grenailles + poids_dechets + poids_terre
-        if abs(poids_brut - total_sorties) > 1:
-            return False, f"❌ Poids incohérents ! Brut={poids_brut:.0f} vs Total={total_sorties:.0f}"
+        if abs(poids_brut_total - total_sorties) > 1:
+            return False, f"❌ Poids incohérents ! Brut={poids_brut_total:.0f} vs Total={total_sorties:.0f}"
         
-        # Calcul temps réel (en minutes)
+        # ============================================================
+        # 4. Distribution pro-rata des pallox et poids sur les lots fille
+        # ============================================================
+        poids_brut_par_lot = [float(lf['poids_brut_kg']) for lf in lots_fille]
+        
+        # Pallox LAVÉ et GRENAILLES répartis pro-rata du poids_brut_kg de chaque fille
+        pallox_lave_par_lot = _distribute_pro_rata(nb_pallox_lave, poids_brut_par_lot)
+        pallox_gren_par_lot = _distribute_pro_rata(nb_pallox_gren, poids_brut_par_lot)
+        
+        # Poids LAVÉ et GRENAILLES répartis en float
+        total_poids_brut = sum(poids_brut_par_lot)
+        if total_poids_brut > 0:
+            poids_lave_par_lot = [(p / total_poids_brut) * poids_lave for p in poids_brut_par_lot]
+            poids_gren_par_lot = [(p / total_poids_brut) * poids_grenailles for p in poids_brut_par_lot]
+        else:
+            poids_lave_par_lot = [0.0] * len(lots_fille)
+            poids_gren_par_lot = [0.0] * len(lots_fille)
+        
+        terminated_by = st.session_state.get('username', 'system')
         temps_reel_minutes = None
         if job['date_activation']:
             delta = datetime.now() - job['date_activation']
             temps_reel_minutes = int(delta.total_seconds() / 60)
         
-        terminated_by = st.session_state.get('username', 'system')
-        quantite_pallox = int(job['quantite_pallox'])
-        
         # ============================================================
-        # 1. METTRE À JOUR LE JOB
+        # 5. UPDATE lavages_jobs (totaux agrégés au parent)
         # ============================================================
         cursor.execute("""
             UPDATE lavages_jobs
@@ -942,110 +998,146 @@ def terminer_job(job_id,
               terminated_by, notes, job_id))
         
         # ============================================================
-        # 2. CRÉER STOCK LAVÉ (ou GRENAILLES_LAVÉES si source = grenailles)
+        # 6. POUR CHAQUE LOT FILLE : déduction source + création stocks
         # ============================================================
         if is_grenailles_source:
-            # Source = GRENAILLES_BRUTES → créer GRENAILLES_LAVÉES
             statut_sortie = 'GRENAILLES_LAVÉES'
             type_stock_sortie = 'GRENAILLES_LAVÉES'
+            type_mvt_source = 'LAVAGE_GRENAILLES_REDUIT'
+            type_mvt_sortie = 'LAVAGE_CREATION_GRENAILLES_LAVEES'
         else:
-            # Source = BRUT → créer LAVÉ
             statut_sortie = 'LAVÉ'
             type_stock_sortie = 'LAVÉ'
+            type_mvt_source = 'LAVAGE_BRUT_REDUIT'
+            type_mvt_sortie = 'LAVAGE_CREATION_LAVE'
         
-        # Utiliser les paramètres pallox et type fournis par l'utilisateur
-        cursor.execute("""
-            INSERT INTO stock_emplacements 
-            (lot_id, site_stockage, emplacement_stockage, nombre_unites, 
-             type_conditionnement, poids_total_kg, type_stock, statut_lavage, 
-             calibre_min, calibre_max, lavage_job_id, is_active)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
-            RETURNING id
-        """, (job['lot_id'], site_dest, emplacement_dest, int(nb_pallox_lave), 
-              type_cond_lave, float(poids_lave), type_stock_sortie, statut_sortie, 
-              int(calibre_min_lave), int(calibre_max_lave), job_id))
-        stock_lave_id = cursor.fetchone()['id']
-        
-        # ============================================================
-        # 3. CRÉER STOCK GRENAILLES_BRUTES (seulement si source = BRUT et grenailles > 0)
-        # ============================================================
-        stock_grenailles_id = None
-        if not is_grenailles_source and poids_grenailles > 0 and nb_pallox_gren > 0:
-            cursor.execute("""
-                INSERT INTO stock_emplacements 
-                (lot_id, site_stockage, emplacement_stockage, nombre_unites, 
-                 type_conditionnement, poids_total_kg, type_stock, statut_lavage, 
-                 calibre_min, calibre_max, lavage_job_id, is_active)
-                VALUES (%s, %s, %s, %s, %s, %s, 'GRENAILLES', 'GRENAILLES_BRUTES', %s, %s, %s, TRUE)
-                RETURNING id
-            """, (job['lot_id'], site_dest, emplacement_dest, int(nb_pallox_gren), 
-                  type_cond_gren, float(poids_grenailles), 
-                  int(calibre_min_gren), int(calibre_max_gren), job_id))
-            stock_grenailles_id = cursor.fetchone()['id']
-        
-        # ============================================================
-        # 4. DÉDUIRE DU STOCK SOURCE
-        # ============================================================
-        nouveau_nb_unites = int(stock_source['nombre_unites']) - quantite_pallox
-        nouveau_poids = float(stock_source['poids_total_kg']) - poids_brut
-        
-        if nouveau_nb_unites <= 0:
-            # Stock épuisé - désactiver
-            cursor.execute("""
-                UPDATE stock_emplacements
-                SET nombre_unites = 0, poids_total_kg = 0, is_active = FALSE
-                WHERE id = %s
-            """, (stock_source['id'],))
-        else:
-            # Stock restant
-            cursor.execute("""
-                UPDATE stock_emplacements
-                SET nombre_unites = %s, poids_total_kg = %s
-                WHERE id = %s
-            """, (nouveau_nb_unites, nouveau_poids, stock_source['id']))
-        
-        # ============================================================
-        # 5. ENREGISTRER MOUVEMENTS DE STOCK
-        # ============================================================
-        # Mouvement réduction source
-        type_mvt_source = 'LAVAGE_GRENAILLES_REDUIT' if is_grenailles_source else 'LAVAGE_BRUT_REDUIT'
-        cursor.execute("""
-            INSERT INTO stock_mouvements 
-            (lot_id, type_mouvement, site_origine, emplacement_origine,
-             quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
-            VALUES (%s, %s, %s, %s, %s, 'Pallox', %s, %s, %s, %s)
-        """, (job['lot_id'], type_mvt_source, stock_source['site_stockage'], stock_source['emplacement_stockage'], 
-              quantite_pallox, poids_brut, terminated_by, f"Job #{job_id} - Sortie lavage", terminated_by))
-        
-        # Mouvement création sortie (LAVÉ ou GRENAILLES_LAVÉES)
-        type_mvt_sortie = 'LAVAGE_CREATION_GRENAILLES_LAVEES' if is_grenailles_source else 'LAVAGE_CREATION_LAVE'
-        cursor.execute("""
-            INSERT INTO stock_mouvements 
-            (lot_id, type_mouvement, site_destination, emplacement_destination,
-             quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
-            VALUES (%s, %s, %s, %s, %s, 'Pallox', %s, %s, %s, %s)
-        """, (job['lot_id'], type_mvt_sortie, site_dest, emplacement_dest, nb_pallox_lave, 
-              poids_lave, terminated_by, f"Job #{job_id} - Entrée {statut_sortie}", terminated_by))
-        
-        # Mouvement GRENAILLES_BRUTES (seulement si source = BRUT et grenailles > 0)
-        if not is_grenailles_source and poids_grenailles > 0:
+        for i, lf in enumerate(lots_fille):
+            lf_lot_id = int(lf['lot_id'])
+            lf_emp_id = int(lf['emplacement_id']) if lf['emplacement_id'] else None
+            lf_qty_brut = int(lf['quantite_pallox'])
+            lf_poids_brut = float(lf['poids_brut_kg'])
+            lf_pallox_lave = pallox_lave_par_lot[i]
+            lf_pallox_gren = pallox_gren_par_lot[i]
+            lf_poids_lave = poids_lave_par_lot[i]
+            lf_poids_gren = poids_gren_par_lot[i]
+            
+            # 6a. Lire l'emplacement source de ce lot fille
+            if lf_emp_id:
+                cursor.execute("""
+                    SELECT id, nombre_unites, poids_total_kg, site_stockage, emplacement_stockage, statut_lavage
+                    FROM stock_emplacements
+                    WHERE id = %s
+                """, (lf_emp_id,))
+            else:
+                # Fallback : chercher via lot_id (anciens jobs sans emplacement_id)
+                cursor.execute("""
+                    SELECT id, nombre_unites, poids_total_kg, site_stockage, emplacement_stockage, statut_lavage
+                    FROM stock_emplacements
+                    WHERE lot_id = %s
+                      AND statut_lavage IN ('BRUT', 'GRENAILLES_BRUTES')
+                    ORDER BY is_active DESC, id
+                    LIMIT 1
+                """, (lf_lot_id,))
+            stock_source = cursor.fetchone()
+            if not stock_source:
+                conn.rollback()
+                cursor.close()
+                conn.close()
+                return False, f"❌ Stock source introuvable pour lot fille {lf_lot_id} (emplacement {lf_emp_id})"
+            
+            # S'assurer que le stock source a bien un statut_lavage
+            if not stock_source['statut_lavage']:
+                cursor.execute("""
+                    UPDATE stock_emplacements 
+                    SET statut_lavage = 'BRUT', type_stock = 'PRINCIPAL'
+                    WHERE id = %s AND statut_lavage IS NULL
+                """, (stock_source['id'],))
+            
+            # 6b. Créer le stock LAVÉ (ou GRENAILLES_LAVÉES) de la part fille
+            if lf_pallox_lave > 0 and lf_poids_lave > 0:
+                cursor.execute("""
+                    INSERT INTO stock_emplacements 
+                    (lot_id, site_stockage, emplacement_stockage, nombre_unites, 
+                     type_conditionnement, poids_total_kg, type_stock, statut_lavage, 
+                     calibre_min, calibre_max, lavage_job_id, is_active)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+                """, (lf_lot_id, site_dest, emplacement_dest, lf_pallox_lave, 
+                      type_cond_lave, lf_poids_lave, type_stock_sortie, statut_sortie, 
+                      int(calibre_min_lave), int(calibre_max_lave), job_id))
+            
+            # 6c. Créer stock GRENAILLES_BRUTES (si source BRUT et grenailles > 0)
+            if not is_grenailles_source and lf_pallox_gren > 0 and lf_poids_gren > 0:
+                cursor.execute("""
+                    INSERT INTO stock_emplacements 
+                    (lot_id, site_stockage, emplacement_stockage, nombre_unites, 
+                     type_conditionnement, poids_total_kg, type_stock, statut_lavage, 
+                     calibre_min, calibre_max, lavage_job_id, is_active)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'GRENAILLES', 'GRENAILLES_BRUTES', %s, %s, %s, TRUE)
+                """, (lf_lot_id, site_dest, emplacement_dest, lf_pallox_gren, 
+                      type_cond_gren, lf_poids_gren, 
+                      int(calibre_min_gren), int(calibre_max_gren), job_id))
+            
+            # 6d. Déduire du stock source
+            nouveau_nb = int(stock_source['nombre_unites']) - lf_qty_brut
+            nouveau_poids = float(stock_source['poids_total_kg']) - lf_poids_brut
+            if nouveau_nb <= 0:
+                cursor.execute("""
+                    UPDATE stock_emplacements
+                    SET nombre_unites = 0, poids_total_kg = 0, is_active = FALSE
+                    WHERE id = %s
+                """, (stock_source['id'],))
+            else:
+                cursor.execute("""
+                    UPDATE stock_emplacements
+                    SET nombre_unites = %s, poids_total_kg = %s
+                    WHERE id = %s
+                """, (nouveau_nb, max(nouveau_poids, 0), stock_source['id']))
+            
+            # 6e. Mouvement réduction source
             cursor.execute("""
                 INSERT INTO stock_mouvements 
-                (lot_id, type_mouvement, site_destination, emplacement_destination,
+                (lot_id, type_mouvement, site_origine, emplacement_origine,
                  quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
-                VALUES (%s, 'LAVAGE_CREATION_GRENAILLES', %s, %s, %s, 'Pallox', %s, %s, %s, %s)
-            """, (job['lot_id'], site_dest, emplacement_dest, nb_pallox_gren, 
-                  poids_grenailles, terminated_by, f"Job #{job_id} - Entrée grenailles brutes", terminated_by))
+                VALUES (%s, %s, %s, %s, %s, 'Pallox', %s, %s, %s, %s)
+            """, (lf_lot_id, type_mvt_source,
+                  stock_source['site_stockage'], stock_source['emplacement_stockage'],
+                  lf_qty_brut, lf_poids_brut, terminated_by,
+                  f"Job #{job_id} - Sortie lavage (lot {i+1}/{len(lots_fille)})", terminated_by))
+            
+            # 6f. Mouvement création sortie (LAVÉ ou GRENAILLES_LAVÉES)
+            if lf_pallox_lave > 0:
+                cursor.execute("""
+                    INSERT INTO stock_mouvements 
+                    (lot_id, type_mouvement, site_destination, emplacement_destination,
+                     quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
+                    VALUES (%s, %s, %s, %s, %s, 'Pallox', %s, %s, %s, %s)
+                """, (lf_lot_id, type_mvt_sortie, site_dest, emplacement_dest,
+                      lf_pallox_lave, lf_poids_lave, terminated_by,
+                      f"Job #{job_id} - Entrée {statut_sortie} (lot {i+1}/{len(lots_fille)})",
+                      terminated_by))
+            
+            # 6g. Mouvement GRENAILLES_BRUTES (si source BRUT)
+            if not is_grenailles_source and lf_pallox_gren > 0:
+                cursor.execute("""
+                    INSERT INTO stock_mouvements 
+                    (lot_id, type_mouvement, site_destination, emplacement_destination,
+                     quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
+                    VALUES (%s, 'LAVAGE_CREATION_GRENAILLES', %s, %s, %s, 'Pallox', %s, %s, %s, %s)
+                """, (lf_lot_id, site_dest, emplacement_dest, lf_pallox_gren, 
+                      lf_poids_gren, terminated_by,
+                      f"Job #{job_id} - Entrée grenailles brutes (lot {i+1}/{len(lots_fille)})",
+                      terminated_by))
         
         conn.commit()
         cursor.close()
         conn.close()
         
         temps_str = f"{temps_reel_minutes // 60}h{temps_reel_minutes % 60:02d}" if temps_reel_minutes else "N/A"
+        nb_lots_str = f" ({len(lots_fille)} lots)" if is_multi_lot else ""
         if is_grenailles_source:
-            return True, f"✅ Terminé ! Temps: {temps_str} - Rendement: {rendement:.1f}% - Stock GRENAILLES_LAVÉES créé"
+            return True, f"✅ Terminé{nb_lots_str} ! Temps: {temps_str} - Rendement: {rendement:.1f}% - Stock GRENAILLES_LAVÉES créé"
         else:
-            return True, f"✅ Terminé ! Temps: {temps_str} - Rendement: {rendement:.1f}% - Stock LAVÉ créé"
+            return True, f"✅ Terminé{nb_lots_str} ! Temps: {temps_str} - Rendement: {rendement:.1f}% - Stock LAVÉ créé"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
