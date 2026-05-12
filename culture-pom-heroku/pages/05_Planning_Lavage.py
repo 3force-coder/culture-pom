@@ -237,39 +237,61 @@ def get_kpis_lavage():
         return None
 
 def get_jobs_a_placer(ligne_lavage=None):
-    """Récupère les jobs PRÉVU, filtrés par ligne si précisé"""
+    """Récupère les jobs PRÉVU, filtrés par ligne si précisé.
+    
+    Pour les jobs multi-lot (is_multi_lot=TRUE), un champ 'lots_detail' (list de dicts)
+    est joint pour afficher le détail des lots dans le Kanban.
+    Pour les mono-lot, lots_detail contiendra 1 seul élément.
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        
+        # Sous-requête json_agg : récupère le détail des lots fille en une seule passe
+        # Pour les multi-lot : N éléments dans le JSON
+        # Pour les mono-lot : 1 élément (créé par create_job_lavage Commit 2)
+        # Pour les anciens jobs sans ligne fille : tableau vide → fallback sur les colonnes legacy
+        base_query = """
+            SELECT 
+                lj.id, lj.lot_id, lj.code_lot_interne, lj.variete,
+                lj.quantite_pallox, lj.poids_brut_kg, lj.temps_estime_heures,
+                lj.date_prevue, lj.ligne_lavage as ligne_origine, lj.statut,
+                lj.statut_source,
+                COALESCE(lj.is_multi_lot, FALSE) as is_multi_lot,
+                COALESCE(lj.nb_lots, 1) as nb_lots,
+                COALESCE(p.nom, lj.producteur) as producteur,
+                COALESCE(
+                    (SELECT json_agg(
+                        json_build_object(
+                            'lot_id', ljl.lot_id,
+                            'emplacement_id', ljl.emplacement_id,
+                            'code_lot_interne', ljl.code_lot_interne,
+                            'variete', ljl.variete,
+                            'producteur', ljl.producteur,
+                            'quantite_pallox', ljl.quantite_pallox,
+                            'poids_brut_kg', ljl.poids_brut_kg,
+                            'type_conditionnement', ljl.type_conditionnement,
+                            'calibre_min', ljl.calibre_min,
+                            'calibre_max', ljl.calibre_max,
+                            'ordre', ljl.ordre
+                        ) ORDER BY ljl.ordre
+                    )
+                    FROM lavages_jobs_lots ljl
+                    WHERE ljl.job_id = lj.id),
+                    '[]'::json
+                ) as lots_detail
+            FROM lavages_jobs lj
+            LEFT JOIN lots_bruts lb ON lj.lot_id = lb.id
+            LEFT JOIN ref_producteurs p ON lb.code_producteur = p.code_producteur
+            WHERE lj.statut = 'PRÉVU'
+        """
+        
         if ligne_lavage:
-            cursor.execute("""
-                SELECT 
-                    lj.id, lj.lot_id, lj.code_lot_interne, lj.variete,
-                    lj.quantite_pallox, lj.poids_brut_kg, lj.temps_estime_heures,
-                    lj.date_prevue, lj.ligne_lavage as ligne_origine, lj.statut,
-                    lj.statut_source,
-                    COALESCE(p.nom, lj.producteur) as producteur
-                FROM lavages_jobs lj
-                LEFT JOIN lots_bruts lb ON lj.lot_id = lb.id
-                LEFT JOIN ref_producteurs p ON lb.code_producteur = p.code_producteur
-                WHERE lj.statut = 'PRÉVU'
-                  AND lj.ligne_lavage = %s
-                ORDER BY lj.date_prevue, lj.id
-            """, (ligne_lavage,))
+            cursor.execute(base_query + " AND lj.ligne_lavage = %s ORDER BY lj.date_prevue, lj.id",
+                          (ligne_lavage,))
         else:
-            cursor.execute("""
-                SELECT 
-                    lj.id, lj.lot_id, lj.code_lot_interne, lj.variete,
-                    lj.quantite_pallox, lj.poids_brut_kg, lj.temps_estime_heures,
-                    lj.date_prevue, lj.ligne_lavage as ligne_origine, lj.statut,
-                    lj.statut_source,
-                    COALESCE(p.nom, lj.producteur) as producteur
-                FROM lavages_jobs lj
-                LEFT JOIN lots_bruts lb ON lj.lot_id = lb.id
-                LEFT JOIN ref_producteurs p ON lb.code_producteur = p.code_producteur
-                WHERE lj.statut = 'PRÉVU'
-                ORDER BY lj.date_prevue, lj.id
-            """)
+            cursor.execute(base_query + " ORDER BY lj.date_prevue, lj.id")
+        
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -285,7 +307,12 @@ def get_jobs_a_placer(ligne_lavage=None):
         return pd.DataFrame()
 
 def get_planning_semaine(annee, semaine):
-    """Récupère le planning d'une semaine donnée"""
+    """Récupère le planning d'une semaine donnée.
+    
+    Pour les jobs multi-lot (lj.lot_id NULL au parent), le producteur,
+    code_lot et emplacement sont récupérés via la table fille (1er lot par ordre).
+    Un champ 'lots_detail' (JSON) liste tous les lots fille (utile pour tooltips/détail).
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -294,21 +321,52 @@ def get_planning_semaine(annee, semaine):
                 pe.id, pe.type_element, pe.job_id, pe.temps_custom_id,
                 pe.date_prevue, pe.ligne_lavage, pe.ordre_jour,
                 pe.heure_debut, pe.heure_fin, pe.duree_minutes,
-                lj.id as lj_id, lj.code_lot_interne, lj.variete, lj.quantite_pallox,
+                lj.id as lj_id,
+                -- Pour multi-lot, code_lot_interne devient un label "BATCH (N lots)"
+                CASE
+                    WHEN COALESCE(lj.is_multi_lot, FALSE) AND COALESCE(lj.nb_lots, 1) > 1
+                    THEN '📦 BATCH (' || lj.nb_lots || ' lots)'
+                    ELSE lj.code_lot_interne
+                END as code_lot_interne,
+                lj.variete, lj.quantite_pallox,
                 lj.poids_brut_kg, lj.capacite_th, lj.statut as job_statut,
                 lj.date_activation, lj.date_terminaison,
-                lj.temps_estime_heures, lj.statut_source, lj.emplacement_id,
-                COALESCE(p.nom, lj.producteur) as producteur,
+                lj.temps_estime_heures, lj.statut_source,
+                COALESCE(lj.emplacement_id, ljl_first.emplacement_id) as emplacement_id,
+                COALESCE(lj.is_multi_lot, FALSE) as is_multi_lot,
+                COALESCE(lj.nb_lots, 1) as nb_lots,
+                -- Producteur : prend la BDD via lots_bruts (mono) OU ljl_first (multi)
+                COALESCE(p.nom, ljl_first.producteur, lj.producteur) as producteur,
                 se.site_stockage as empl_site,
                 se.emplacement_stockage as empl_code,
                 STRING_AGG(DISTINCT pc.marque || ' ' || pc.libelle, ', ') as produits_affectes,
-                tc.libelle as custom_libelle, tc.emoji as custom_emoji
+                tc.libelle as custom_libelle, tc.emoji as custom_emoji,
+                -- Pour info : détail des lots fille (utile pour tooltip/audit)
+                COALESCE(
+                    (SELECT json_agg(
+                        json_build_object(
+                            'code_lot_interne', ljl2.code_lot_interne,
+                            'producteur', ljl2.producteur,
+                            'quantite_pallox', ljl2.quantite_pallox,
+                            'poids_brut_kg', ljl2.poids_brut_kg,
+                            'ordre', ljl2.ordre
+                        ) ORDER BY ljl2.ordre)
+                    FROM lavages_jobs_lots ljl2 WHERE ljl2.job_id = lj.id),
+                    '[]'::json
+                ) as lots_detail
             FROM lavages_planning_elements pe
             LEFT JOIN lavages_jobs lj ON pe.job_id = lj.id
             LEFT JOIN lots_bruts lb ON lj.lot_id = lb.id
             LEFT JOIN ref_producteurs p ON lb.code_producteur = p.code_producteur
-            LEFT JOIN stock_emplacements se ON lj.emplacement_id = se.id
-            LEFT JOIN previsions_affectations pa ON pa.lot_id = lj.lot_id
+            -- Pour multi-lot : on prend les infos du 1er lot fille (ordre=1)
+            LEFT JOIN LATERAL (
+                SELECT ljl.emplacement_id, ljl.producteur, ljl.lot_id
+                FROM lavages_jobs_lots ljl
+                WHERE ljl.job_id = lj.id
+                ORDER BY ljl.ordre LIMIT 1
+            ) ljl_first ON TRUE
+            LEFT JOIN stock_emplacements se ON COALESCE(lj.emplacement_id, ljl_first.emplacement_id) = se.id
+            LEFT JOIN previsions_affectations pa ON pa.lot_id = COALESCE(lj.lot_id, ljl_first.lot_id)
                 AND pa.is_active = TRUE AND pa.statut_stock = 'BRUT'
             LEFT JOIN ref_produits_commerciaux pc ON pa.code_produit_commercial = pc.code_produit
             LEFT JOIN lavages_temps_customs tc ON pe.temps_custom_id = tc.id
@@ -319,7 +377,9 @@ def get_planning_semaine(annee, semaine):
                 lj.id, lj.code_lot_interne, lj.variete, lj.quantite_pallox,
                 lj.poids_brut_kg, lj.capacite_th, lj.statut,
                 lj.date_activation, lj.date_terminaison,
-                lj.temps_estime_heures, lj.statut_source, lj.emplacement_id,
+                lj.temps_estime_heures, lj.statut_source,
+                lj.emplacement_id, lj.is_multi_lot, lj.nb_lots,
+                ljl_first.emplacement_id, ljl_first.producteur,
                 p.nom, lj.producteur, se.site_stockage, se.emplacement_stockage,
                 tc.libelle, tc.emoji
             ORDER BY pe.date_prevue, pe.ligne_lavage, pe.ordre_jour
@@ -2287,9 +2347,40 @@ with tab1:
             for _, job in jobs_non_planifies.iterrows():
                 statut_source = job.get('statut_source', 'BRUT')
                 badge_source = "🔄" if statut_source == 'GRENAILLES_BRUTES' else "🥔"
-                producteur_info = f"<br>👤 {job['producteur']}" if pd.notna(job.get('producteur')) and job['producteur'] else ""
-                st.markdown(f"""<div class="job-card"><strong>Job #{int(job['id'])} {badge_source}</strong><br>
-                🌱 {job['variete']}{producteur_info}<br>📦 {int(job['quantite_pallox'])}p - ⏱️ {job['temps_estime_heures']:.1f}h</div>""", unsafe_allow_html=True)
+                
+                # Détection multi-lot (Commit 1+2)
+                is_multi = bool(job.get('is_multi_lot', False))
+                nb_lots = int(job.get('nb_lots', 1)) if pd.notna(job.get('nb_lots')) else 1
+                lots_detail = job.get('lots_detail') or []
+                
+                if is_multi and nb_lots > 1 and lots_detail:
+                    # ===== Carte BATCH multi-lot =====
+                    # Liste compacte des lots fille
+                    lots_lines = []
+                    for ld in lots_detail:
+                        prod_lab = ld.get('producteur') or '—'
+                        lots_lines.append(
+                            f"&nbsp;&nbsp;• {prod_lab} — {int(ld.get('quantite_pallox') or 0)}p"
+                        )
+                    lots_html = "<br>".join(lots_lines)
+                    
+                    st.markdown(
+                        f"""<div class="job-card">
+                        <strong>Job #{int(job['id'])} 📦 Batch ({nb_lots} lots) {badge_source}</strong><br>
+                        🌱 {job['variete']}<br>
+                        {lots_html}<br>
+                        📦 Total {int(job['quantite_pallox'])}p - ⏱️ {job['temps_estime_heures']:.1f}h
+                        </div>""",
+                        unsafe_allow_html=True
+                    )
+                else:
+                    # ===== Carte MONO-LOT (comportement legacy) =====
+                    producteur_info = (
+                        f"<br>👤 {job['producteur']}"
+                        if pd.notna(job.get('producteur')) and job['producteur'] else ""
+                    )
+                    st.markdown(f"""<div class="job-card"><strong>Job #{int(job['id'])} {badge_source}</strong><br>
+                    🌱 {job['variete']}{producteur_info}<br>📦 {int(job['quantite_pallox'])}p - ⏱️ {job['temps_estime_heures']:.1f}h</div>""", unsafe_allow_html=True)
                 
                 jours_options = ["Sélectionner..."] + [f"{['Lun','Mar','Mer','Jeu','Ven','Sam'][i]} {(week_start + timedelta(days=i)).strftime('%d/%m')}" for i in range(6)]
                 jour_choisi = st.selectbox("Jour", jours_options, key=f"jour_job_{job['id']}", label_visibility="collapsed")
@@ -2693,7 +2784,10 @@ with tab2:
             SELECT id, code_lot_interne, variete, quantite_pallox, poids_brut_kg,
                    date_prevue, ligne_lavage, temps_estime_heures, statut,
                    date_activation, date_terminaison, rendement_pct, tare_reelle_pct,
-                   created_by, created_at
+                   created_by, created_at,
+                   COALESCE(is_multi_lot, FALSE) as is_multi_lot,
+                   COALESCE(nb_lots, 1) as nb_lots,
+                   batch_id
             FROM lavages_jobs
             ORDER BY created_at DESC
             LIMIT 100
@@ -2703,7 +2797,14 @@ with tab2:
         conn.close()
         
         if rows:
-            df = pd.DataFrame(rows)
+            df = pd.DataFrame([dict(r) for r in rows])
+            
+            # Pour les jobs multi-lot : code_lot_interne est NULL → afficher "BATCH (N lots)"
+            def _format_code_lot(row):
+                if row.get('is_multi_lot') and (row.get('nb_lots') or 1) > 1:
+                    return f"📦 BATCH ({int(row.get('nb_lots') or 0)} lots)"
+                return row.get('code_lot_interne') or '—'
+            df['code_lot_interne'] = df.apply(_format_code_lot, axis=1)
             
             # Filtres
             col1, col2 = st.columns(2)
@@ -2719,7 +2820,9 @@ with tab2:
             if filtre_variete != "Toutes":
                 df = df[df['variete'] == filtre_variete]
             
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            # Masquer les colonnes techniques (is_multi_lot, nb_lots, batch_id) en affichage
+            cols_to_show = [c for c in df.columns if c not in ('is_multi_lot', 'nb_lots', 'batch_id')]
+            st.dataframe(df[cols_to_show], use_container_width=True, hide_index=True)
         else:
             st.info("Aucun job")
     except Exception as e:
