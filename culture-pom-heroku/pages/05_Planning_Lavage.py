@@ -1300,7 +1300,11 @@ def get_besoins_lavage_affectations():
 
 def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg, 
                      date_prevue, ligne_lavage, capacite_th, notes=""):
-    """Crée un nouveau job de lavage
+    """Crée un nouveau job de lavage MONO-LOT
+    
+    Schéma multi-lot (Commit 1) :
+      - INSERT 1 ligne dans lavages_jobs (is_multi_lot=FALSE, nb_lots=1)
+      - INSERT 1 ligne fille dans lavages_jobs_lots
     
     Vérifie que le stock disponible PAR EMPLACEMENT est suffisant
     Enregistre emplacement_id et statut_source
@@ -1316,6 +1320,8 @@ def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg,
         
         # ============================================================
         # VÉRIFICATION : Stock disponible PAR EMPLACEMENT suffisant ?
+        # Réservations : soit via lavages_jobs (legacy mono-lot)
+        # soit via lavages_jobs_lots (nouveau multi-lot)
         # ============================================================
         cursor.execute("""
             SELECT 
@@ -1325,10 +1331,25 @@ def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg,
                 se.nombre_unites - COALESCE(jobs.pallox_reserves, 0) as stock_disponible
             FROM stock_emplacements se
             LEFT JOIN (
+                -- Réservations issues des jobs mono-lot ET multi-lot
+                -- Pour mono-lot : on lit lavages_jobs.quantite_pallox + emplacement_id
+                -- Pour multi-lot : lavages_jobs_lots.quantite_pallox + emplacement_id
                 SELECT emplacement_id, SUM(quantite_pallox) as pallox_reserves
-                FROM lavages_jobs
-                WHERE statut IN ('PRÉVU', 'EN_COURS')
-                  AND emplacement_id IS NOT NULL
+                FROM (
+                    -- Jobs mono-lot
+                    SELECT lj.emplacement_id, lj.quantite_pallox
+                    FROM lavages_jobs lj
+                    WHERE lj.statut IN ('PRÉVU', 'EN_COURS')
+                      AND lj.emplacement_id IS NOT NULL
+                      AND COALESCE(lj.is_multi_lot, FALSE) = FALSE
+                    UNION ALL
+                    -- Jobs multi-lot (lecture via table fille)
+                    SELECT ljl.emplacement_id, ljl.quantite_pallox
+                    FROM lavages_jobs_lots ljl
+                    JOIN lavages_jobs lj ON ljl.job_id = lj.id
+                    WHERE lj.statut IN ('PRÉVU', 'EN_COURS')
+                      AND lj.is_multi_lot = TRUE
+                ) AS all_reservations
                 GROUP BY emplacement_id
             ) jobs ON se.id = jobs.emplacement_id
             WHERE se.id = %s
@@ -1345,27 +1366,60 @@ def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg,
         # Récupérer le statut_source (BRUT ou GRENAILLES_BRUTES)
         statut_source = stock_info['statut_lavage'] or 'BRUT'
         
+        # Récupérer infos lot + producteur (utilisés pour info dans la fille)
         cursor.execute("""
-            SELECT l.code_lot_interne, COALESCE(v.nom_variete, l.code_variete) as variete
+            SELECT 
+                l.code_lot_interne, 
+                COALESCE(v.nom_variete, l.code_variete) as variete,
+                COALESCE(p.nom, l.code_producteur) as producteur
             FROM lots_bruts l
             LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+            LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
             WHERE l.id = %s
         """, (lot_id,))
         lot_info = cursor.fetchone()
+        if not lot_info:
+            return False, f"❌ Lot {lot_id} introuvable"
+        
+        # Récupérer type_conditionnement + calibres depuis stock_emplacements
+        cursor.execute("""
+            SELECT type_conditionnement, calibre_min, calibre_max
+            FROM stock_emplacements
+            WHERE id = %s
+        """, (emplacement_id,))
+        emp_info = cursor.fetchone()
+        type_cond = emp_info.get('type_conditionnement') if emp_info else None
+        calibre_min = emp_info.get('calibre_min') if emp_info else None
+        calibre_max = emp_info.get('calibre_max') if emp_info else None
+        
         temps_estime = (poids_brut_kg / 1000) / capacite_th
         created_by = st.session_state.get('username', 'system')
         
+        # INSERT lavages_jobs (1 ligne parent mono-lot)
         cursor.execute("""
             INSERT INTO lavages_jobs (
                 lot_id, emplacement_id, code_lot_interne, variete, quantite_pallox, poids_brut_kg,
                 date_prevue, ligne_lavage, capacite_th, temps_estime_heures,
-                statut, statut_source, created_by, notes
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'PRÉVU', %s, %s, %s)
+                statut, statut_source, is_multi_lot, nb_lots, created_by, notes
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'PRÉVU', %s,
+                      FALSE, 1, %s, %s)
             RETURNING id
         """, (lot_id, emplacement_id, lot_info['code_lot_interne'], lot_info['variete'],
               quantite_pallox, poids_brut_kg, date_prevue, ligne_lavage,
               capacite_th, temps_estime, statut_source, created_by, notes))
-        job_id = cursor.fetchone()['id']
+        job_id = int(cursor.fetchone()['id'])
+        
+        # INSERT lavages_jobs_lots (1 ligne fille)
+        cursor.execute("""
+            INSERT INTO lavages_jobs_lots (
+                job_id, lot_id, emplacement_id, code_lot_interne, variete, producteur,
+                quantite_pallox, poids_brut_kg, type_conditionnement, calibre_min, calibre_max,
+                ordre
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1)
+        """, (job_id, lot_id, emplacement_id, lot_info['code_lot_interne'],
+              lot_info['variete'], lot_info.get('producteur'),
+              quantite_pallox, poids_brut_kg, type_cond, calibre_min, calibre_max))
+        
         conn.commit()
         cursor.close()
         conn.close()
@@ -1377,89 +1431,254 @@ def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg,
 
 def create_batch_jobs(lots_selection, date_prevue, ligne_lavage, cadence, notes=""):
     """
-    Crée N jobs liés par un batch_id commun (UUID).
-    lots_selection : liste de dicts avec keys :
-        lot_id, emplacement_id, quantite_pallox, poids_brut_kg, type_conditionnement
-    Retourne (ok, message, batch_id)
+    Crée UN SEUL job multi-lot avec N lignes filles dans lavages_jobs_lots.
+    
+    Schéma multi-lot (Commit 1) :
+      - 1 ligne lavages_jobs (is_multi_lot=TRUE, nb_lots=N, lot_id/emplacement_id NULL)
+      - N lignes lavages_jobs_lots (le détail par lot source)
+      - quantite_pallox et poids_brut_kg sur le parent = SUM des fille
+    
+    Validations métier :
+      Q2 - Toutes les variétés doivent être identiques
+      Q4 - Calibres min/max doivent être identiques entre lots
+      Q4 - Types de conditionnement doivent être identiques
+    
+    Si len(lots_selection) == 1 : délègue à create_job_lavage (mono-lot).
+    
+    lots_selection : liste de dicts avec keys requises :
+        lot_id, emplacement_id, quantite_pallox, poids_brut_kg
+    (Le reste — variete, calibres, type_conditionnement — sera récupéré depuis la BDD)
+    
+    Retourne : (ok, message, batch_id)
     """
     import uuid
+    
+    # Délégation mono-lot si 1 seul lot
+    if len(lots_selection) < 2:
+        return False, "❌ create_batch_jobs requiert au moins 2 lots (utiliser create_job_lavage sinon)", None
+    
     batch_id = str(uuid.uuid4())
+    
     try:
         conn = get_connection()
         cursor = conn.cursor()
         created_by = st.session_state.get('username', 'system')
-        jobs_crees = []
-
+        
+        # ============================================================
+        # 1. ENRICHISSEMENT : récupérer variété + calibres + conditionnement
+        #    pour CHAQUE lot depuis la BDD (source de vérité)
+        # ============================================================
+        enriched = []
         for lot in lots_selection:
-            lot_id        = int(lot['lot_id'])
+            lot_id = int(lot['lot_id'])
             emplacement_id = int(lot['emplacement_id'])
             quantite_pallox = int(lot['quantite_pallox'])
-            poids_brut_kg   = float(lot['poids_brut_kg'])
-            capacite_th     = float(cadence)
-
-            # Vérification stock
+            poids_brut_kg = float(lot['poids_brut_kg'])
+            
+            # Info lot (variété, code, producteur)
             cursor.execute("""
-                SELECT nombre_unites, statut_lavage,
-                       COALESCE(jr.pallox_reserves, 0) as pallox_reserves,
-                       nombre_unites - COALESCE(jr.pallox_reserves, 0) as stock_dispo
-                FROM stock_emplacements se
-                LEFT JOIN (
-                    SELECT emplacement_id, SUM(quantite_pallox) as pallox_reserves
-                    FROM lavages_jobs
-                    WHERE statut IN ('PRÉVU', 'EN_COURS') AND emplacement_id IS NOT NULL
-                    GROUP BY emplacement_id
-                ) jr ON se.id = jr.emplacement_id
-                WHERE se.id = %s
-            """, (emplacement_id,))
-            stock_info = cursor.fetchone()
-            if not stock_info:
-                conn.rollback()
-                return False, f"❌ Emplacement {emplacement_id} introuvable", None
-            stock_dispo = int(stock_info['stock_dispo']) if stock_info['stock_dispo'] else 0
-            if quantite_pallox > stock_dispo:
-                conn.rollback()
-                return False, f"❌ Stock insuffisant pour lot_id={lot_id} : {quantite_pallox} demandés, {stock_dispo} dispo", None
-
-            statut_source = stock_info['statut_lavage'] or 'BRUT'
-
-            cursor.execute("""
-                SELECT l.code_lot_interne, COALESCE(v.nom_variete, l.code_variete) as variete
+                SELECT 
+                    l.code_lot_interne,
+                    COALESCE(v.nom_variete, l.code_variete) as variete,
+                    COALESCE(p.nom, l.code_producteur) as producteur
                 FROM lots_bruts l
                 LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+                LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
                 WHERE l.id = %s
             """, (lot_id,))
             lot_info = cursor.fetchone()
-            temps_estime = (poids_brut_kg / 1000) / capacite_th
-
+            if not lot_info:
+                conn.rollback()
+                return False, f"❌ Lot {lot_id} introuvable", None
+            
+            # Info emplacement (calibres, type_conditionnement, statut_lavage)
             cursor.execute("""
-                INSERT INTO lavages_jobs (
-                    lot_id, emplacement_id, code_lot_interne, variete,
-                    quantite_pallox, poids_brut_kg,
-                    date_prevue, ligne_lavage, capacite_th, temps_estime_heures,
-                    statut, statut_source, batch_id, created_by, notes
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                          'PRÉVU', %s, %s, %s, %s)
-                RETURNING id
-            """, (lot_id, emplacement_id,
-                  lot_info['code_lot_interne'], lot_info['variete'],
-                  quantite_pallox, poids_brut_kg,
-                  date_prevue, ligne_lavage, capacite_th, temps_estime,
-                  statut_source, batch_id, created_by, notes))
-            job_id = cursor.fetchone()['id']
-            jobs_crees.append(job_id)
-
+                SELECT type_conditionnement, calibre_min, calibre_max,
+                       nombre_unites, statut_lavage
+                FROM stock_emplacements
+                WHERE id = %s
+            """, (emplacement_id,))
+            emp_info = cursor.fetchone()
+            if not emp_info:
+                conn.rollback()
+                return False, f"❌ Emplacement {emplacement_id} introuvable", None
+            
+            enriched.append({
+                'lot_id': lot_id,
+                'emplacement_id': emplacement_id,
+                'quantite_pallox': quantite_pallox,
+                'poids_brut_kg': poids_brut_kg,
+                'code_lot_interne': lot_info['code_lot_interne'],
+                'variete': lot_info['variete'],
+                'producteur': lot_info.get('producteur'),
+                'type_conditionnement': emp_info.get('type_conditionnement'),
+                'calibre_min': emp_info.get('calibre_min'),
+                'calibre_max': emp_info.get('calibre_max'),
+                'statut_lavage_emp': emp_info.get('statut_lavage'),
+                'nombre_unites_emp': emp_info.get('nombre_unites'),
+            })
+        
+        # ============================================================
+        # 2. VALIDATION Q2 — 1 seule variété par batch
+        # ============================================================
+        varietes_distinctes = set(e['variete'] for e in enriched if e['variete'])
+        if len(varietes_distinctes) > 1:
+            conn.rollback()
+            cursor.close()
+            conn.close()
+            return False, (f"❌ Variétés différentes dans le batch : "
+                          f"{', '.join(sorted(varietes_distinctes))}. "
+                          f"Un batch doit contenir une seule variété."), None
+        
+        variete_batch = next(iter(varietes_distinctes)) if varietes_distinctes else None
+        
+        # ============================================================
+        # 3. VALIDATION Q4 — calibres + conditionnement identiques
+        # ============================================================
+        calibres_min = set(e['calibre_min'] for e in enriched if e['calibre_min'] is not None)
+        if len(calibres_min) > 1:
+            conn.rollback()
+            cursor.close()
+            conn.close()
+            return False, (f"❌ Calibres min différents dans le batch : "
+                          f"{sorted(calibres_min)}. Doivent être identiques."), None
+        
+        calibres_max = set(e['calibre_max'] for e in enriched if e['calibre_max'] is not None)
+        if len(calibres_max) > 1:
+            conn.rollback()
+            cursor.close()
+            conn.close()
+            return False, (f"❌ Calibres max différents dans le batch : "
+                          f"{sorted(calibres_max)}. Doivent être identiques."), None
+        
+        types_cond = set(e['type_conditionnement'] for e in enriched if e['type_conditionnement'])
+        if len(types_cond) > 1:
+            conn.rollback()
+            cursor.close()
+            conn.close()
+            return False, (f"❌ Types de conditionnement différents dans le batch : "
+                          f"{', '.join(sorted(types_cond))}. Doivent être identiques."), None
+        
+        # ============================================================
+        # 4. VÉRIFICATION STOCK pour chaque emplacement
+        # ============================================================
+        # On agrège par emplacement_id au cas où 2 lots du batch viennent du même emplacement
+        besoin_par_emp = {}
+        for e in enriched:
+            besoin_par_emp[e['emplacement_id']] = besoin_par_emp.get(e['emplacement_id'], 0) + e['quantite_pallox']
+        
+        statuts_source = set()
+        for emp_id, qty_demandee in besoin_par_emp.items():
+            cursor.execute("""
+                SELECT 
+                    se.nombre_unites as stock_total,
+                    se.statut_lavage,
+                    COALESCE(jobs.pallox_reserves, 0) as pallox_reserves,
+                    se.nombre_unites - COALESCE(jobs.pallox_reserves, 0) as stock_dispo
+                FROM stock_emplacements se
+                LEFT JOIN (
+                    SELECT emplacement_id, SUM(quantite_pallox) as pallox_reserves
+                    FROM (
+                        SELECT lj.emplacement_id, lj.quantite_pallox
+                        FROM lavages_jobs lj
+                        WHERE lj.statut IN ('PRÉVU', 'EN_COURS')
+                          AND lj.emplacement_id IS NOT NULL
+                          AND COALESCE(lj.is_multi_lot, FALSE) = FALSE
+                        UNION ALL
+                        SELECT ljl.emplacement_id, ljl.quantite_pallox
+                        FROM lavages_jobs_lots ljl
+                        JOIN lavages_jobs lj ON ljl.job_id = lj.id
+                        WHERE lj.statut IN ('PRÉVU', 'EN_COURS')
+                          AND lj.is_multi_lot = TRUE
+                    ) AS all_res
+                    GROUP BY emplacement_id
+                ) jobs ON se.id = jobs.emplacement_id
+                WHERE se.id = %s
+            """, (emp_id,))
+            stock_info = cursor.fetchone()
+            if not stock_info:
+                conn.rollback()
+                cursor.close()
+                conn.close()
+                return False, f"❌ Emplacement {emp_id} introuvable", None
+            
+            stock_dispo = int(stock_info['stock_dispo']) if stock_info['stock_dispo'] is not None else int(stock_info['stock_total'])
+            if qty_demandee > stock_dispo:
+                conn.rollback()
+                cursor.close()
+                conn.close()
+                return False, (f"❌ Stock insuffisant emplacement {emp_id} : "
+                              f"{qty_demandee} demandés, {stock_dispo} dispo "
+                              f"(déjà {int(stock_info['pallox_reserves'])} réservés)"), None
+            
+            statuts_source.add(stock_info['statut_lavage'] or 'BRUT')
+        
+        # Statut source : si tous identiques, on prend la valeur. Sinon BRUT par défaut.
+        statut_source_batch = next(iter(statuts_source)) if len(statuts_source) == 1 else 'BRUT'
+        
+        # ============================================================
+        # 5. CALCULS AGRÉGATS
+        # ============================================================
+        capacite_th = float(cadence)
+        total_quantite = sum(e['quantite_pallox'] for e in enriched)
+        total_poids_kg = sum(e['poids_brut_kg'] for e in enriched)
+        temps_estime = (total_poids_kg / 1000) / capacite_th
+        nb_lots = len(enriched)
+        
+        # ============================================================
+        # 6. INSERT lavages_jobs (1 seule ligne PARENT multi-lot)
+        # ============================================================
+        cursor.execute("""
+            INSERT INTO lavages_jobs (
+                lot_id, emplacement_id, code_lot_interne, variete,
+                quantite_pallox, poids_brut_kg,
+                date_prevue, ligne_lavage, capacite_th, temps_estime_heures,
+                statut, statut_source, is_multi_lot, nb_lots, batch_id,
+                created_by, notes
+            ) VALUES (
+                NULL, NULL, NULL, %s,
+                %s, %s,
+                %s, %s, %s, %s,
+                'PRÉVU', %s, TRUE, %s, %s,
+                %s, %s
+            )
+            RETURNING id
+        """, (variete_batch,
+              total_quantite, total_poids_kg,
+              date_prevue, ligne_lavage, capacite_th, temps_estime,
+              statut_source_batch, nb_lots, batch_id,
+              created_by, notes))
+        job_id = int(cursor.fetchone()['id'])
+        
+        # ============================================================
+        # 7. INSERT lavages_jobs_lots (N lignes FILLES)
+        # ============================================================
+        for ordre, e in enumerate(enriched, start=1):
+            cursor.execute("""
+                INSERT INTO lavages_jobs_lots (
+                    job_id, lot_id, emplacement_id, code_lot_interne, variete, producteur,
+                    quantite_pallox, poids_brut_kg, type_conditionnement,
+                    calibre_min, calibre_max, ordre
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (job_id, e['lot_id'], e['emplacement_id'],
+                  e['code_lot_interne'], e['variete'], e['producteur'],
+                  e['quantite_pallox'], e['poids_brut_kg'], e['type_conditionnement'],
+                  e['calibre_min'], e['calibre_max'], ordre))
+        
         conn.commit()
         cursor.close()
         conn.close()
-        nb = len(jobs_crees)
-        total_poids = sum(l['poids_brut_kg'] for l in lots_selection) / 1000
-        msg = (f"✅ Batch créé — {nb} jobs ({', '.join(f'#{j}' for j in jobs_crees)}) "
-               f"— {total_poids:.1f} T — Batch ID: {batch_id[:8]}...")
+        
+        total_poids_t = total_poids_kg / 1000
+        msg = (f"✅ Job batch #{job_id} créé — {nb_lots} lots — "
+               f"{variete_batch} — {total_quantite} pallox — {total_poids_t:.1f} T")
         return True, msg, batch_id
-
+    
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
+            cursor.close()
+            conn.close()
         return False, f"❌ Erreur : {str(e)}", None
 
 
