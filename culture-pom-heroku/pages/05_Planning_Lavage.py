@@ -2001,7 +2001,11 @@ def create_batch_jobs(lots_selection, date_prevue, ligne_lavage, cadence, notes=
     
     lots_selection : liste de dicts avec keys requises :
         lot_id, emplacement_id, quantite_pallox, poids_brut_kg
-    (Le reste — variete, calibres, type_conditionnement — sera récupéré depuis la BDD)
+    Keys optionnelles :
+        type_conditionnement : si fourni, écrase la valeur récupérée de stock_emplacements
+                               pour la ligne fille (permet à l'UI batch de spécifier
+                               un conditionnement différent par lot)
+    (Le reste — variete, calibres — est récupéré depuis la BDD)
     
     Retourne : (ok, message, batch_id)
     """
@@ -2028,6 +2032,8 @@ def create_batch_jobs(lots_selection, date_prevue, ligne_lavage, cadence, notes=
             emplacement_id = int(lot['emplacement_id'])
             quantite_pallox = int(lot['quantite_pallox'])
             poids_brut_kg = float(lot['poids_brut_kg'])
+            # Override optionnel du type_conditionnement par l'UI
+            type_cond_override = lot.get('type_conditionnement')
             
             # Info lot (variété, code, producteur)
             cursor.execute("""
@@ -2057,6 +2063,9 @@ def create_batch_jobs(lots_selection, date_prevue, ligne_lavage, cadence, notes=
                 conn.rollback()
                 return False, f"❌ Emplacement {emplacement_id} introuvable", None
             
+            # Type cond final = override UI si fourni, sinon valeur stock_emplacements
+            type_cond_final = type_cond_override or emp_info.get('type_conditionnement')
+            
             enriched.append({
                 'lot_id': lot_id,
                 'emplacement_id': emplacement_id,
@@ -2065,7 +2074,7 @@ def create_batch_jobs(lots_selection, date_prevue, ligne_lavage, cadence, notes=
                 'code_lot_interne': lot_info['code_lot_interne'],
                 'variete': lot_info['variete'],
                 'producteur': lot_info.get('producteur'),
-                'type_conditionnement': emp_info.get('type_conditionnement'),
+                'type_conditionnement': type_cond_final,
                 'calibre_min': emp_info.get('calibre_min'),
                 'calibre_max': emp_info.get('calibre_max'),
                 'statut_lavage_emp': emp_info.get('statut_lavage'),
@@ -3973,15 +3982,37 @@ with tab3:
                         if is_batch:
                             st.markdown("##### 📦 Quantités par lot")
                         qtys = {}
+                        TYPES_COND_BATCH = ["Pallox", "Petit Pallox", "Big Bag"]
                         for ld in lots_sel_data:
                             dispo_l = int(ld['nombre_unites'])
-                            poids_unit_l = POIDS_UNIT_MAP.get(
-                                str(ld.get('type_conditionnement', '')), 1900)
+                            type_cond_bdd = str(ld.get('type_conditionnement', '')) or 'Pallox'
                             if is_batch:
-                                col_q1, col_q2, col_q3 = st.columns([2, 1, 1])
+                                # Label enrichi : code_lot — variété — producteur — site/empl
+                                prod_l = str(ld.get('producteur', '') or '')
+                                site_l = str(ld.get('site_stockage', '') or '')
+                                empl_l = str(ld.get('emplacement_stockage', '') or '')
+                                loc_str = ""
+                                if site_l or empl_l:
+                                    loc_str = f" — 📍 {site_l}/{empl_l}".rstrip('/')
+                                prod_str = f" — 👤 {prod_l}" if prod_l else ""
+                                
+                                st.markdown(
+                                    f"**{ld['code_lot_interne']}** — {ld['variete']}"
+                                    f"{prod_str}{loc_str}"
+                                )
+                                col_q1, col_q2, col_q3 = st.columns([1.5, 1, 1])
                                 with col_q1:
-                                    st.markdown(f"**{ld['code_lot_interne']}** — {ld['variete']}")
+                                    # Selectbox type_conditionnement, pré-sélectionné sur valeur BDD
+                                    default_idx = TYPES_COND_BATCH.index(type_cond_bdd) if type_cond_bdd in TYPES_COND_BATCH else 0
+                                    type_cond_l = st.selectbox(
+                                        "Type cond.",
+                                        TYPES_COND_BATCH,
+                                        index=default_idx,
+                                        key=f"type_batch_{ld['lot_id']}_{ld['emplacement_id']}"
+                                    )
                                 with col_q2:
+                                    # poids unit dépend du type cond sélectionné (peut changer si user override)
+                                    poids_unit_l = POIDS_UNIT_MAP.get(type_cond_l, 1900)
                                     qty_l = st.number_input(
                                         "Pallox", 1, dispo_l,
                                         min(dispo_l, max(1, dispo_l)),
@@ -3989,8 +4020,11 @@ with tab3:
                                 with col_q3:
                                     poids_l = qty_l * poids_unit_l
                                     st.metric("Poids", f"{poids_l/1000:.1f} T")
-                                qtys[ld['lot_id']] = (qty_l, poids_l, ld)
+                                qtys[ld['lot_id']] = (qty_l, poids_l, ld, type_cond_l)
+                                st.markdown("<hr style='margin:0.3rem 0;border:none;border-top:1px solid #eee;'>", unsafe_allow_html=True)
                             else:
+                                # MONO-LOT inchangé
+                                poids_unit_l = POIDS_UNIT_MAP.get(type_cond_bdd, 1900)
                                 # number_input + bouton "Tout" via callback (pas de st.rerun manuel)
                                 qty_key_t2 = "qty_create_t2_single"
                                 if qty_key_t2 not in st.session_state:
@@ -4042,6 +4076,7 @@ with tab3:
                                         'emplacement_id': ld['emplacement_id'],
                                         'quantite_pallox': qtys[ld['lot_id']][0],
                                         'poids_brut_kg': qtys[ld['lot_id']][1],
+                                        'type_conditionnement': qtys[ld['lot_id']][3],
                                     }
                                     for ld in lots_sel_data
                                 ]
