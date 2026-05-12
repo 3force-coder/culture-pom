@@ -215,7 +215,7 @@ def get_config_horaires():
             config[row['jour_semaine']] = {'debut': row['heure_debut'], 'fin': row['heure_fin']}
         return config
     except:
-        return {i: {'debut': time(5, 0), 'fin': time(22, 0) if i < 5 else time(20, 0)} for i in range(6)}
+        return {i: {'debut': time(0, 0), 'fin': time(23, 59)} for i in range(6)}
 
 def get_kpis_lavage():
     """Récupère les KPIs de lavage"""
@@ -395,21 +395,27 @@ def get_planning_semaine(annee, semaine):
         return pd.DataFrame()
 
 def get_horaire_fin_jour(jour_semaine, horaires_config):
-    """Retourne l'heure de fin pour un jour donné"""
+    """Retourne l'heure de fin pour un jour donné.
+    
+    Par défaut 23:59 (plage 24h activée pour supporter 3 équipes).
+    """
     if jour_semaine in horaires_config:
         h_fin = horaires_config[jour_semaine]['fin']
         if isinstance(h_fin, time):
             return h_fin
-    return time(22, 0) if jour_semaine < 5 else time(20, 0)
+    return time(23, 59)
 
 def get_capacite_jour(ligne_code, capacite_th, jour_semaine, horaires_config):
-    """Calcule la capacité totale en heures pour un jour donné"""
+    """Calcule la capacité totale en heures pour un jour donné.
+    
+    Plage par défaut 00:00 → 23:59 = ~24h (cohérent avec 3 équipes).
+    """
     if jour_semaine not in horaires_config:
-        return 17.0
+        return 24.0
     h_debut = horaires_config[jour_semaine]['debut']
     h_fin = horaires_config[jour_semaine]['fin']
-    debut_h = h_debut.hour + h_debut.minute / 60 if isinstance(h_debut, time) else 5.0
-    fin_h = h_fin.hour + h_fin.minute / 60 if isinstance(h_fin, time) else 22.0
+    debut_h = h_debut.hour + h_debut.minute / 60 if isinstance(h_debut, time) else 0.0
+    fin_h = h_fin.hour + h_fin.minute / 60 if isinstance(h_fin, time) else 23.983
     return fin_h - debut_h
 
 def calculer_temps_utilise(planning_df, date_str, ligne):
@@ -588,23 +594,88 @@ def inserer_pause_dans_job(job_planning_id, temps_custom_id, duree_pause_min, an
 
 def ajouter_element_planning(type_element, job_id, temps_custom_id, date_prevue, ligne_lavage, 
                              duree_minutes, annee, semaine, heure_debut_choisie):
-    """Ajoute un élément au planning"""
+    """Ajoute un élément au planning.
+    
+    Si l'élément dépasse minuit (heure_debut + duree > 24h00) :
+      - Crée une partie J  : date_prevue=date, heure_debut, heure_fin=23:59, duree=(24h00-debut)
+      - Crée une partie J+1 : date_prevue=date+1, heure_debut=00:00, heure_fin=reste, parent_element_id=<id partie J>
+      - La FK CASCADE garantit que supprimer la partie J supprime aussi J+1 automatiquement.
+    
+    Si l'élément tient sur la journée : 1 seule ligne créée (comportement legacy).
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        
+        heure_debut = heure_debut_choisie
+        debut_minutes = heure_debut.hour * 60 + heure_debut.minute
+        fin_minutes = debut_minutes + int(duree_minutes)
+        created_by = st.session_state.get('username', 'system')
+        MINUTES_PAR_JOUR = 24 * 60  # = 1440
+        
+        # ============================================================
+        # CAS 1 : pas de chevauchement minuit (fin <= 24h00)
+        # ============================================================
+        if fin_minutes <= MINUTES_PAR_JOUR:
+            cursor.execute("""
+                SELECT COALESCE(MAX(ordre_jour), 0) as max_ordre
+                FROM lavages_planning_elements
+                WHERE date_prevue = %s AND ligne_lavage = %s
+            """, (date_prevue, ligne_lavage))
+            next_ordre = (cursor.fetchone()['max_ordre'] or 0) + 1
+            
+            # heure_fin entre 00:00 et 23:59 (gérer cas fin = 24:00 → 23:59)
+            if fin_minutes == MINUTES_PAR_JOUR:
+                heure_fin_brute = time(23, 59)
+            else:
+                heure_fin_brute = time(fin_minutes // 60, fin_minutes % 60)
+            heure_fin = arrondir_quart_heure_sup(heure_fin_brute)
+            # Sécurité : arrondi qui dépasserait minuit → on plafonne à 23:59
+            if heure_fin == time(0, 0) and fin_minutes >= MINUTES_PAR_JOUR - 14:
+                heure_fin = time(23, 59)
+            
+            cursor.execute("""
+                INSERT INTO lavages_planning_elements 
+                (type_element, job_id, temps_custom_id, annee, semaine, date_prevue, 
+                 ligne_lavage, ordre_jour, heure_debut, heure_fin, duree_minutes, created_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (type_element, job_id, temps_custom_id, annee, semaine, date_prevue,
+                  ligne_lavage, next_ordre, heure_debut, heure_fin, duree_minutes, created_by))
+            new_id = cursor.fetchone()['id']
+            conn.commit()
+            cursor.close()
+            conn.close()
+            return True, f"✅ Placé ({heure_debut.strftime('%H:%M')} → {heure_fin.strftime('%H:%M')})"
+        
+        # ============================================================
+        # CAS 2 : chevauchement minuit → découpage en 2 lignes liées
+        # ============================================================
+        # Partie J : du heure_debut jusqu'à 23:59
+        duree_partie_j = MINUTES_PAR_JOUR - debut_minutes  # ex : 22h00 → 24h00 = 120min
+        # Partie J+1 : de 00:00 jusqu'à (fin_minutes - 24h00)
+        duree_partie_j1 = fin_minutes - MINUTES_PAR_JOUR  # ex : 26h00 - 24h00 = 120min
+        
+        date_j1 = date_prevue + timedelta(days=1)
+        annee_j1, semaine_j1, _ = date_j1.isocalendar()
+        
+        # ordre_jour J
         cursor.execute("""
             SELECT COALESCE(MAX(ordre_jour), 0) as max_ordre
             FROM lavages_planning_elements
             WHERE date_prevue = %s AND ligne_lavage = %s
         """, (date_prevue, ligne_lavage))
-        result = cursor.fetchone()
-        next_ordre = (result['max_ordre'] or 0) + 1
-        heure_debut = heure_debut_choisie
-        debut_minutes = heure_debut.hour * 60 + heure_debut.minute
-        fin_minutes = debut_minutes + duree_minutes
-        heure_fin_brute = time(min(23, fin_minutes // 60), fin_minutes % 60)
-        heure_fin = arrondir_quart_heure_sup(heure_fin_brute)
-        created_by = st.session_state.get('username', 'system')
+        next_ordre_j = (cursor.fetchone()['max_ordre'] or 0) + 1
+        
+        # ordre_jour J+1
+        cursor.execute("""
+            SELECT COALESCE(MAX(ordre_jour), 0) as max_ordre
+            FROM lavages_planning_elements
+            WHERE date_prevue = %s AND ligne_lavage = %s
+        """, (date_j1, ligne_lavage))
+        next_ordre_j1 = (cursor.fetchone()['max_ordre'] or 0) + 1
+        
+        # INSERT partie J
         cursor.execute("""
             INSERT INTO lavages_planning_elements 
             (type_element, job_id, temps_custom_id, annee, semaine, date_prevue, 
@@ -612,11 +683,27 @@ def ajouter_element_planning(type_element, job_id, temps_custom_id, date_prevue,
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """, (type_element, job_id, temps_custom_id, annee, semaine, date_prevue,
-              ligne_lavage, next_ordre, heure_debut, heure_fin, duree_minutes, created_by))
+              ligne_lavage, next_ordre_j, heure_debut, time(23, 59),
+              duree_partie_j, created_by))
+        parent_id = int(cursor.fetchone()['id'])
+        
+        # INSERT partie J+1 (avec parent_element_id)
+        heure_fin_j1 = time(duree_partie_j1 // 60, duree_partie_j1 % 60)
+        cursor.execute("""
+            INSERT INTO lavages_planning_elements 
+            (type_element, job_id, temps_custom_id, annee, semaine, date_prevue, 
+             ligne_lavage, ordre_jour, heure_debut, heure_fin, duree_minutes, created_by,
+             parent_element_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (type_element, job_id, temps_custom_id, annee_j1, semaine_j1, date_j1,
+              ligne_lavage, next_ordre_j1, time(0, 0), heure_fin_j1,
+              duree_partie_j1, created_by, parent_id))
+        
         conn.commit()
         cursor.close()
         conn.close()
-        return True, f"✅ Placé ({heure_debut.strftime('%H:%M')} → {heure_fin.strftime('%H:%M')})"
+        return True, (f"✅ Placé sur 2 jours ({heure_debut.strftime('%H:%M')} {date_prevue.strftime('%d/%m')} "
+                      f"→ {heure_fin_j1.strftime('%H:%M')} {date_j1.strftime('%d/%m')})")
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
@@ -643,58 +730,186 @@ def deplacer_element_planning(element_id, nouvelle_date, nouvelle_heure, plannin
     Déplace un élément du planning vers un nouveau créneau.
     Décale en cascade tous les éléments suivants du même jour/ligne
     dont l'heure_debut < nouvelle heure de fin du job déplacé.
+    
+    Support chevauchement minuit (Commit 5b) :
+    - Si l'élément déplacé est en réalité une partie J+1 (parent_element_id NOT NULL),
+      on redirige le déplacement sur le parent.
+    - Si la nouvelle position fait dépasser minuit, on découpe : update parent + crée/replace enfant J+1.
+    - Si l'élément avait déjà un enfant J+1 et que la nouvelle position ne dépasse plus minuit,
+      l'enfant J+1 est supprimé.
     """
     try:
         conn = get_connection()
         cursor = conn.cursor()
 
-        # Récupérer l'élément à déplacer
+        # Récupérer l'élément à déplacer (avec parent_element_id pour gérer le cas enfant)
         cursor.execute("""
-            SELECT id, duree_minutes, ligne_lavage, annee, semaine
+            SELECT id, duree_minutes, ligne_lavage, annee, semaine,
+                   type_element, job_id, temps_custom_id, parent_element_id
             FROM lavages_planning_elements
             WHERE id = %s
         """, (element_id,))
         elem = cursor.fetchone()
         if not elem:
             return False, "❌ Élément introuvable"
-
-        duree = int(elem['duree_minutes'])
-
-        # Calculer nouvelle heure_fin
-        debut_min = nouvelle_heure.hour * 60 + nouvelle_heure.minute
-        fin_min = debut_min + duree
-        nouvelle_heure_fin = time(min(23, fin_min // 60), fin_min % 60)
-
-        # Recalculer annee/semaine selon la nouvelle date
-        nouvelle_annee, nouvelle_semaine, _ = nouvelle_date.isocalendar()
-
-        # Mettre à jour l'élément déplacé
+        
+        # ============================================================
+        # Cas particulier : on essaie de déplacer une partie J+1 (enfant)
+        # → on redirige sur le parent (pas de déplacement d'enfant seul)
+        # ============================================================
+        if elem.get('parent_element_id'):
+            # Rediriger : déplacer le parent à la place
+            parent_id = int(elem['parent_element_id'])
+            # On récupère la durée TOTALE (parent + enfant) car l'utilisateur voulait
+            # déplacer l'ensemble logique
+            cursor.execute("""
+                SELECT duree_minutes FROM lavages_planning_elements WHERE id = %s
+            """, (parent_id,))
+            parent_row = cursor.fetchone()
+            if not parent_row:
+                return False, "❌ Parent introuvable"
+            # Rappel récursif (la prochaine itération traitera le parent comme cas normal)
+            cursor.close()
+            conn.close()
+            return deplacer_element_planning(parent_id, nouvelle_date, nouvelle_heure,
+                                              planning_df, ligne_lavage, horaires_config)
+        
+        # ============================================================
+        # Vérifier si l'élément avait déjà un enfant J+1 (chevauchement existant)
+        # → on récupère la DURÉE TOTALE pour le repositionnement
+        # ============================================================
         cursor.execute("""
-            UPDATE lavages_planning_elements
-            SET date_prevue = %s,
-                heure_debut = %s,
-                heure_fin = %s,
-                annee = %s,
-                semaine = %s
-            WHERE id = %s
-        """, (nouvelle_date, nouvelle_heure, nouvelle_heure_fin,
-              nouvelle_annee, nouvelle_semaine, element_id))
+            SELECT id, duree_minutes
+            FROM lavages_planning_elements
+            WHERE parent_element_id = %s
+        """, (element_id,))
+        enfant_existant = cursor.fetchone()
+        
+        if enfant_existant:
+            # Durée totale = durée parent + durée enfant
+            duree_totale = int(elem['duree_minutes']) + int(enfant_existant['duree_minutes'])
+        else:
+            duree_totale = int(elem['duree_minutes'])
+        
+        # ============================================================
+        # Calculer la nouvelle position (potentiellement chevauchante)
+        # ============================================================
+        debut_min = nouvelle_heure.hour * 60 + nouvelle_heure.minute
+        fin_min = debut_min + duree_totale
+        MINUTES_PAR_JOUR = 24 * 60
+        
+        # Recalculer annee/semaine de la nouvelle date
+        nouvelle_annee, nouvelle_semaine, _ = nouvelle_date.isocalendar()
+        
+        # CAS A : pas de chevauchement minuit
+        if fin_min <= MINUTES_PAR_JOUR:
+            # Calcul heure_fin sûr
+            if fin_min == MINUTES_PAR_JOUR:
+                nouvelle_heure_fin = time(23, 59)
+            else:
+                nouvelle_heure_fin = time(fin_min // 60, fin_min % 60)
+            
+            # Update parent vers son nouveau placement, durée TOTALE restaurée
+            cursor.execute("""
+                UPDATE lavages_planning_elements
+                SET date_prevue = %s,
+                    heure_debut = %s,
+                    heure_fin = %s,
+                    duree_minutes = %s,
+                    annee = %s,
+                    semaine = %s
+                WHERE id = %s
+            """, (nouvelle_date, nouvelle_heure, nouvelle_heure_fin,
+                  duree_totale,
+                  nouvelle_annee, nouvelle_semaine, element_id))
+            
+            # Si un enfant existait, on le supprime (CASCADE non utile car on a déjà update parent)
+            if enfant_existant:
+                cursor.execute("""
+                    DELETE FROM lavages_planning_elements WHERE id = %s
+                """, (int(enfant_existant['id']),))
+        
+        # CAS B : chevauchement minuit → recalculer le split
+        else:
+            duree_partie_j = MINUTES_PAR_JOUR - debut_min
+            duree_partie_j1 = fin_min - MINUTES_PAR_JOUR
+            date_j1 = nouvelle_date + timedelta(days=1)
+            annee_j1, semaine_j1, _ = date_j1.isocalendar()
+            heure_fin_j1 = time(duree_partie_j1 // 60, duree_partie_j1 % 60)
+            
+            # Update parent (partie J)
+            cursor.execute("""
+                UPDATE lavages_planning_elements
+                SET date_prevue = %s,
+                    heure_debut = %s,
+                    heure_fin = %s,
+                    duree_minutes = %s,
+                    annee = %s,
+                    semaine = %s
+                WHERE id = %s
+            """, (nouvelle_date, nouvelle_heure, time(23, 59),
+                  duree_partie_j,
+                  nouvelle_annee, nouvelle_semaine, element_id))
+            
+            # ordre_jour J+1
+            cursor.execute("""
+                SELECT COALESCE(MAX(ordre_jour), 0) as max_ordre
+                FROM lavages_planning_elements
+                WHERE date_prevue = %s AND ligne_lavage = %s
+            """, (date_j1, ligne_lavage))
+            next_ordre_j1 = (cursor.fetchone()['max_ordre'] or 0) + 1
+            
+            if enfant_existant:
+                # Update l'enfant existant pour pointer sur la nouvelle date J+1
+                cursor.execute("""
+                    UPDATE lavages_planning_elements
+                    SET date_prevue = %s,
+                        heure_debut = %s,
+                        heure_fin = %s,
+                        duree_minutes = %s,
+                        ordre_jour = %s,
+                        annee = %s,
+                        semaine = %s
+                    WHERE id = %s
+                """, (date_j1, time(0, 0), heure_fin_j1, duree_partie_j1,
+                      next_ordre_j1, annee_j1, semaine_j1, int(enfant_existant['id'])))
+            else:
+                # Créer l'enfant J+1
+                cursor.execute("""
+                    INSERT INTO lavages_planning_elements 
+                    (type_element, job_id, temps_custom_id, annee, semaine, date_prevue, 
+                     ligne_lavage, ordre_jour, heure_debut, heure_fin, duree_minutes, created_by,
+                     parent_element_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (elem['type_element'], elem.get('job_id'), elem.get('temps_custom_id'),
+                      annee_j1, semaine_j1, date_j1, ligne_lavage, next_ordre_j1,
+                      time(0, 0), heure_fin_j1, duree_partie_j1,
+                      st.session_state.get('username', 'system'), element_id))
 
-        # Cascade : uniquement les éléments dont heure_debut >= debut du job déplacé
-        # Les éléments AVANT ne sont jamais touchés
+        # ============================================================
+        # CASCADE : décaler les éléments suivants du jour J qui chevauchent
+        # ============================================================
+        # Note : on cascade UNIQUEMENT sur le jour J du nouveau placement
+        # (les éléments du J+1 chevauchent éventuellement avec l'enfant, géré séparément)
         cursor.execute("""
             SELECT id, heure_debut, heure_fin, duree_minutes
             FROM lavages_planning_elements
             WHERE date_prevue = %s
               AND ligne_lavage = %s
               AND id != %s
+              AND parent_element_id IS DISTINCT FROM %s
               AND heure_debut >= %s
             ORDER BY heure_debut
-        """, (nouvelle_date, ligne_lavage, element_id, nouvelle_heure))
+        """, (nouvelle_date, ligne_lavage, element_id, element_id, nouvelle_heure))
         suivants = cursor.fetchall()
 
         # Décaler en cascade uniquement les éléments qui chevauchent la nouvelle position
-        curseur_temps = fin_min  # Fin du job déplacé
+        # Curseur de temps : fin de l'élément déplacé (sur partie J seulement)
+        if fin_min <= MINUTES_PAR_JOUR:
+            curseur_temps = fin_min
+        else:
+            curseur_temps = MINUTES_PAR_JOUR  # le J est rempli jusqu'à minuit
+        
         nb_decales = 0
         for s in suivants:
             if s['heure_debut'] is None:
@@ -706,8 +921,12 @@ def deplacer_element_planning(element_id, nouvelle_date, nouvelle_heure, plannin
                 # Chevauchement → pousser après le curseur
                 nouveau_debut = curseur_temps
                 nouveau_fin = nouveau_debut + s_duree
+                # Plafonner à 23:59 pour éviter de propager le chevauchement (cas rare)
                 nouvelle_h_debut = time(min(23, nouveau_debut // 60), nouveau_debut % 60)
-                nouvelle_h_fin = time(min(23, nouveau_fin // 60), nouveau_fin % 60)
+                if nouveau_fin >= MINUTES_PAR_JOUR:
+                    nouvelle_h_fin = time(23, 59)
+                else:
+                    nouvelle_h_fin = time(nouveau_fin // 60, nouveau_fin % 60)
                 cursor.execute("""
                     UPDATE lavages_planning_elements
                     SET heure_debut = %s, heure_fin = %s
@@ -723,7 +942,11 @@ def deplacer_element_planning(element_id, nouvelle_date, nouvelle_heure, plannin
         cursor.close()
         conn.close()
 
-        msg = f"✅ Déplacé à {nouvelle_heure.strftime('%H:%M')}"
+        if fin_min > MINUTES_PAR_JOUR:
+            date_j1 = nouvelle_date + timedelta(days=1)
+            msg = f"✅ Déplacé sur 2 jours ({nouvelle_heure.strftime('%H:%M')} {nouvelle_date.strftime('%d/%m')} → {heure_fin_j1.strftime('%H:%M')} {date_j1.strftime('%d/%m')})"
+        else:
+            msg = f"✅ Déplacé à {nouvelle_heure.strftime('%H:%M')}"
         if nb_decales > 0:
             msg += f" — {nb_decales} élément(s) décalé(s) en cascade"
         return True, msg
@@ -2480,7 +2703,8 @@ with tab1:
                 if jour_choisi != "Sélectionner...":
                     jour_idx = jours_options.index(jour_choisi) - 1
                     date_cible = week_start + timedelta(days=jour_idx)
-                    h_debut_jour = horaires_config.get(jour_idx, {}).get('debut', time(5, 0))
+                    # Heure par défaut : 06:00 (plus pertinent métier que la 'debut' BDD qui peut être 00:00)
+                    h_debut_jour = time(6, 0)
                     heure_saisie = st.time_input("Heure", value=h_debut_jour, step=900, key=f"heure_job_{job['id']}", label_visibility="collapsed")
                     duree_min = int(job['temps_estime_heures'] * 60)
                     
@@ -2488,11 +2712,9 @@ with tab1:
                     if msg_info:
                         st.info(msg_info)
                     
-                    h_fin_jour = get_horaire_fin_jour(jour_idx, horaires_config)
-                    fin_minutes = heure_optimale.hour * 60 + heure_optimale.minute + duree_min
-                    if fin_minutes > h_fin_jour.hour * 60 + h_fin_jour.minute:
-                        st.error(f"⚠️ Dépasse fin journée même repositionné")
-                    elif st.button("✅ Placer", key=f"confirm_job_{job['id']}", type="primary", use_container_width=True):
+                    # Plus de contrôle de fin de journée : chevauchement minuit géré automatiquement
+                    # par ajouter_element_planning (création parent + enfant J+1)
+                    if st.button("✅ Placer", key=f"confirm_job_{job['id']}", type="primary", use_container_width=True):
                         success, msg = ajouter_element_planning('JOB', int(job['id']), None, date_cible, st.session_state.selected_ligne, duree_min, annee, semaine, heure_optimale)
                         if success:
                             st.success(msg)
@@ -2531,8 +2753,8 @@ with tab1:
                 jour_str_tc = str(date_cible)
 
                 if mode_tc == "Créneau libre":
-                    # Comportement existant
-                    h_debut = horaires_config.get(jour_idx, {}).get('debut', time(5, 0))
+                    # Heure par défaut : 06:00 (cohérent avec placement jobs)
+                    h_debut = time(6, 0)
                     heure_tc = st.time_input("Heure", value=h_debut, step=900, key=f"heure_tc_{tc['id']}", label_visibility="collapsed")
                     heure_optimale_tc, _, msg_info_tc = trouver_prochain_creneau_libre(
                         planning_df, date_cible, st.session_state.selected_ligne,
@@ -2775,7 +2997,8 @@ with tab1:
                                         jour_cible_idx = jours_move.index(jour_cible_str)
                                         date_cible_move = week_start + timedelta(days=jour_cible_idx)
                                         
-                                        h_debut_defaut = horaires_config.get(jour_cible_idx, {}).get('debut', time(5, 0))
+                                        # Heure par défaut : 06:00 pour le déplacement
+                                        h_debut_defaut = time(6, 0)
                                         heure_cible = st.time_input(
                                             "Nouvelle heure",
                                             value=h_debut_defaut,
@@ -3544,7 +3767,7 @@ with tab4:
             ligne_print_code = None
     
     with col3:
-        amplitude_options = ["Journée complète (5h-22h)", "Matin (5h-13h)", "Après-midi (13h-22h)"]
+        amplitude_options = ["Journée 24h (00h-23h59)", "Journée complète (5h-22h)", "Matin (5h-13h)", "Après-midi (13h-22h)", "Nuit (22h-06h)"]
         selected_amplitude = st.selectbox("⏰ Amplitude", amplitude_options, key="print_amplitude")
         
         if selected_amplitude == "Matin (5h-13h)":
@@ -3553,9 +3776,17 @@ with tab4:
         elif selected_amplitude == "Après-midi (13h-22h)":
             heure_debut_print = time(13, 0)
             heure_fin_print = time(22, 0)
-        else:
+        elif selected_amplitude == "Nuit (22h-06h)":
+            # Plage chevauchant minuit : on imprime 22h00 → 23h59 + 00h00 → 06h00 sur le même PDF
+            heure_debut_print = time(22, 0)
+            heure_fin_print = time(6, 0)
+        elif selected_amplitude == "Journée complète (5h-22h)":
             heure_debut_print = time(5, 0)
             heure_fin_print = time(22, 0)
+        else:
+            # Journée 24h (par défaut maintenant)
+            heure_debut_print = time(0, 0)
+            heure_fin_print = time(23, 59)
     
     st.markdown("---")
     
