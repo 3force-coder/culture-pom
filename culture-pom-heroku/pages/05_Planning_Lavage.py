@@ -1815,8 +1815,8 @@ def create_batch_jobs(lots_selection, date_prevue, ligne_lavage, cadence, notes=
     
     Validations métier :
       Q2 - Toutes les variétés doivent être identiques
-      Q4 - Calibres min/max doivent être identiques entre lots
-      Q4 - Types de conditionnement doivent être identiques
+      (Calibres min/max et types de conditionnement : MIX AUTORISÉ — chaque lot fille
+       conserve ses propres calibres et conditionnement pour la traçabilité)
     
     Si len(lots_selection) == 1 : délègue à create_job_lavage (mono-lot).
     
@@ -1908,31 +1908,12 @@ def create_batch_jobs(lots_selection, date_prevue, ligne_lavage, cadence, notes=
         variete_batch = next(iter(varietes_distinctes)) if varietes_distinctes else None
         
         # ============================================================
-        # 3. VALIDATION Q4 — calibres + conditionnement identiques
+        # 3. Calibres + types conditionnement : MIX AUTORISÉ
         # ============================================================
-        calibres_min = set(e['calibre_min'] for e in enriched if e['calibre_min'] is not None)
-        if len(calibres_min) > 1:
-            conn.rollback()
-            cursor.close()
-            conn.close()
-            return False, (f"❌ Calibres min différents dans le batch : "
-                          f"{sorted(calibres_min)}. Doivent être identiques."), None
-        
-        calibres_max = set(e['calibre_max'] for e in enriched if e['calibre_max'] is not None)
-        if len(calibres_max) > 1:
-            conn.rollback()
-            cursor.close()
-            conn.close()
-            return False, (f"❌ Calibres max différents dans le batch : "
-                          f"{sorted(calibres_max)}. Doivent être identiques."), None
-        
-        types_cond = set(e['type_conditionnement'] for e in enriched if e['type_conditionnement'])
-        if len(types_cond) > 1:
-            conn.rollback()
-            cursor.close()
-            conn.close()
-            return False, (f"❌ Types de conditionnement différents dans le batch : "
-                          f"{', '.join(sorted(types_cond))}. Doivent être identiques."), None
+        # Chaque ligne fille (lavages_jobs_lots) conserve ses propres calibre_min,
+        # calibre_max et type_conditionnement pour la traçabilité.
+        # Aucune validation d'uniformité ici : on accepte que des lots de calibres
+        # ou conditionnements différents soient lavés dans le même batch.
         
         # ============================================================
         # 4. VÉRIFICATION STOCK pour chaque emplacement
