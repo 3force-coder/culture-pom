@@ -615,6 +615,36 @@ def inserer_pause_dans_job(job_planning_id, temps_custom_id, duree_pause_min, an
         return False, f"❌ Erreur : {str(e)}"
 
 
+def get_lots_fille_du_job(job_id):
+    """Récupère la liste des lignes filles (lavages_jobs_lots) d'un job batch.
+    
+    Retourne une liste de dicts avec les infos enrichies (producteur, site, emplacement)
+    utiles pour l'UI de modification batch.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                ljl.id, ljl.lot_id, ljl.emplacement_id, ljl.ordre,
+                ljl.code_lot_interne, ljl.variete, ljl.producteur,
+                ljl.quantite_pallox, ljl.poids_brut_kg, ljl.type_conditionnement,
+                ljl.calibre_min, ljl.calibre_max,
+                se.site_stockage as site_stockage,
+                se.emplacement_stockage as emplacement_stockage
+            FROM lavages_jobs_lots ljl
+            LEFT JOIN stock_emplacements se ON ljl.emplacement_id = se.id
+            WHERE ljl.job_id = %s
+            ORDER BY ljl.ordre
+        """, (job_id,))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
 def ajouter_element_planning(type_element, job_id, temps_custom_id, date_prevue, ligne_lavage, 
                              duree_minutes, annee, semaine, heure_debut_choisie):
     """Ajoute un élément au planning.
@@ -733,15 +763,113 @@ def ajouter_element_planning(type_element, job_id, temps_custom_id, date_prevue,
         return False, f"❌ Erreur : {str(e)}"
 
 def retirer_element_planning(element_id):
-    """Retire un élément du planning"""
+    """Retire un élément du planning.
+    
+    Si l'élément est un CUSTOM (pause/maintenance/etc.) inséré DANS un job
+    (heure_debut de l'élément comprise dans [heure_debut, heure_fin] d'un job
+     de la même date/ligne), alors la suppression effectue l'opération inverse
+    de inserer_pause_dans_job :
+      - Réduit heure_fin du job de duree_minutes de la pause
+      - Décale EN ARRIÈRE de duree_minutes les éléments suivants (qui démarrent
+        après ou égal à l'heure_fin actuelle du job)
+      - Puis DELETE la pause
+    
+    Sinon (élément JOB, ou CUSTOM en créneau libre) : DELETE simple.
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        
+        # Récupérer l'élément à supprimer
+        cursor.execute("""
+            SELECT id, type_element, date_prevue, ligne_lavage,
+                   heure_debut, duree_minutes
+            FROM lavages_planning_elements
+            WHERE id = %s
+        """, (element_id,))
+        elem = cursor.fetchone()
+        if not elem:
+            return False, "❌ Élément introuvable"
+        
+        msg_extra = ""
+        
+        # Si c'est un CUSTOM avec une heure_debut renseignée, chercher un job englobant
+        if elem['type_element'] == 'CUSTOM' and elem['heure_debut'] is not None:
+            duree_pause = int(elem['duree_minutes'])
+            cursor.execute("""
+                SELECT id, job_id, heure_debut, heure_fin
+                FROM lavages_planning_elements
+                WHERE date_prevue = %s
+                  AND ligne_lavage = %s
+                  AND type_element = 'JOB'
+                  AND parent_element_id IS NULL
+                  AND heure_debut <= %s
+                  AND heure_fin   >= %s
+                  AND id != %s
+                ORDER BY heure_debut
+                LIMIT 1
+            """, (elem['date_prevue'], elem['ligne_lavage'],
+                  elem['heure_debut'], elem['heure_debut'], element_id))
+            job_englobant = cursor.fetchone()
+            
+            if job_englobant:
+                # === RESTAURATION : opération inverse de inserer_pause_dans_job ===
+                # 1. Réduire heure_fin du job de duree_pause
+                h_fin_job = job_englobant['heure_fin']
+                h_fin_min = h_fin_job.hour * 60 + h_fin_job.minute
+                new_fin_min = h_fin_min - duree_pause
+                if new_fin_min < 0:
+                    # Cas pathologique : ne pas faire de calcul négatif
+                    new_fin_h = h_fin_job
+                else:
+                    new_fin_h = time(new_fin_min // 60, new_fin_min % 60)
+                cursor.execute("""
+                    UPDATE lavages_planning_elements
+                    SET heure_fin = %s
+                    WHERE id = %s
+                """, (new_fin_h, job_englobant['id']))
+                
+                # 2. Décaler EN ARRIÈRE de duree_pause les éléments suivants
+                # (heure_debut >= heure_fin actuelle du job, donc placés après la pause)
+                # On les décale de duree_pause vers l'arrière
+                cursor.execute("""
+                    SELECT id, heure_debut, heure_fin
+                    FROM lavages_planning_elements
+                    WHERE date_prevue = %s
+                      AND ligne_lavage = %s
+                      AND id != %s
+                      AND id != %s
+                      AND heure_debut >= %s
+                    ORDER BY heure_debut
+                """, (elem['date_prevue'], elem['ligne_lavage'],
+                      element_id, job_englobant['id'], h_fin_job))
+                suivants = cursor.fetchall()
+                nb_decales = 0
+                for s in suivants:
+                    if s['heure_debut'] is None or s['heure_fin'] is None:
+                        continue
+                    s_deb_min = s['heure_debut'].hour * 60 + s['heure_debut'].minute
+                    s_fin_min = s['heure_fin'].hour   * 60 + s['heure_fin'].minute
+                    new_s_deb = max(0, s_deb_min - duree_pause)
+                    new_s_fin = max(0, s_fin_min - duree_pause)
+                    new_s_h_deb = time(new_s_deb // 60, new_s_deb % 60)
+                    new_s_h_fin = time(new_s_fin // 60, new_s_fin % 60)
+                    cursor.execute("""
+                        UPDATE lavages_planning_elements
+                        SET heure_debut = %s, heure_fin = %s
+                        WHERE id = %s
+                    """, (new_s_h_deb, new_s_h_fin, s['id']))
+                    nb_decales += 1
+                
+                msg_extra = (f" — Job #{job_englobant['job_id']} restauré à {new_fin_h.strftime('%H:%M')}"
+                             f"{f' ({nb_decales} élément(s) décalé(s) en arrière)' if nb_decales else ''}")
+        
+        # 3. Supprimer l'élément (la pause ou autre)
         cursor.execute("DELETE FROM lavages_planning_elements WHERE id = %s", (element_id,))
         conn.commit()
         cursor.close()
         conn.close()
-        return True, "✅ Retiré"
+        return True, f"✅ Retiré{msg_extra}"
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
@@ -980,7 +1108,7 @@ def deplacer_element_planning(element_id, nouvelle_date, nouvelle_heure, plannin
         return False, f"❌ Erreur : {str(e)}"
 
 def modifier_job(job_id, elem_planning_id, nouveau_pallox, poids_unit, nouvelle_cadence,
-                 type_conditionnement=None):
+                 type_conditionnement=None, lots_updates=None):
     """
     Modifie quantité + cadence d'un job PRÉVU.
     Recalcule poids_brut_kg, temps_estime_heures et met à jour
@@ -988,14 +1116,23 @@ def modifier_job(job_id, elem_planning_id, nouveau_pallox, poids_unit, nouvelle_
     
     Propagation aux lignes filles (lavages_jobs_lots) :
     - Mono-lot : update la fille unique avec nouveau pallox + poids + type_conditionnement
-    - Multi-lot (batch) : distribution pro-rata du nouveau total sur les filles existantes
-      (chaque fille garde son type_conditionnement propre, pas écrasé)
+    - Multi-lot (batch) :
+        * Si lots_updates fourni (liste de dicts {fille_id, quantite_pallox}) :
+            update direct de chaque fille avec son nouveau pallox.
+            Le poids_brut_kg de la fille est recalculé avec son type_conditionnement
+            actuel (POIDS_UNIT_MAP). Le type_conditionnement n'est PAS modifié.
+            Le parent reçoit la somme des filles.
+            'nouveau_pallox' et 'poids_unit' sont alors IGNORÉS (calculés depuis les filles).
+        * Sinon (compat) : distribution pro-rata du nouveau total sur les filles existantes.
     
     Support chevauchement minuit (Commit 5b) :
     Si la nouvelle durée fait dépasser minuit, crée/met à jour/supprime l'enfant J+1
     de la même façon que deplacer_element_planning.
     """
     from datetime import time as dtime, timedelta
+    
+    # Mapping type_conditionnement → poids unitaire kg/pallox
+    POIDS_UNIT_MAP = {'Pallox': 1900, 'Petit Pallox': 800, 'Big Bag': 1600}
     
     try:
         conn = get_connection()
@@ -1030,15 +1167,56 @@ def modifier_job(job_id, elem_planning_id, nouveau_pallox, poids_unit, nouvelle_
             cursor.close()
             conn.close()
             return modifier_job(job_id, parent_elem_id, nouveau_pallox,
-                                poids_unit, nouvelle_cadence, type_conditionnement)
+                                poids_unit, nouvelle_cadence, type_conditionnement,
+                                lots_updates=lots_updates)
         
-        nouveau_pallox_int = int(nouveau_pallox)
-        nouveau_poids = float(nouveau_pallox_int) * float(poids_unit)
+        # ============================================================
+        # 2. Calcul des nouvelles valeurs PARENT selon le mode
+        # ============================================================
+        if is_multi_lot and lots_updates:
+            # === Mode BATCH avec saisie fine par fille ===
+            # On va recalculer le total parent à partir des updates des filles
+            # Récupérer les types_conditionnement actuels des filles
+            cursor.execute("""
+                SELECT id, type_conditionnement
+                FROM lavages_jobs_lots
+                WHERE job_id = %s
+            """, (job_id,))
+            filles_actuelles = {int(f['id']): f for f in cursor.fetchall()}
+            
+            total_pallox = 0
+            total_poids = 0.0
+            for upd in lots_updates:
+                fille_id = int(upd['fille_id'])
+                qty = int(upd['quantite_pallox'])
+                if fille_id not in filles_actuelles:
+                    conn.rollback()
+                    return False, f"❌ Lot fille {fille_id} introuvable pour ce job"
+                if qty < 0:
+                    conn.rollback()
+                    return False, f"❌ Nb pallox négatif interdit (fille {fille_id})"
+                type_cond_fille = str(filles_actuelles[fille_id]['type_conditionnement'] or 'Pallox')
+                poids_unit_fille = POIDS_UNIT_MAP.get(type_cond_fille, 1900)
+                poids_fille = qty * poids_unit_fille
+                total_pallox += qty
+                total_poids += poids_fille
+            
+            if total_pallox == 0:
+                conn.rollback()
+                return False, "❌ Le batch doit avoir au moins 1 pallox au total"
+            
+            nouveau_pallox_int = total_pallox
+            nouveau_poids = total_poids
+        else:
+            # === Mode mono-lot OU batch sans lots_updates (compat pro-rata) ===
+            nouveau_pallox_int = int(nouveau_pallox)
+            nouveau_poids = float(nouveau_pallox_int) * float(poids_unit)
+        
         nouveau_temps_h = (nouveau_poids / 1000) / float(nouvelle_cadence)
         nouveau_duree_min = int(round(nouveau_temps_h * 60))
 
         # ============================================================
-        # 2. UPDATE lavages_jobs (parent)
+        # 3. UPDATE lavages_jobs (parent)
         # ============================================================
         cursor.execute("""
             UPDATE lavages_jobs
@@ -1051,7 +1229,7 @@ def modifier_job(job_id, elem_planning_id, nouveau_pallox, poids_unit, nouvelle_
               nouveau_temps_h, job_id))
         
         # ============================================================
-        # 3. Propagation aux lignes filles (lavages_jobs_lots)
+        # 4. Propagation aux lignes filles (lavages_jobs_lots)
         # ============================================================
         if not is_multi_lot:
             # MONO-LOT : update la fille unique (1 seule ligne attendue)
@@ -1070,8 +1248,22 @@ def modifier_job(job_id, elem_planning_id, nouveau_pallox, poids_unit, nouvelle_
                         poids_brut_kg = %s
                     WHERE job_id = %s
                 """, (nouveau_pallox_int, nouveau_poids, job_id))
+        elif lots_updates:
+            # === BATCH avec saisie fine : update direct de chaque fille ===
+            for upd in lots_updates:
+                fille_id = int(upd['fille_id'])
+                qty = int(upd['quantite_pallox'])
+                type_cond_fille = str(filles_actuelles[fille_id]['type_conditionnement'] or 'Pallox')
+                poids_unit_fille = POIDS_UNIT_MAP.get(type_cond_fille, 1900)
+                poids_fille = qty * poids_unit_fille
+                cursor.execute("""
+                    UPDATE lavages_jobs_lots
+                    SET quantite_pallox = %s,
+                        poids_brut_kg = %s
+                    WHERE id = %s
+                """, (qty, poids_fille, fille_id))
         else:
-            # MULTI-LOT (batch) : distribution pro-rata sur les filles existantes
+            # MULTI-LOT (batch) sans lots_updates : distribution pro-rata (compat ancien comportement)
             cursor.execute("""
                 SELECT id, quantite_pallox, poids_brut_kg, ordre
                 FROM lavages_jobs_lots
@@ -2866,29 +3058,159 @@ with tab1:
         cadence_act = float(elem_e['capacite_th']) if pd.notna(elem_e.get('capacite_th')) and elem_e.get('capacite_th') else 13.0
         poids_unit_act = round(poids_brut_act / pallox_actuel) if pallox_actuel > 0 else 1900
         
+        POIDS_UNIT_OPTS = {"Pallox (1900 kg)": 1900,
+                           "Petit Pallox (800 kg)": 800,
+                           "Big Bag (1600 kg)": 1600}
+        POIDS_UNIT_MAP_UI = {'Pallox': 1900, 'Petit Pallox': 800, 'Big Bag': 1600}
+        
         st.markdown("---")
+        
+        # ============================================================
+        # BRANCHE BATCH : saisie fine par lot fille
+        # ============================================================
         if is_multi_lot_edit:
             st.markdown(f"## ✏️ Modifier le job batch #{job_id_edit} ({nb_lots_edit} lots)")
-            st.info(f"🌱 **{elem_e.get('variete', '-')}** | 📦 BATCH ({nb_lots_edit} lots) | Total : {pallox_actuel} pallox | {poids_brut_act/1000:.1f} T")
-            st.warning("⚠️ Pour un batch, le nouveau nombre de pallox sera **distribué au pro-rata** sur les lots fille existants. Le type de conditionnement de chaque lot fille est préservé.")
+            st.info(f"🌱 **{elem_e.get('variete', '-')}** | 📦 BATCH ({nb_lots_edit} lots) | Total actuel : {pallox_actuel} pallox | {poids_brut_act/1000:.1f} T")
+            
+            # Charger les filles depuis BDD
+            filles_data = get_lots_fille_du_job(job_id_edit)
+            if not filles_data:
+                st.error("❌ Impossible de charger les lots fille de ce batch")
+                st.stop()
+            
+            st.markdown("##### 📦 Composition du batch — Ajustez chaque lot")
+            
+            # Saisie par fille
+            new_quantites_par_fille = {}
+            for fille in filles_data:
+                fille_id = int(fille['id'])
+                code_lot = str(fille.get('code_lot_interne', ''))
+                prod = str(fille.get('producteur', '') or '')
+                site = str(fille.get('site_stockage', '') or '')
+                empl = str(fille.get('emplacement_stockage', '') or '')
+                type_cond_f = str(fille.get('type_conditionnement') or 'Pallox')
+                poids_unit_f = POIDS_UNIT_MAP_UI.get(type_cond_f, 1900)
+                qty_actuel = int(fille.get('quantite_pallox', 0))
+                
+                # Label enrichi
+                loc_parts = []
+                if prod: loc_parts.append(f"👤 {prod}")
+                if site or empl: loc_parts.append(f"📍 {site}/{empl}".rstrip('/'))
+                loc_str = " — ".join(loc_parts)
+                
+                st.markdown(f"**{code_lot}** — {loc_str}")
+                
+                col_f1, col_f2, col_f3 = st.columns([1.5, 1, 1])
+                with col_f1:
+                    st.text_input(
+                        "Type cond.",
+                        value=f"{type_cond_f} ({poids_unit_f} kg/p)",
+                        disabled=True,
+                        key=f"edit_fille_type_{fille_id}",
+                        label_visibility="collapsed"
+                    )
+                with col_f2:
+                    new_qty_key = f"edit_fille_qty_{fille_id}"
+                    if new_qty_key not in st.session_state:
+                        st.session_state[new_qty_key] = qty_actuel
+                    new_qty = st.number_input(
+                        "Nb pallox",
+                        min_value=0,  # 0 autorisé (lot temporairement désactivé)
+                        step=1,
+                        key=new_qty_key,
+                        label_visibility="collapsed"
+                    )
+                    new_quantites_par_fille[fille_id] = new_qty
+                with col_f3:
+                    new_poids_fille = new_qty * poids_unit_f
+                    delta_kg = new_poids_fille - float(fille.get('poids_brut_kg', 0))
+                    st.metric("Poids fille", f"{new_poids_fille/1000:.1f} T",
+                              delta=f"{delta_kg/1000:+.1f} T" if delta_kg else None,
+                              label_visibility="collapsed")
+                st.markdown("<hr style='margin:0.3rem 0;border:none;border-top:1px solid #eee;'>",
+                            unsafe_allow_html=True)
+            
+            # Total recalculé
+            total_pallox = sum(new_quantites_par_fille.values())
+            total_poids = sum(
+                qty * POIDS_UNIT_MAP_UI.get(
+                    str(next(f for f in filles_data if int(f['id']) == fid)['type_conditionnement'] or 'Pallox'),
+                    1900)
+                for fid, qty in new_quantites_par_fille.items()
+            )
+            
+            # Cadence + récap
+            col_rc1, col_rc2 = st.columns(2)
+            with col_rc1:
+                lignes_cap = {l['code']: float(l['capacite_th']) for l in get_lignes_lavage()}
+                cap_max = lignes_cap.get(elem_e.get('ligne_lavage'), 13.0)
+                new_cadence_key = f"edit_cadence_batch_{elem_id_edit}"
+                if new_cadence_key not in st.session_state:
+                    st.session_state[new_cadence_key] = float(min(cadence_act, cap_max))
+                nouvelle_cadence = st.number_input(
+                    "Cadence (T/h)",
+                    min_value=0.5, max_value=float(cap_max), step=0.5,
+                    key=new_cadence_key
+                )
+            with col_rc2:
+                nouveau_temps = (total_poids / 1000) / nouvelle_cadence if nouvelle_cadence > 0 else 0
+                col_m1, col_m2, col_m3 = st.columns(3)
+                col_m1.metric("Total pallox", f"{total_pallox}p",
+                              delta=f"{total_pallox - pallox_actuel:+d}p" if total_pallox != pallox_actuel else None)
+                col_m2.metric("Poids total", f"{total_poids/1000:.1f} T",
+                              delta=f"{(total_poids - poids_brut_act)/1000:+.1f} T")
+                col_m3.metric("Temps estimé", f"{nouveau_temps:.1f} h")
+            
+            if total_pallox == 0:
+                st.error("❌ Le batch doit avoir au moins 1 pallox au total (toutes les filles à 0 pallox)")
+            
+            col_ok_e, col_ann_e = st.columns(2)
+            with col_ok_e:
+                btn_disabled = (total_pallox == 0)
+                if st.button("✅ Valider modification", key=f"edit_ok_batch_{elem_id_edit}",
+                             type="primary", use_container_width=True, disabled=btn_disabled):
+                    # Construire lots_updates
+                    lots_updates = [
+                        {'fille_id': fid, 'quantite_pallox': qty}
+                        for fid, qty in new_quantites_par_fille.items()
+                    ]
+                    ok, msg_e = modifier_job(
+                        job_id_edit, elem_id_edit,
+                        total_pallox,  # nouveau_pallox = total (calculé pour cohérence parent)
+                        poids_unit_act,  # poids_unit ignoré en mode batch+lots_updates mais on passe une valeur
+                        nouvelle_cadence,
+                        type_conditionnement=None,  # pas d'override en batch
+                        lots_updates=lots_updates
+                    )
+                    if ok:
+                        st.session_state.pop(f'show_edit_{elem_id_edit}', None)
+                        for fid in new_quantites_par_fille:
+                            st.session_state.pop(f"edit_fille_qty_{fid}", None)
+                        st.session_state.pop(new_cadence_key, None)
+                        st.success(msg_e)
+                        st.rerun()
+                    else:
+                        st.error(msg_e)
+            with col_ann_e:
+                if st.button("❌ Annuler", key=f"edit_cancel_batch_{elem_id_edit}",
+                             use_container_width=True):
+                    st.session_state.pop(f'show_edit_{elem_id_edit}', None)
+                    for fid in new_quantites_par_fille:
+                        st.session_state.pop(f"edit_fille_qty_{fid}", None)
+                    st.session_state.pop(new_cadence_key, None)
+                    st.rerun()
+        
+        # ============================================================
+        # BRANCHE MONO-LOT : saisie simple (comportement inchangé)
+        # ============================================================
         else:
             st.markdown(f"## ✏️ Modifier le job #{job_id_edit}")
             variete_e = elem_e['variete'] if pd.notna(elem_e.get('variete')) else '-'
             code_lot_e = elem_e['code_lot_interne'] if pd.notna(elem_e.get('code_lot_interne')) else '-'
             st.info(f"🌱 **{variete_e}** | 📦 Lot: {code_lot_e} | Actuel : {pallox_actuel} pallox | {poids_brut_act/1000:.1f} T")
-        
-        col_e1, col_e2 = st.columns(2)
-        with col_e1:
-            POIDS_UNIT_OPTS = {"Pallox (1900 kg)": 1900,
-                               "Petit Pallox (800 kg)": 800,
-                               "Big Bag (1600 kg)": 1600}
-            if is_multi_lot_edit:
-                # Pour batch : pas de selectbox, juste affichage info
-                st.caption("Type de conditionnement : conservé par lot fille (pas modifiable globalement)")
-                poids_unit_sel = poids_unit_act  # Utilise le poids unit moyen actuel
-                type_cond_to_pass = None  # Signal : ne pas écraser
-            else:
-                # Pour mono-lot : selectbox actif
+            
+            col_e1, col_e2 = st.columns(2)
+            with col_e1:
                 closest_key = min(POIDS_UNIT_OPTS, key=lambda k: abs(POIDS_UNIT_OPTS[k] - poids_unit_act))
                 type_cond_edit = st.selectbox(
                     "Type conditionnement",
@@ -2897,60 +3219,58 @@ with tab1:
                     key=f"edit_type_full_{elem_id_edit}"
                 )
                 poids_unit_sel = POIDS_UNIT_OPTS[type_cond_edit]
-                # Extraire juste le nom court (ex: "Pallox" depuis "Pallox (1900 kg)")
                 type_cond_to_pass = type_cond_edit.split(' (')[0]
-            
-            # Number input pallox + bouton "Reset" valeur initiale
-            new_pallox_key = f"edit_pallox_full_{elem_id_edit}"
-            if new_pallox_key not in st.session_state:
-                st.session_state[new_pallox_key] = pallox_actuel
-            nouveau_pallox = st.number_input(
-                "Nb pallox", min_value=1,
-                step=1, key=new_pallox_key
-            )
-        
-        with col_e2:
-            lignes_cap = {l['code']: float(l['capacite_th']) for l in get_lignes_lavage()}
-            cap_max = lignes_cap.get(elem_e.get('ligne_lavage'), 13.0)
-            new_cadence_key = f"edit_cadence_full_{elem_id_edit}"
-            if new_cadence_key not in st.session_state:
-                st.session_state[new_cadence_key] = float(min(cadence_act, cap_max))
-            nouvelle_cadence = st.number_input(
-                "Cadence (T/h)", min_value=0.5,
-                max_value=float(cap_max),
-                step=0.5, key=new_cadence_key
-            )
-            nouveau_poids = nouveau_pallox * poids_unit_sel
-            nouveau_temps = (nouveau_poids / 1000) / nouvelle_cadence
-            col_m1, col_m2 = st.columns(2)
-            col_m1.metric("Nouveau poids", f"{nouveau_poids/1000:.1f} T",
-                          delta=f"{(nouveau_poids - poids_brut_act)/1000:+.1f} T")
-            col_m2.metric("Nouveau temps", f"{nouveau_temps:.1f} h")
-        
-        col_ok_e, col_ann_e = st.columns(2)
-        with col_ok_e:
-            if st.button("✅ Valider modification", key=f"edit_ok_full_{elem_id_edit}",
-                         type="primary", use_container_width=True):
-                ok, msg_e = modifier_job(
-                    job_id_edit, elem_id_edit,
-                    nouveau_pallox, poids_unit_sel, nouvelle_cadence,
-                    type_conditionnement=type_cond_to_pass
+                
+                new_pallox_key = f"edit_pallox_full_{elem_id_edit}"
+                if new_pallox_key not in st.session_state:
+                    st.session_state[new_pallox_key] = pallox_actuel
+                nouveau_pallox = st.number_input(
+                    "Nb pallox", min_value=1,
+                    step=1, key=new_pallox_key
                 )
-                if ok:
+            
+            with col_e2:
+                lignes_cap = {l['code']: float(l['capacite_th']) for l in get_lignes_lavage()}
+                cap_max = lignes_cap.get(elem_e.get('ligne_lavage'), 13.0)
+                new_cadence_key = f"edit_cadence_full_{elem_id_edit}"
+                if new_cadence_key not in st.session_state:
+                    st.session_state[new_cadence_key] = float(min(cadence_act, cap_max))
+                nouvelle_cadence = st.number_input(
+                    "Cadence (T/h)", min_value=0.5,
+                    max_value=float(cap_max),
+                    step=0.5, key=new_cadence_key
+                )
+                nouveau_poids = nouveau_pallox * poids_unit_sel
+                nouveau_temps = (nouveau_poids / 1000) / nouvelle_cadence
+                col_m1, col_m2 = st.columns(2)
+                col_m1.metric("Nouveau poids", f"{nouveau_poids/1000:.1f} T",
+                              delta=f"{(nouveau_poids - poids_brut_act)/1000:+.1f} T")
+                col_m2.metric("Nouveau temps", f"{nouveau_temps:.1f} h")
+            
+            col_ok_e, col_ann_e = st.columns(2)
+            with col_ok_e:
+                if st.button("✅ Valider modification", key=f"edit_ok_full_{elem_id_edit}",
+                             type="primary", use_container_width=True):
+                    ok, msg_e = modifier_job(
+                        job_id_edit, elem_id_edit,
+                        nouveau_pallox, poids_unit_sel, nouvelle_cadence,
+                        type_conditionnement=type_cond_to_pass
+                    )
+                    if ok:
+                        st.session_state.pop(f'show_edit_{elem_id_edit}', None)
+                        st.session_state.pop(new_pallox_key, None)
+                        st.session_state.pop(new_cadence_key, None)
+                        st.success(msg_e)
+                        st.rerun()
+                    else:
+                        st.error(msg_e)
+            with col_ann_e:
+                if st.button("❌ Annuler", key=f"edit_cancel_full_{elem_id_edit}",
+                             use_container_width=True):
                     st.session_state.pop(f'show_edit_{elem_id_edit}', None)
                     st.session_state.pop(new_pallox_key, None)
                     st.session_state.pop(new_cadence_key, None)
-                    st.success(msg_e)
                     st.rerun()
-                else:
-                    st.error(msg_e)
-        with col_ann_e:
-            if st.button("❌ Annuler", key=f"edit_cancel_full_{elem_id_edit}",
-                         use_container_width=True):
-                st.session_state.pop(f'show_edit_{elem_id_edit}', None)
-                st.session_state.pop(new_pallox_key, None)
-                st.session_state.pop(new_cadence_key, None)
-                st.rerun()
         
         st.markdown("---")
         st.markdown("---")
@@ -3301,7 +3621,8 @@ with tab1:
                                             st.rerun()
                                     with col_del:
                                         if st.button("❌", key=f"del_{elem['id']}", help="Retirer"):
-                                            retirer_element_planning(int(elem['id']))
+                                            ok_del, msg_del = retirer_element_planning(int(elem['id']))
+                                            st.toast(msg_del, icon="✅" if ok_del else "❌")
                                             st.rerun()
                                     
                                     # Note : le formulaire de modification s'affiche en pleine largeur
@@ -3388,7 +3709,8 @@ with tab1:
                                     <small>→{h_fin}</small>
                                 </div>""", unsafe_allow_html=True)
                                 if st.button("❌", key=f"del_{elem['id']}"):
-                                    retirer_element_planning(int(elem['id']))
+                                    ok_del, msg_del = retirer_element_planning(int(elem['id']))
+                                    st.toast(msg_del, icon="✅" if ok_del else "❌")
                                     st.rerun()
                 else:
                     st.caption("_Vide_")
