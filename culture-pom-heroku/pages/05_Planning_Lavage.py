@@ -478,13 +478,19 @@ def trouver_prochain_creneau_libre(planning_df, date_cible, ligne, heure_souhait
     message = f"ℹ️ Repositionné à {heure_proposee.strftime('%H:%M')} (créneau {heure_souhaitee.strftime('%H:%M')} occupé)"
     return heure_proposee, True, message
 
-def inserer_pause_dans_job(job_planning_id, temps_custom_id, duree_pause_min, annee, semaine):
+def inserer_pause_dans_job(job_planning_id, temps_custom_id, duree_pause_min, annee, semaine,
+                           heure_insertion=None):
     """
     Insère une pause à l'intérieur d'un job planifié.
-    - La pause démarre immédiatement après heure_debut du job
-    - heure_fin du job est étendue de duree_pause_min
+    - heure_insertion : heure exacte d'insertion de la pause (datetime.time).
+                        Si None : fallback sur heure_debut du job.
+                        Doit être comprise dans [heure_debut, heure_fin[ du job.
+    - heure_fin du job est étendue de duree_pause_min (peu importe où la pause est insérée)
     - Les éléments suivants (même date/ligne, heure_debut >= heure_fin originale du job)
       sont décalés en cascade de duree_pause_min
+    
+    Note : visuellement la pause s'affiche comme un bloc séparé dans le calendrier
+    (limitation du rendu vertical actuel), mais ses heures réelles en BDD sont correctes.
     """
     try:
         conn = get_connection()
@@ -506,14 +512,28 @@ def inserer_pause_dans_job(job_planning_id, temps_custom_id, duree_pause_min, an
         if h_deb_job is None or h_fin_job is None:
             return False, "❌ Heures du job non définies"
 
-        # Pause : commence immédiatement après heure_debut du job
-        pause_debut_min = h_deb_job.hour * 60 + h_deb_job.minute
+        job_debut_min = h_deb_job.hour * 60 + h_deb_job.minute
+        job_fin_min_orig = h_fin_job.hour * 60 + h_fin_job.minute
+        
+        # Déterminer l'heure d'insertion : paramètre fourni OU fallback heure_debut du job
+        if heure_insertion is not None:
+            pause_debut_min = heure_insertion.hour * 60 + heure_insertion.minute
+            # Validation : doit être dans [heure_debut_job, heure_fin_job[
+            if pause_debut_min < job_debut_min:
+                return False, (f"❌ L'heure d'insertion ({heure_insertion.strftime('%H:%M')}) est "
+                              f"avant le début du job ({h_deb_job.strftime('%H:%M')})")
+            if pause_debut_min >= job_fin_min_orig:
+                return False, (f"❌ L'heure d'insertion ({heure_insertion.strftime('%H:%M')}) est "
+                              f"après ou égale à la fin du job ({h_fin_job.strftime('%H:%M')})")
+        else:
+            # Fallback : début du job
+            pause_debut_min = job_debut_min
+        
         pause_fin_min   = pause_debut_min + duree_pause_min
         pause_h_debut   = time(min(23, pause_debut_min // 60), pause_debut_min % 60)
         pause_h_fin     = time(min(23, pause_fin_min   // 60), pause_fin_min   % 60)
 
-        # Nouvelle heure_fin du job = ancienne + durée pause
-        job_fin_min_orig = h_fin_job.hour * 60 + h_fin_job.minute
+        # Nouvelle heure_fin du job = ancienne + durée pause (peu importe où la pause est dans le job)
         new_job_fin_min  = job_fin_min_orig + duree_pause_min
         new_job_h_fin    = time(min(23, new_job_fin_min // 60), new_job_fin_min % 60)
 
@@ -527,6 +547,9 @@ def inserer_pause_dans_job(job_planning_id, temps_custom_id, duree_pause_min, an
         """, (new_job_h_fin, job_planning_id))
 
         # 2. Insérer la pause comme élément CUSTOM
+        # IMPORTANT : pour un type_element CUSTOM, job_id DOIT être NULL
+        # (contrainte BDD check_type_refs : un élément ne peut référencer
+        #  qu'UN type de référence à la fois — soit JOB via job_id, soit CUSTOM via temps_custom_id)
         cursor.execute("""
             SELECT COALESCE(MAX(ordre_jour), 0) as max_ordre
             FROM lavages_planning_elements
@@ -539,8 +562,8 @@ def inserer_pause_dans_job(job_planning_id, temps_custom_id, duree_pause_min, an
             (type_element, job_id, temps_custom_id, annee, semaine,
              date_prevue, ligne_lavage, ordre_jour,
              heure_debut, heure_fin, duree_minutes, created_by)
-            VALUES ('CUSTOM', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (job_elem['job_id'], temps_custom_id, annee, semaine,
+            VALUES ('CUSTOM', NULL, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (temps_custom_id, annee, semaine,
               job_elem['date_prevue'], job_elem['ligne_lavage'], next_ordre,
               pause_h_debut, pause_h_fin, duree_pause_min, created_by))
 
@@ -3107,7 +3130,8 @@ with tab1:
                     else:
                         job_opts = {
                             f"Job #{int(r['job_id'])} — {r['variete']} "
-                            f"({r['heure_debut'].strftime('%H:%M') if pd.notna(r['heure_debut']) else '?'})": int(r['id'])
+                            f"({r['heure_debut'].strftime('%H:%M') if pd.notna(r['heure_debut']) else '?'} → "
+                            f"{r['heure_fin'].strftime('%H:%M') if pd.notna(r['heure_fin']) else '?'})": int(r['id'])
                             for _, r in jobs_du_jour.iterrows()
                         }
                         job_sel_label = st.selectbox(
@@ -3118,16 +3142,31 @@ with tab1:
                         )
                         job_planning_id_sel = job_opts[job_sel_label]
                         
+                        # Récupérer heure_debut et heure_fin du job sélectionné pour le time_input
+                        job_row_sel = jobs_du_jour[jobs_du_jour['id'] == job_planning_id_sel].iloc[0]
+                        job_h_deb = job_row_sel['heure_debut'] if pd.notna(job_row_sel['heure_debut']) else time(8, 0)
+                        job_h_fin = job_row_sel['heure_fin']   if pd.notna(job_row_sel['heure_fin'])   else time(12, 0)
+                        
+                        # time_input pour l'heure d'insertion (défaut = heure_debut du job)
+                        heure_insertion_tc = st.time_input(
+                            "Insérer la pause à :",
+                            value=job_h_deb,
+                            step=900,  # pas de 15 min
+                            key=f"tc_unified_heure_pause_{job_planning_id_sel}"
+                        )
+                        
                         st.caption(
-                            f"⏸️ Pause de {tc_sel['duree_minutes']} min insérée au début du job — "
-                            f"heure_fin étendue + éléments suivants décalés"
+                            f"⏸️ Pause de {tc_sel['duree_minutes']} min insérée à "
+                            f"{heure_insertion_tc.strftime('%H:%M')} — heure_fin du job étendue + "
+                            f"éléments suivants décalés (job : {job_h_deb.strftime('%H:%M')} → {job_h_fin.strftime('%H:%M')})"
                         )
                         
                         if st.button("✅ Insérer pause", key="tc_unified_btn_job",
                                      type="primary", use_container_width=True):
                             success, msg = inserer_pause_dans_job(
                                 job_planning_id_sel, int(tc_sel['id']),
-                                tc_sel['duree_minutes'], annee, semaine
+                                tc_sel['duree_minutes'], annee, semaine,
+                                heure_insertion=heure_insertion_tc
                             )
                             if success:
                                 st.success(msg)
