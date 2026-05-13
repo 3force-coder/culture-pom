@@ -122,6 +122,52 @@ def pct_evol(v_new, v_old):
 # FONCTIONS BDD
 # ============================================================================
 
+@st.cache_data(ttl=3600)
+def detect_table_mapping_marque():
+    """Détecte la table de mapping Emballage+Marque → Produit (défensif).
+    
+    Cherche dans 2 tables candidates :
+      - frulog_mapping_produits (plus spécifique)
+      - ref_produits_commerciaux (générique)
+    
+    Identifie les colonnes 'marque' et 'code' (= code_produit_commercial).
+    
+    Retourne un dict {'table', 'col_code', 'col_marque'} ou None si rien trouvé.
+    """
+    candidats_table = ['frulog_mapping_produits', 'ref_produits_commerciaux']
+    candidats_col_marque = ['marque', 'brand', 'nom_marque', 'marque_commerciale']
+    candidats_col_code = ['code', 'code_produit_commercial', 'code_produit', 'codeproduit']
+    
+    try:
+        conn = get_connection(); cur = conn.cursor()
+        for table in candidats_table:
+            # Lister les colonnes de la table
+            cur.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = %s
+            """, (table,))
+            cols_rows = cur.fetchall()
+            if not cols_rows:
+                continue  # table n'existe pas
+            cols = [r['column_name'] if hasattr(r, 'get') else r[0] for r in cols_rows]
+            
+            # Trouver la colonne marque (premier match dans l'ordre des candidats)
+            col_marque = next((c for c in candidats_col_marque if c in cols), None)
+            # Trouver la colonne code
+            col_code = next((c for c in candidats_col_code if c in cols), None)
+            
+            if col_marque and col_code:
+                cur.close(); conn.close()
+                return {'table': table, 'col_code': col_code, 'col_marque': col_marque}
+        
+        cur.close(); conn.close()
+        return None
+    except Exception:
+        return None
+
+
+MAPPING_MARQUE = detect_table_mapping_marque()  # détecté une fois au chargement
+
 def get_analyse_ventes(table, d1=None, d2=None):
     try:
         conn = get_connection(); cur = conn.cursor()
@@ -148,6 +194,47 @@ def get_analyse_ventes(table, d1=None, d2=None):
             'par_calibre':  f"SELECT calibre,COUNT(*) as nb,SUM(COALESCE(pds_net,0)) as pds_kg,COUNT(DISTINCT client) as nb_clients FROM {table} WHERE type IN ('E','C') AND calibre IS NOT NULL{w} GROUP BY calibre ORDER BY pds_kg DESC",
             'par_vendeur':  f"SELECT vendeur,SUM(COALESCE(pds_net,0)) as pds_kg,SUM(COALESCE(montant,0)) as ca,COUNT(DISTINCT client) as nb_clients FROM {table} WHERE type IN ('E','C') AND vendeur IS NOT NULL{w} GROUP BY vendeur ORDER BY ca DESC",
         }
+        # Ajout dynamique des requêtes marque si la table mapping a été détectée
+        if MAPPING_MARQUE:
+            map_tbl  = MAPPING_MARQUE['table']
+            map_code = MAPPING_MARQUE['col_code']
+            map_mq   = MAPPING_MARQUE['col_marque']
+            # Pour les requêtes avec JOIN, on doit préfixer date_charg par l'alias flc
+            # (sinon ambiguïté SQL). w_join est dérivé de w (qui reste tel quel pour
+            # les autres requêtes sans alias).
+            w_join = w.replace('date_charg', 'flc.date_charg')
+            # Sous-requête DISTINCT pour éviter les doublons si plusieurs emballages
+            # pointent vers un même code_produit (la marque est rattachée au code)
+            mapping_subq = (
+                f"(SELECT DISTINCT {map_code} AS map_code, "
+                f"COALESCE(NULLIF(TRIM({map_mq}::text), ''), '❓ Sans marque') AS map_marque "
+                f"FROM {map_tbl} WHERE {map_code} IS NOT NULL) mp"
+            )
+            queries['par_marque'] = (
+                f"SELECT COALESCE(mp.map_marque, '❓ Non mappé') as marque, "
+                f"COUNT(*) as nb, "
+                f"SUM(COALESCE(flc.pds_net,0)) as pds_kg, "
+                f"SUM(COALESCE(flc.montant,0)) as ca, "
+                f"COUNT(DISTINCT flc.client) as nb_clients, "
+                f"COUNT(DISTINCT flc.variete) as nb_varietes, "
+                f"AVG(flc.prix) FILTER (WHERE flc.prix>0) as prix_moy "
+                f"FROM {table} flc "
+                f"LEFT JOIN {mapping_subq} ON flc.code_produit_commercial = mp.map_code "
+                f"WHERE flc.type IN ('E','C'){w_join} "
+                f"GROUP BY 1 ORDER BY pds_kg DESC"
+            )
+            queries['par_marque_mois'] = (
+                f"SELECT COALESCE(mp.map_marque, '❓ Non mappé') as marque, "
+                f"EXTRACT(YEAR FROM flc.date_charg)::int as annee, "
+                f"EXTRACT(MONTH FROM flc.date_charg)::int as mois, "
+                f"SUM(COALESCE(flc.pds_net,0)) as pds_kg, "
+                f"SUM(COALESCE(flc.montant,0)) as ca, "
+                f"COUNT(DISTINCT flc.client) as nb_clients "
+                f"FROM {table} flc "
+                f"LEFT JOIN {mapping_subq} ON flc.code_produit_commercial = mp.map_code "
+                f"WHERE flc.type IN ('E','C') AND flc.date_charg IS NOT NULL{w_join} "
+                f"GROUP BY 1,2,3 ORDER BY 2,3,1"
+            )
         for k2, sql in queries.items():
             cur.execute(sql); r[k2] = cur.fetchall()
         try:
@@ -243,6 +330,9 @@ def render_analyse_ventes(data, data_prev, label_prev, label, show_produit=False
 
     vues = ["📊 Vue d'ensemble","👥 Clients","🥔 Variétés","📦 Emballages","📏 Calibres","👤 Vendeurs"]
     if show_produit: vues.insert(3, "🏷️ Produits")
+    # Ajout Marques en avant-dernier si la table mapping est détectée et qu'on a des données
+    if MAPPING_MARQUE and data.get('par_marque'):
+        vues.insert(len(vues) - 1, "🏷️ Marques")
     vue = st.radio("Analyser :", vues, horizontal=True, key=f"vue_{label}")
     st.markdown("---")
 
@@ -353,6 +443,218 @@ def render_analyse_ventes(data, data_prev, label_prev, label, show_produit=False
         st.dataframe(df[['calibre','tonnes','nb_clients','nb']].rename(columns={'calibre':'Calibre','tonnes':'Tonnes','nb_clients':'Clients','nb':'Lignes'}),
             use_container_width=True, hide_index=True)
 
+    elif vue == "🏷️ Marques" and data.get('par_marque'):
+        df_m = pd.DataFrame(data['par_marque'])
+        df_m['tonnes'] = df_m['pds_kg'].astype(float) / 1000
+        df_m['ca_k']   = df_m['ca'].astype(float)    / 1000
+        
+        # KPI marques
+        total_tonnes = df_m['tonnes'].sum()
+        total_ca_k   = df_m['ca_k'].sum()
+        nb_marques = len(df_m)
+        marque_top = df_m.iloc[0] if len(df_m) > 0 else None
+        pct_top    = (float(marque_top['tonnes']) / total_tonnes * 100) if marque_top is not None and total_tonnes > 0 else 0
+        
+        # Pareto : nb marques pour 80% du tonnage
+        df_pareto = df_m.sort_values('tonnes', ascending=False).copy()
+        df_pareto['pct_cum'] = df_pareto['tonnes'].cumsum() / max(total_tonnes, 0.001) * 100
+        nb_marques_80 = len(df_pareto[df_pareto['pct_cum'] <= 80]) + 1
+        
+        col_k1, col_k2, col_k3, col_k4 = st.columns(4)
+        col_k1.metric("🏷️ Marques actives", f"{nb_marques}")
+        col_k2.metric("🥇 Marque #1", str(marque_top['marque']) if marque_top is not None else "—",
+                      delta=f"{pct_top:.1f}% du total")
+        col_k3.metric("📊 Pareto", f"{nb_marques_80} marques",
+                      delta="= 80% du tonnage")
+        col_k4.metric("⚖️ Tonnage total", fmt_t(total_tonnes))
+        
+        st.markdown("---")
+        
+        # === Top 5 marques + "Autres" agrégé ===
+        TOP_N = 5
+        df_top = df_m.head(TOP_N).copy()
+        if len(df_m) > TOP_N:
+            df_autres = df_m.iloc[TOP_N:].copy()
+            ligne_autres = pd.DataFrame([{
+                'marque': f'Autres ({len(df_autres)} marques)',
+                'tonnes': df_autres['tonnes'].sum(),
+                'ca_k':   df_autres['ca_k'].sum(),
+                'pds_kg': df_autres['pds_kg'].astype(float).sum(),
+                'ca':     df_autres['ca'].astype(float).sum(),
+                'nb':     df_autres['nb'].astype(int).sum(),
+                'nb_clients': 0,
+                'nb_varietes': 0,
+                'prix_moy': 0,
+            }])
+            df_chart = pd.concat([df_top, ligne_autres], ignore_index=True)
+        else:
+            df_chart = df_top
+        
+        marques_top_list = df_top['marque'].tolist()  # pour heatmap/lignes (sans "Autres")
+        
+        # === 1. Pie chart + Bar chart double axe tonnes/CA ===
+        gc1, gc2 = st.columns(2)
+        with gc1:
+            fig_pie = px.pie(df_chart, names='marque', values='tonnes',
+                             title=f"Top {TOP_N} marques (% du tonnage)")
+            fig_pie.update_traces(textinfo='label+value+percent',
+                                  texttemplate='%{label}<br>%{value:,.0f}T<br>%{percent}')
+            fig_pie.update_layout(height=420,
+                                  legend=dict(orientation="h", yanchor="bottom", y=-0.2))
+            st.plotly_chart(fig_pie, use_container_width=True)
+        with gc2:
+            # Double axe : Tonnes (barres) + CA (ligne)
+            fig_dbl = go.Figure()
+            fig_dbl.add_trace(go.Bar(
+                x=df_chart['marque'], y=df_chart['tonnes'],
+                name='Tonnes', marker_color='#1565C0',
+                text=[fmt_t(v) for v in df_chart['tonnes']],
+                textposition='outside', textfont=dict(size=9, color='#0D47A1'),
+                yaxis='y1'
+            ))
+            fig_dbl.add_trace(go.Scatter(
+                x=df_chart['marque'], y=df_chart['ca_k'],
+                name='CA (k€)', mode='lines+markers+text',
+                line=dict(color='#FF9800', width=3),
+                marker=dict(size=10),
+                text=[fmt_k(v) for v in df_chart['ca_k']],
+                textposition='top center',
+                textfont=dict(size=9, color='#E65100'),
+                yaxis='y2'
+            ))
+            fig_dbl.update_layout(
+                title="Tonnes (barres) & CA (ligne) par marque",
+                height=420, xaxis_tickangle=-45,
+                yaxis=dict(title="Tonnes", showgrid=True),
+                yaxis2=dict(title="CA (k€)", overlaying='y', side='right', showgrid=False),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02)
+            )
+            st.plotly_chart(fig_dbl, use_container_width=True)
+        
+        # === 2. Évolution mensuelle empilée (bar stack) ===
+        if data.get('par_marque_mois'):
+            df_mm = pd.DataFrame(data['par_marque_mois'])
+            if not df_mm.empty:
+                df_mm['tonnes'] = df_mm['pds_kg'].astype(float) / 1000
+                df_mm['mois_label'] = df_mm.apply(
+                    lambda r: f"{int(r['annee'])}-{int(r['mois']):02d}", axis=1
+                )
+                # Regrouper : top 5 marques + "Autres"
+                df_mm['marque_grp'] = df_mm['marque'].apply(
+                    lambda m: m if m in marques_top_list else f'Autres ({len(df_m) - TOP_N} marques)'
+                ) if len(df_m) > TOP_N else df_mm['marque']
+                df_mm_agg = df_mm.groupby(['mois_label', 'marque_grp'], as_index=False).agg({'tonnes': 'sum'})
+                
+                # Ordre chronologique
+                ordre_mois = sorted(df_mm_agg['mois_label'].unique())
+                
+                fig_stack = px.bar(
+                    df_mm_agg, x='mois_label', y='tonnes', color='marque_grp',
+                    title="Évolution mensuelle empilée par marque",
+                    labels={'mois_label': 'Mois', 'tonnes': 'Tonnes', 'marque_grp': 'Marque'},
+                    category_orders={'mois_label': ordre_mois,
+                                     'marque_grp': marques_top_list + ([f'Autres ({len(df_m) - TOP_N} marques)'] if len(df_m) > TOP_N else [])}
+                )
+                fig_stack.update_layout(height=420, barmode='stack',
+                                        xaxis_tickangle=-45,
+                                        legend=dict(orientation="h", yanchor="bottom", y=1.02))
+                st.plotly_chart(fig_stack, use_container_width=True)
+                
+                # === 3. Lignes superposées (top 5 uniquement) ===
+                df_lines = df_mm[df_mm['marque'].isin(marques_top_list)].copy()
+                if not df_lines.empty:
+                    df_lines_agg = df_lines.groupby(['mois_label', 'marque'], as_index=False).agg({'tonnes': 'sum'})
+                    fig_lines = px.line(
+                        df_lines_agg, x='mois_label', y='tonnes', color='marque',
+                        title=f"Évolution mensuelle — Top {TOP_N} marques (comparatif)",
+                        labels={'mois_label': 'Mois', 'tonnes': 'Tonnes', 'marque': 'Marque'},
+                        category_orders={'mois_label': ordre_mois, 'marque': marques_top_list},
+                        markers=True
+                    )
+                    fig_lines.update_traces(line=dict(width=2.5), marker=dict(size=7))
+                    fig_lines.update_layout(height=420, xaxis_tickangle=-45,
+                                            legend=dict(orientation="h", yanchor="bottom", y=1.02))
+                    st.plotly_chart(fig_lines, use_container_width=True)
+                
+                # === 4. Heatmap mois × marque ===
+                if not df_lines.empty:
+                    df_pivot = df_lines.pivot_table(
+                        index='marque', columns='mois_label', values='tonnes',
+                        aggfunc='sum', fill_value=0
+                    )
+                    # Réordonner index par tonnage total décroissant
+                    df_pivot = df_pivot.reindex([m for m in marques_top_list if m in df_pivot.index])
+                    df_pivot = df_pivot.reindex(columns=ordre_mois, fill_value=0)
+                    
+                    fig_heat = go.Figure(data=go.Heatmap(
+                        z=df_pivot.values,
+                        x=df_pivot.columns,
+                        y=df_pivot.index,
+                        colorscale='Blues',
+                        text=[[f"{v:,.0f}T".replace(',', ' ') if v > 0 else '' for v in row] for row in df_pivot.values],
+                        texttemplate='%{text}',
+                        textfont=dict(size=9),
+                        hovertemplate='Marque: %{y}<br>Mois: %{x}<br>Tonnes: %{z:,.1f}<extra></extra>'
+                    ))
+                    fig_heat.update_layout(
+                        title=f"Heatmap pénétration mensuelle (Top {TOP_N})",
+                        height=300 + 25 * len(df_pivot), xaxis_tickangle=-45,
+                        yaxis=dict(autorange='reversed')
+                    )
+                    st.plotly_chart(fig_heat, use_container_width=True)
+        
+        # === 5. Comparaison N vs N-1 par marque ===
+        sply_bars(df_m, prev_data('par_marque'), 'marque', 'tonnes',
+                  "Tonnage / marque — N vs N-1", color_now='#7B1FA2', color_prev='#FF9800',
+                  top_n=15, fmt_fn=fmt_t)
+        
+        # === 6. Tableau détaillé + Pareto + Évolution % vs N-1 ===
+        df_m['pct_total'] = df_m['tonnes'] / max(total_tonnes, 0.001) * 100
+        df_show = df_m[['marque', 'tonnes', 'pct_total', 'ca_k', 'nb_clients',
+                        'nb_varietes', 'prix_moy', 'nb']].copy()
+        
+        if data_prev and data_prev.get('par_marque'):
+            dfp = pd.DataFrame(data_prev['par_marque'])
+            dfp['tonnes_prev'] = dfp['pds_kg'].astype(float) / 1000
+            dfp_dict = dict(zip(dfp['marque'], dfp['tonnes_prev']))
+            df_show['N-1 (T)'] = df_show['marque'].map(dfp_dict)
+            df_show['Evol %'] = df_show.apply(
+                lambda r: f"{pct_evol(r['tonnes'], r.get('N-1 (T)')):+.0f}%"
+                if r.get('N-1 (T)') and pct_evol(r['tonnes'], r.get('N-1 (T)')) is not None
+                else "—", axis=1
+            )
+        
+        st.markdown("##### 📋 Détail par marque")
+        st.dataframe(
+            df_show.rename(columns={
+                'marque': 'Marque', 'tonnes': 'Tonnes', 'pct_total': '% Total',
+                'ca_k': 'CA (k€)', 'nb_clients': 'Clients', 'nb_varietes': 'Variétés',
+                'prix_moy': 'Prix moy', 'nb': 'Lignes'
+            }),
+            use_container_width=True, hide_index=True,
+            column_config={
+                'Tonnes':   st.column_config.NumberColumn(format="%.1f"),
+                '% Total':  st.column_config.NumberColumn(format="%.1f%%"),
+                'CA (k€)':  st.column_config.NumberColumn(format="%.1f"),
+                'Prix moy': st.column_config.NumberColumn(format="%.0f"),
+            }
+        )
+        
+        st.info(f"📊 **Pareto** : {nb_marques_80} marque(s) représente(nt) 80% du tonnage "
+                f"({nb_marques_80*100//max(len(df_m),1)}% des marques actives)")
+        
+        # === 7. Export Excel ===
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+            df_show.to_excel(writer, index=False, sheet_name='Marques')
+            if data.get('par_marque_mois'):
+                df_mm_export = pd.DataFrame(data['par_marque_mois'])
+                df_mm_export['tonnes'] = df_mm_export['pds_kg'].astype(float) / 1000
+                df_mm_export['ca_k'] = df_mm_export['ca'].astype(float) / 1000
+                df_mm_export.to_excel(writer, index=False, sheet_name='Évolution mensuelle')
+        st.download_button("📥 Export marques", buf.getvalue(),
+                           "marques_condi.xlsx", use_container_width=True)
+    
     elif vue == "👤 Vendeurs" and data.get('par_vendeur'):
         df = pd.DataFrame(data['par_vendeur']); df['tonnes'] = df['pds_kg'].astype(float)/1000; df['ca_k'] = df['ca'].astype(float)/1000
         sply_bars(df, prev_data('par_vendeur'), 'vendeur', 'ca_k', "CA / vendeur (k€)", color_now='#2E7D32', color_prev='#FF9800', fmt_fn=fmt_k)
