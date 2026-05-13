@@ -296,23 +296,26 @@ def save_changes(original_df, edited_df):
         return False, f"❌ Erreur : {str(e)}"
 
 def add_record(data):
-    """Ajoute une nouvelle ligne"""
+    """Ajoute une nouvelle ligne.
+    
+    Note : volume_brut_t et hectares_necessaires sont des colonnes GENERATED ALWAYS AS
+    côté BDD (calculées automatiquement par Postgres à partir de volume_net_t/dechets_pct
+    et rendement_t_ha). Elles ne doivent PAS apparaître dans l'INSERT, sinon Postgres
+    rejette avec "cannot insert a non-DEFAULT value into column".
+    """
     try:
         conn = get_connection()
         cursor = conn.cursor()
         username = get_current_username()
         
-        # Calculs automatiques
-        volume_brut = calculer_volume_brut(data.get('volume_net_t', 0), data.get('dechets_pct', 15))
-        hectares = calculer_hectares(volume_brut, data.get('rendement_t_ha', 40))
         mois_numero = get_mois_numero(data.get('mois', ''))
         
         query = """
             INSERT INTO plans_recolte (
                 campagne, mois, mois_numero, marque, type_produit, variete,
-                arrachage_quinzaine, volume_net_t, dechets_pct, volume_brut_t,
-                rendement_t_ha, hectares_necessaires, taux_couverture_cible, notes, created_by
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                arrachage_quinzaine, volume_net_t, dechets_pct,
+                rendement_t_ha, taux_couverture_cible, notes, created_by
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """
         
@@ -326,9 +329,7 @@ def add_record(data):
             data.get('arrachage_quinzaine'),
             data.get('volume_net_t', 0),
             data.get('dechets_pct', 15),
-            volume_brut,
             data.get('rendement_t_ha', 40),
-            hectares,
             100,  # Taux par défaut = 100%
             data.get('notes'),
             username
