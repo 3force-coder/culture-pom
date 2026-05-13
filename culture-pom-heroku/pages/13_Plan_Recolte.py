@@ -155,6 +155,59 @@ def get_unique_values(df, column):
     values = df[column].dropna().unique().tolist()
     return sorted([str(v) for v in values if str(v).strip()])
 
+
+@st.cache_data(ttl=3600)
+def get_varietes_referentielles():
+    """Charge les variétés depuis ref_varietes (table dédiée) avec détection défensive.
+    
+    Si la table n'existe pas ou n'a pas de colonne nom compatible :
+    retourne ([], None) → le code appelant fera fallback sur les valeurs du plan.
+    
+    Retourne (list[str] triée, nom_colonne_utilisée ou None).
+    """
+    # Candidats de noms de colonne (par ordre de préférence)
+    candidats_col = ['nom', 'nom_variete', 'variete', 'libelle', 'name']
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        # 1. Vérifier que la table existe et trouver la bonne colonne
+        cursor.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'ref_varietes'
+        """)
+        rows = cursor.fetchall()
+        if not rows:
+            cursor.close()
+            conn.close()
+            return ([], None)
+        # rows peut être tuple ou dict selon le curseur (RealDictCursor)
+        cols = [r['column_name'] if hasattr(r, 'get') else r[0] for r in rows]
+        col_nom = next((c for c in candidats_col if c in cols), None)
+        if not col_nom:
+            cursor.close()
+            conn.close()
+            return ([], None)
+        # 2. Charger les variétés (uniquement actives si la colonne is_active existe)
+        if 'is_active' in cols:
+            where_clause = f"WHERE is_active = TRUE AND {col_nom} IS NOT NULL AND TRIM({col_nom}::text) <> ''"
+        else:
+            where_clause = f"WHERE {col_nom} IS NOT NULL AND TRIM({col_nom}::text) <> ''"
+        cursor.execute(
+            f"SELECT DISTINCT {col_nom} AS nom FROM ref_varietes {where_clause} ORDER BY 1"
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        varietes = []
+        for r in rows:
+            v = r['nom'] if hasattr(r, 'get') else r[0]
+            if v:
+                varietes.append(str(v).strip())
+        return (sorted(set(varietes)), col_nom)
+    except Exception:
+        return ([], None)
+
+
 def save_changes(original_df, edited_df):
     """Sauvegarde les modifications"""
     try:
@@ -530,11 +583,46 @@ with tab1:
                 key="add_type"
             )
             
-            st.session_state.new_data['variete'] = st.selectbox(
+            # === Variété : autocomplete suggère + saisie libre ===
+            # Source : ref_varietes (table dédiée) union avec les variétés du plan actuel
+            varietes_ref, col_src = get_varietes_referentielles()
+            varietes_plan = get_unique_values(df_full, 'variete')
+            # Union sans doublons, ordre = ref d'abord puis nouvelles du plan
+            suggestions = sorted(set(varietes_ref) | set(varietes_plan))
+            
+            OPT_LIBRE = "✏️ Autre — saisir manuellement"
+            options_variete = [""] + suggestions + [OPT_LIBRE]
+            
+            choix_variete = st.selectbox(
                 "Variété *",
-                options=[""] + get_unique_values(df_full, 'variete'),
-                key="add_variete"
+                options=options_variete,
+                key="add_variete_select"
             )
+            
+            if choix_variete == OPT_LIBRE:
+                variete_saisie = st.text_input(
+                    "Nom de la variété (saisie libre)",
+                    key="add_variete_libre",
+                    placeholder="Ex: Belami, Goldmarie..."
+                ).strip()
+                st.session_state.new_data['variete'] = variete_saisie
+            else:
+                st.session_state.new_data['variete'] = choix_variete
+            
+            # Caption explicative discrète
+            if varietes_ref:
+                st.caption(
+                    f"🌱 {len(varietes_ref)} variété(s) chargée(s) depuis `ref_varietes`"
+                    + (f" (+{len(set(varietes_plan) - set(varietes_ref))} du plan)"
+                       if set(varietes_plan) - set(varietes_ref) else "")
+                )
+            elif varietes_plan:
+                st.caption(
+                    f"ℹ️ Suggestions issues du plan actuel ({len(varietes_plan)} variétés). "
+                    f"Table `ref_varietes` non détectée."
+                )
+            else:
+                st.caption("ℹ️ Aucune source de variétés. Utilisez « Autre » pour saisir librement.")
         
         with col2:
             st.session_state.new_data['arrachage_quinzaine'] = st.text_input(
