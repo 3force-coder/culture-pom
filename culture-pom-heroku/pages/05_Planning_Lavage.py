@@ -2332,8 +2332,9 @@ def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg,
         temps_estime = (poids_brut_kg / 1000) / capacite_th
         created_by = st.session_state.get('username', 'system')
         
-        # Calibres LAVÉ/GRENAILLES calculés depuis le seuil (règle borne haute=70)
-        cal_min_lave, cal_max_lave, cal_min_gren, cal_max_gren = _calculer_bornes_calibre(calibre_seuil)
+        # Note : calibre_seuil suffit pour stocker la règle de calibre de sortie.
+        # Les 4 bornes (min/max lave/gren) sont recalculées côté Python via
+        # _calculer_bornes_calibre() au moment où terminer_job en a besoin.
         
         # INSERT lavages_jobs (1 ligne parent mono-lot)
         cursor.execute("""
@@ -2341,18 +2342,15 @@ def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg,
                 lot_id, emplacement_id, code_lot_interne, variete, quantite_pallox, poids_brut_kg,
                 date_prevue, ligne_lavage, capacite_th, temps_estime_heures,
                 statut, statut_source, is_multi_lot, nb_lots, created_by, notes,
-                type_tapis, etiquette_grenailles, etiquette_pallox, calibre_seuil,
-                calibre_min_lave, calibre_max_lave, calibre_min_gren, calibre_max_gren
+                type_tapis, etiquette_grenailles, etiquette_pallox, calibre_seuil
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'PRÉVU', %s,
                       FALSE, 1, %s, %s,
-                      %s, %s, %s, %s,
                       %s, %s, %s, %s)
             RETURNING id
         """, (lot_id, emplacement_id, lot_info['code_lot_interne'], lot_info['variete'],
               quantite_pallox, poids_brut_kg, date_prevue, ligne_lavage,
               capacite_th, temps_estime, statut_source, created_by, notes,
-              type_tapis, etiquette_grenailles, etiquette_pallox, calibre_seuil,
-              cal_min_lave, cal_max_lave, cal_min_gren, cal_max_gren))
+              type_tapis, etiquette_grenailles, etiquette_pallox, calibre_seuil))
         job_id = int(cursor.fetchone()['id'])
         
         # INSERT lavages_jobs_lots (1 ligne fille)
@@ -2570,8 +2568,8 @@ def create_batch_jobs(lots_selection, date_prevue, ligne_lavage, cadence, notes=
         temps_estime = (total_poids_kg / 1000) / capacite_th
         nb_lots = len(enriched)
         
-        # Calibres LAVÉ/GRENAILLES calculés depuis le seuil (règle borne haute=70)
-        cal_min_lave, cal_max_lave, cal_min_gren, cal_max_gren = _calculer_bornes_calibre(calibre_seuil)
+        # Note : calibre_seuil suffit. Les 4 bornes sont recalculées par
+        # _calculer_bornes_calibre() côté Python quand on en a besoin.
         
         # ============================================================
         # 6. INSERT lavages_jobs (1 seule ligne PARENT multi-lot)
@@ -2583,15 +2581,13 @@ def create_batch_jobs(lots_selection, date_prevue, ligne_lavage, cadence, notes=
                 date_prevue, ligne_lavage, capacite_th, temps_estime_heures,
                 statut, statut_source, is_multi_lot, nb_lots, batch_id,
                 created_by, notes,
-                type_tapis, etiquette_grenailles, etiquette_pallox, calibre_seuil,
-                calibre_min_lave, calibre_max_lave, calibre_min_gren, calibre_max_gren
+                type_tapis, etiquette_grenailles, etiquette_pallox, calibre_seuil
             ) VALUES (
                 NULL, NULL, NULL, %s,
                 %s, %s,
                 %s, %s, %s, %s,
                 'PRÉVU', %s, TRUE, %s, %s,
                 %s, %s,
-                %s, %s, %s, %s,
                 %s, %s, %s, %s
             )
             RETURNING id
@@ -2600,8 +2596,7 @@ def create_batch_jobs(lots_selection, date_prevue, ligne_lavage, cadence, notes=
               date_prevue, ligne_lavage, capacite_th, temps_estime,
               statut_source_batch, nb_lots, batch_id,
               created_by, notes,
-              type_tapis, etiquette_grenailles, etiquette_pallox, calibre_seuil,
-              cal_min_lave, cal_max_lave, cal_min_gren, cal_max_gren))
+              type_tapis, etiquette_grenailles, etiquette_pallox, calibre_seuil))
         job_id = int(cursor.fetchone()['id'])
         
         # ============================================================
@@ -3389,11 +3384,12 @@ with tab1:
                 cap_max = lignes_cap.get(elem_e.get('ligne_lavage'), 13.0)
                 new_cadence_key = f"edit_cadence_batch_{elem_id_edit}"
                 if new_cadence_key not in st.session_state:
-                    st.session_state[new_cadence_key] = float(min(cadence_act, cap_max))
+                    st.session_state[new_cadence_key] = float(min(cadence_act, 25.0))
                 nouvelle_cadence = st.number_input(
                     "Cadence (T/h)",
-                    min_value=0.5, max_value=float(cap_max), step=0.5,
-                    key=new_cadence_key
+                    min_value=0.5, max_value=25.0, step=0.5,
+                    key=new_cadence_key,
+                    help=f"Capacité nominale ligne : {cap_max} T/h. Max autorisé : 25 T/h."
                 )
             with col_rc2:
                 nouveau_temps = (total_poids / 1000) / nouvelle_cadence if nouvelle_cadence > 0 else 0
@@ -3477,11 +3473,12 @@ with tab1:
                 cap_max = lignes_cap.get(elem_e.get('ligne_lavage'), 13.0)
                 new_cadence_key = f"edit_cadence_full_{elem_id_edit}"
                 if new_cadence_key not in st.session_state:
-                    st.session_state[new_cadence_key] = float(min(cadence_act, cap_max))
+                    st.session_state[new_cadence_key] = float(min(cadence_act, 25.0))
                 nouvelle_cadence = st.number_input(
                     "Cadence (T/h)", min_value=0.5,
-                    max_value=float(cap_max),
-                    step=0.5, key=new_cadence_key
+                    max_value=25.0,
+                    step=0.5, key=new_cadence_key,
+                    help=f"Capacité nominale ligne : {cap_max} T/h. Max autorisé : 25 T/h."
                 )
                 nouveau_poids = nouveau_pallox * poids_unit_sel
                 nouveau_temps = (nouveau_poids / 1000) / nouvelle_cadence
@@ -4363,11 +4360,11 @@ with tab3:
                             cadence = st.number_input(
                                 "⚡ Cadence (T/h)",
                                 min_value=0.5,
-                                max_value=float(capacite_ligne),
+                                max_value=25.0,
                                 value=float(capacite_ligne),
                                 step=0.5,
                                 key="cadence_besoins_create",
-                                help=f"Capacité max ligne : {capacite_ligne} T/h. Réduire si lot difficile (petit calibre, terre...)"
+                                help=f"Capacité nominale ligne : {capacite_ligne} T/h. Max autorisé : 25 T/h."
                             )
                             
                             poids_brut = quantite * poids_unit
@@ -4598,9 +4595,9 @@ with tab3:
 
                         cadence_t2 = st.number_input(
                             "⚡ Cadence (T/h)",
-                            min_value=0.5, max_value=float(cap_ligne_t2),
+                            min_value=0.5, max_value=25.0,
                             value=float(cap_ligne_t2), step=0.5, key="cadence_create_t2",
-                            help=f"Capacité max ligne : {cap_ligne_t2} T/h")
+                            help=f"Capacité nominale ligne : {cap_ligne_t2} T/h. Max autorisé : 25 T/h.")
 
                         notes_t2 = st.text_input("Notes (optionnel)", key="notes_create_t2")
 
