@@ -2119,6 +2119,211 @@ def _calculer_bornes_calibre(calibre_seuil):
     return (s, 70, 0, s)
 
 
+# ============================================================
+# SUIVI EN COURS DE LAVAGE (Feature suivi temps réel + opérateur)
+# Table : lavages_jobs_suivis
+# ============================================================
+
+def ajouter_suivi_pallox(job_id, type_sortie, nb_pallox, type_conditionnement,
+                         poids_kg, operateur, notes=None):
+    """Enregistre un suivi pallox saisi pendant le lavage en cours.
+
+    type_sortie : 'LAVÉ' / 'GRENAILLES' / 'DÉCHETS' (contrainte BDD).
+    nb_pallox   : 1 pour tap unitaire, N pour saisie groupée.
+    operateur   : prénom (texte libre, alimente l'autocomplete au fil du temps).
+
+    Vérifie que le job est bien EN_COURS avant l'INSERT.
+    Retourne (ok, message).
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        # Vérification : le job doit être EN_COURS
+        cursor.execute("SELECT statut FROM lavages_jobs WHERE id = %s", (int(job_id),))
+        result = cursor.fetchone()
+        if not result:
+            return False, "❌ Job introuvable"
+        if result['statut'] != 'EN_COURS':
+            return False, f"❌ Saisie impossible : job {result['statut']} (doit être EN_COURS)"
+
+        # Validation valeurs
+        if type_sortie not in ('LAVÉ', 'GRENAILLES', 'DÉCHETS'):
+            return False, f"❌ Type sortie invalide : {type_sortie}"
+        nb_pallox = int(nb_pallox)
+        if nb_pallox <= 0:
+            return False, "❌ Nb pallox doit être > 0"
+        poids_kg = float(poids_kg)
+        if poids_kg < 0:
+            return False, "❌ Poids négatif interdit"
+
+        created_by = st.session_state.get('username', 'system')
+
+        cursor.execute("""
+            INSERT INTO lavages_jobs_suivis (
+                job_id, type_sortie, nb_pallox, type_conditionnement,
+                poids_kg, operateur, created_by, notes
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """, (int(job_id), type_sortie, nb_pallox, type_conditionnement,
+              poids_kg, operateur, created_by, notes))
+        suivi_id = int(cursor.fetchone()['id'])
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        # Message contextuel selon mono vs groupé
+        if nb_pallox == 1:
+            return True, f"✅ +1 pallox {type_sortie} ({poids_kg:.0f} kg)"
+        else:
+            return True, f"✅ +{nb_pallox} pallox {type_sortie} ({poids_kg:.0f} kg)"
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+
+def get_suivis_job(job_id):
+    """Liste détaillée des suivis d'un job, triée du plus récent au plus ancien.
+
+    Utile pour afficher l'historique sur la card + permettre la suppression
+    d'une saisie erronée.
+
+    Retourne une liste de dicts.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, job_id, type_sortie, nb_pallox, type_conditionnement,
+                   poids_kg, operateur, created_at, created_by, notes
+            FROM lavages_jobs_suivis
+            WHERE job_id = %s
+            ORDER BY created_at DESC, id DESC
+        """, (int(job_id),))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def get_agregats_suivis_job(job_id):
+    """Agrégats par type de sortie pour un job : nb_pallox + poids_kg total.
+
+    Retourne un dict de la forme :
+      {
+        'LAVÉ':        {'nb_pallox': int, 'poids_kg': float},
+        'GRENAILLES':  {'nb_pallox': int, 'poids_kg': float},
+        'DÉCHETS':     {'nb_pallox': int, 'poids_kg': float},
+        'operateur_dernier': str|None,  -- dernier opérateur ayant saisi (= "actuel")
+        'nb_total_saisies': int,
+      }
+
+    Si aucun suivi : tous les compteurs sont à 0.
+    """
+    base = {
+        'LAVÉ': {'nb_pallox': 0, 'poids_kg': 0.0},
+        'GRENAILLES': {'nb_pallox': 0, 'poids_kg': 0.0},
+        'DÉCHETS': {'nb_pallox': 0, 'poids_kg': 0.0},
+        'operateur_dernier': None,
+        'nb_total_saisies': 0,
+    }
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT type_sortie,
+                   SUM(nb_pallox) as nb_pallox,
+                   SUM(poids_kg)  as poids_kg
+            FROM lavages_jobs_suivis
+            WHERE job_id = %s
+            GROUP BY type_sortie
+        """, (int(job_id),))
+        for r in cursor.fetchall():
+            t = r['type_sortie']
+            if t in base:
+                base[t]['nb_pallox'] = int(r['nb_pallox']) if r['nb_pallox'] else 0
+                base[t]['poids_kg']  = float(r['poids_kg']) if r['poids_kg'] else 0.0
+
+        # Dernier opérateur (= opérateur "actuel")
+        cursor.execute("""
+            SELECT operateur, COUNT(*) as nb
+            FROM lavages_jobs_suivis
+            WHERE job_id = %s
+            GROUP BY operateur
+        """, (int(job_id),))
+        # Total saisies
+        cursor.execute("""
+            SELECT COUNT(*) as nb FROM lavages_jobs_suivis WHERE job_id = %s
+        """, (int(job_id),))
+        base['nb_total_saisies'] = int(cursor.fetchone()['nb'])
+
+        # Le dernier opérateur ayant saisi
+        cursor.execute("""
+            SELECT operateur
+            FROM lavages_jobs_suivis
+            WHERE job_id = %s AND operateur IS NOT NULL AND TRIM(operateur) <> ''
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+        """, (int(job_id),))
+        last_op = cursor.fetchone()
+        if last_op:
+            base['operateur_dernier'] = last_op['operateur']
+
+        cursor.close()
+        conn.close()
+        return base
+    except Exception:
+        return base
+
+
+def get_operateurs_historiques():
+    """Liste DISTINCT des opérateurs déjà saisis dans lavages_jobs_suivis.
+
+    Triée par fréquence (les plus utilisés en premier).
+    Utile pour l'autocomplete dans le sélecteur opérateur.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT operateur, COUNT(*) as nb
+            FROM lavages_jobs_suivis
+            WHERE operateur IS NOT NULL AND TRIM(operateur) <> ''
+            GROUP BY operateur
+            ORDER BY nb DESC, operateur ASC
+            LIMIT 100
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [r['operateur'] for r in rows]
+    except Exception:
+        return []
+
+
+def supprimer_suivi_pallox(suivi_id):
+    """Supprime une saisie de suivi (correction d'erreur opérateur)."""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT job_id FROM lavages_jobs_suivis WHERE id = %s", (int(suivi_id),))
+        result = cursor.fetchone()
+        if not result:
+            return False, "❌ Suivi introuvable"
+        cursor.execute("DELETE FROM lavages_jobs_suivis WHERE id = %s", (int(suivi_id),))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, "✅ Saisie supprimée"
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+
 def ui_saisie_infos_metier_lavage(key_prefix):
     """Widget réutilisable pour saisir les 5 infos métier d'un job de lavage à la création.
 
@@ -2936,6 +3141,251 @@ with tab1:
     lignes_dict = {l['code']: float(l['capacite_th']) for l in lignes} if lignes else {'LIGNE_1': 13.0, 'LIGNE_2': 6.0}
     
     # ============================================================
+    # ⭐ BLOC SUIVI EN COURS DE LAVAGE PLEINE LARGEUR (avant Terminer)
+    # Activation : clic sur le bouton "📊 Suivi" sur une card EN_COURS
+    # ============================================================
+    job_en_suivi = None
+    job_elem_suivi = None
+    for key in list(st.session_state.keys()):
+        if key.startswith('show_suivi_') and st.session_state.get(key, False):
+            try:
+                job_id_to_track = int(float(key.replace('show_suivi_', '')))
+            except (ValueError, TypeError):
+                continue
+            if not planning_df.empty:
+                jrows = planning_df[(planning_df['job_id'] == job_id_to_track) & (planning_df['type_element'] == 'JOB')]
+                if not jrows.empty:
+                    job_en_suivi = job_id_to_track
+                    job_elem_suivi = jrows.iloc[0]
+                    break
+    
+    if job_en_suivi and job_elem_suivi is not None:
+        e_s = job_elem_suivi
+        st.markdown("---")
+        col_h1, col_h2 = st.columns([5, 1])
+        with col_h1:
+            st.markdown(f"## 📊 Suivi en cours — Job #{job_en_suivi}")
+        with col_h2:
+            if st.button("✖ Fermer", key=f"close_suivi_{job_en_suivi}", use_container_width=True):
+                st.session_state.pop(f'show_suivi_{job_en_suivi}', None)
+                st.rerun()
+        
+        # Récap entête : variété, lot, quantité prévue
+        variete_s  = e_s['variete']           if pd.notna(e_s.get('variete'))           else '-'
+        code_lot_s = e_s['code_lot_interne']  if pd.notna(e_s.get('code_lot_interne'))  else '-'
+        qty_prev_s = int(e_s['quantite_pallox']) if pd.notna(e_s.get('quantite_pallox')) else 0
+        st.info(f"🌱 **{variete_s}** | 📦 Lot: {code_lot_s} | Prévu : **{qty_prev_s} pallox**")
+        
+        # === 1. Sélecteur opérateur actuel (session_state pour mémorisation locale) ===
+        op_hist = get_operateurs_historiques()
+        agreg_now = get_agregats_suivis_job(job_en_suivi)
+        op_dernier = agreg_now.get('operateur_dernier') or ''
+        
+        # Clé session pour mémoriser l'opérateur courant du job en saisie
+        ss_op_key = f"suivi_op_{job_en_suivi}"
+        if ss_op_key not in st.session_state:
+            st.session_state[ss_op_key] = op_dernier
+        
+        st.markdown("### 👷 Opérateur en poste")
+        col_op1, col_op2 = st.columns([2, 3])
+        with col_op1:
+            opts_op = ["-- Choisir --", "➕ Nouvel opérateur..."] + op_hist
+            # Préselection : opérateur dernier saisi si présent dans la liste
+            try:
+                idx_pre = opts_op.index(st.session_state[ss_op_key]) if st.session_state[ss_op_key] in op_hist else 0
+            except ValueError:
+                idx_pre = 0
+            op_sel = st.selectbox(
+                "Opérateur",
+                opts_op,
+                index=idx_pre,
+                key=f"op_sel_{job_en_suivi}",
+                label_visibility="collapsed",
+            )
+            if op_sel == "➕ Nouvel opérateur...":
+                op_new = st.text_input(
+                    "Prénom du nouvel opérateur",
+                    key=f"op_new_{job_en_suivi}",
+                    placeholder="Ex : Marc, Sophie..."
+                ).strip()
+                if op_new:
+                    st.session_state[ss_op_key] = op_new
+            elif op_sel != "-- Choisir --":
+                st.session_state[ss_op_key] = op_sel
+        with col_op2:
+            op_courant = st.session_state.get(ss_op_key, '')
+            if op_courant:
+                st.success(f"👷 Opérateur courant : **{op_courant}** (sera enregistré sur les prochains pallox)")
+            else:
+                st.warning("⚠️ Aucun opérateur sélectionné — choisis ou tape un prénom à gauche avant de saisir")
+        
+        st.markdown("---")
+        
+        # === 2. Boutons rapides "+1 pallox" ===
+        st.markdown("### ➕ Saisie rapide : +1 pallox")
+        TYPES_COND_SUIVI = ["Pallox", "Petit Pallox", "Big Bag"]
+        POIDS_UNIT_SUIVI = {"Pallox": 1900, "Petit Pallox": 800, "Big Bag": 1600}
+        
+        # Type cond par défaut = celui du job (lu via planning_df / lot fille si dispo)
+        type_cond_defaut_suivi = "Pallox"
+        # Tentative de lecture depuis planning_df
+        if pd.notna(e_s.get('type_conditionnement')):
+            type_cond_defaut_suivi = e_s['type_conditionnement']
+        
+        col_quick1, col_quick2, col_quick3 = st.columns(3)
+        
+        for col_q, type_lbl, type_db, default_w in [
+            (col_quick1, "✨ LAVÉ",      "LAVÉ",       POIDS_UNIT_SUIVI[type_cond_defaut_suivi]),
+            (col_quick2, "🌾 GRENAILLES","GRENAILLES", POIDS_UNIT_SUIVI[type_cond_defaut_suivi]),
+            (col_quick3, "🗑️ DÉCHETS",  "DÉCHETS",    POIDS_UNIT_SUIVI[type_cond_defaut_suivi]),
+        ]:
+            with col_q:
+                st.markdown(f"#### {type_lbl}")
+                # Type cond modifiable par tap (default : type job)
+                tc_key = f"quick_tc_{type_db}_{job_en_suivi}"
+                try:
+                    tc_idx = TYPES_COND_SUIVI.index(type_cond_defaut_suivi)
+                except ValueError:
+                    tc_idx = 0
+                tc_sel = st.selectbox(
+                    "Type cond.",
+                    TYPES_COND_SUIVI,
+                    index=tc_idx,
+                    key=tc_key,
+                    label_visibility="collapsed",
+                )
+                # Poids unitaire pré-rempli depuis type cond
+                w_key = f"quick_w_{type_db}_{job_en_suivi}"
+                if w_key not in st.session_state:
+                    st.session_state[w_key] = float(POIDS_UNIT_SUIVI[tc_sel])
+                # Sync : si type cond change, on resette le poids unit
+                expected_w = float(POIDS_UNIT_SUIVI[tc_sel])
+                # Si la valeur en session est exactement l'ancienne valeur théorique d'un autre type, on resync
+                if st.session_state[w_key] not in [float(v) for v in POIDS_UNIT_SUIVI.values()] + [expected_w]:
+                    pass  # opérateur a personnalisé : on garde
+                poids_quick = st.number_input(
+                    "Poids (kg)",
+                    min_value=0.0, max_value=5000.0, step=10.0,
+                    value=expected_w if st.session_state.get(f"_reset_{w_key}", False) else st.session_state[w_key],
+                    key=w_key,
+                )
+                # Bouton +1
+                btn_disabled = not bool(st.session_state.get(ss_op_key, '').strip())
+                if st.button(f"➕1 {type_db}", key=f"quick_btn_{type_db}_{job_en_suivi}",
+                             type="primary", use_container_width=True, disabled=btn_disabled):
+                    ok, msg = ajouter_suivi_pallox(
+                        job_id=job_en_suivi,
+                        type_sortie=type_db,
+                        nb_pallox=1,
+                        type_conditionnement=tc_sel,
+                        poids_kg=poids_quick,
+                        operateur=st.session_state[ss_op_key],
+                    )
+                    if ok:
+                        st.toast(msg, icon="✅")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+                if btn_disabled:
+                    st.caption("⚠️ Sélectionne un opérateur d'abord")
+        
+        st.markdown("---")
+        
+        # === 3. Saisie groupée (expander) ===
+        with st.expander("📝 Saisie groupée (rattrapage de plusieurs pallox)"):
+            col_g1, col_g2, col_g3, col_g4 = st.columns([1, 1, 1, 1])
+            with col_g1:
+                grp_type = st.selectbox(
+                    "Type sortie",
+                    ["LAVÉ", "GRENAILLES", "DÉCHETS"],
+                    key=f"grp_type_{job_en_suivi}",
+                )
+            with col_g2:
+                grp_nb = st.number_input(
+                    "Nb pallox",
+                    min_value=1, max_value=200, value=1, step=1,
+                    key=f"grp_nb_{job_en_suivi}",
+                )
+            with col_g3:
+                grp_tc = st.selectbox(
+                    "Type cond.",
+                    TYPES_COND_SUIVI,
+                    index=TYPES_COND_SUIVI.index(type_cond_defaut_suivi) if type_cond_defaut_suivi in TYPES_COND_SUIVI else 0,
+                    key=f"grp_tc_{job_en_suivi}",
+                )
+            with col_g4:
+                grp_poids_total = st.number_input(
+                    "Poids total (kg)",
+                    min_value=0.0, max_value=200000.0,
+                    value=float(grp_nb * POIDS_UNIT_SUIVI[grp_tc]),
+                    step=100.0,
+                    key=f"grp_poids_{job_en_suivi}",
+                )
+            grp_notes = st.text_input("Notes (optionnel)", key=f"grp_notes_{job_en_suivi}")
+            grp_disabled = not bool(st.session_state.get(ss_op_key, '').strip())
+            if st.button("✅ Enregistrer la saisie groupée", key=f"grp_btn_{job_en_suivi}",
+                        type="primary", use_container_width=True, disabled=grp_disabled):
+                ok, msg = ajouter_suivi_pallox(
+                    job_id=job_en_suivi,
+                    type_sortie=grp_type,
+                    nb_pallox=grp_nb,
+                    type_conditionnement=grp_tc,
+                    poids_kg=grp_poids_total,
+                    operateur=st.session_state[ss_op_key],
+                    notes=grp_notes if grp_notes else None,
+                )
+                if ok:
+                    st.toast(msg, icon="✅")
+                    st.rerun()
+                else:
+                    st.error(msg)
+            if grp_disabled:
+                st.caption("⚠️ Sélectionne un opérateur d'abord")
+        
+        st.markdown("---")
+        
+        # === 4. Compteurs actuels + historique ===
+        st.markdown("### 📊 État actuel du suivi")
+        col_a1, col_a2, col_a3, col_a4 = st.columns(4)
+        col_a1.metric("✨ Lavés",      f"{agreg_now['LAVÉ']['nb_pallox']} pal",
+                     delta=f"{agreg_now['LAVÉ']['poids_kg']:.0f} kg")
+        col_a2.metric("🌾 Grenailles", f"{agreg_now['GRENAILLES']['nb_pallox']} pal",
+                     delta=f"{agreg_now['GRENAILLES']['poids_kg']:.0f} kg")
+        col_a3.metric("🗑️ Déchets",   f"{agreg_now['DÉCHETS']['nb_pallox']} pal",
+                     delta=f"{agreg_now['DÉCHETS']['poids_kg']:.0f} kg")
+        # Progression : nb lavés / quantité prévue (Q-bis 2 = B)
+        progression_pct = (agreg_now['LAVÉ']['nb_pallox'] / qty_prev_s * 100) if qty_prev_s > 0 else 0
+        col_a4.metric("📊 Progression lavés", f"{progression_pct:.0f} %",
+                     delta=f"{agreg_now['LAVÉ']['nb_pallox']} / {qty_prev_s}")
+        
+        # Historique avec suppression
+        suivis_list = get_suivis_job(job_en_suivi)
+        if suivis_list:
+            st.markdown(f"##### 🕐 Historique ({len(suivis_list)} saisies)")
+            for s in suivis_list[:20]:  # Limite à 20 affichées
+                col_h_t, col_h_d, col_h_o, col_h_x = st.columns([1, 4, 2, 1])
+                hh = s['created_at'].strftime('%H:%M')
+                with col_h_t:
+                    st.caption(hh)
+                with col_h_d:
+                    type_emoji = {'LAVÉ': '✨', 'GRENAILLES': '🌾', 'DÉCHETS': '🗑️'}.get(s['type_sortie'], '')
+                    st.caption(f"{type_emoji} {s['nb_pallox']}× {s['type_sortie']} ({s['type_conditionnement'] or '?'}) — **{float(s['poids_kg']):.0f} kg**")
+                with col_h_o:
+                    st.caption(f"👷 {s['operateur'] or '?'}")
+                with col_h_x:
+                    if st.button("❌", key=f"del_suivi_{s['id']}", help="Supprimer cette saisie"):
+                        ok_d, msg_d = supprimer_suivi_pallox(int(s['id']))
+                        st.toast(msg_d, icon="✅" if ok_d else "❌")
+                        st.rerun()
+            if len(suivis_list) > 20:
+                st.caption(f"... et {len(suivis_list) - 20} saisies plus anciennes (masquées)")
+        else:
+            st.caption("Aucune saisie pour ce job. Utilise les boutons rapides ci-dessus.")
+        
+        st.markdown("---")
+        st.markdown("---")
+    
+    # ============================================================
     # ⭐ FORMULAIRE TERMINAISON EN PLEINE LARGEUR (avant calendrier)
     # ============================================================
     
@@ -2990,6 +3440,24 @@ with tab1:
         TYPES_COND = ["Pallox", "Petit Pallox", "Big Bag"]
         POIDS_UNIT = {"Pallox": 1900, "Petit Pallox": 800, "Big Bag": 1600}
         
+        # ⭐ Récupération des agrégats du suivi en cours (Q7-A : pré-remplissage modifiable)
+        agreg_term = get_agregats_suivis_job(job_en_terminaison)
+        nb_lave_suivi  = agreg_term['LAVÉ']['nb_pallox']
+        nb_gren_suivi  = agreg_term['GRENAILLES']['nb_pallox']
+        nb_dech_suivi  = agreg_term['DÉCHETS']['nb_pallox']
+        poids_lave_suivi   = agreg_term['LAVÉ']['poids_kg']
+        poids_gren_suivi   = agreg_term['GRENAILLES']['poids_kg']
+        poids_dech_suivi   = agreg_term['DÉCHETS']['poids_kg']
+        
+        if agreg_term['nb_total_saisies'] > 0:
+            st.success(
+                f"📊 **Suivi en cours détecté** — pré-remplissage automatique : "
+                f"✨ {nb_lave_suivi} lavés ({poids_lave_suivi:.0f} kg) • "
+                f"🌾 {nb_gren_suivi} grenailles ({poids_gren_suivi:.0f} kg) • "
+                f"🗑️ {nb_dech_suivi} déchets ({poids_dech_suivi:.0f} kg). "
+                f"Les chiffres ci-dessous sont modifiables pour ajustement final."
+            )
+        
         st.markdown(f"### ⚖️ Poids brut en entrée : {poids_brut:,.0f} kg")
         st.markdown("---")
         
@@ -3002,8 +3470,10 @@ with tab1:
             
             col_nb, col_type = st.columns([1, 2])
             with col_nb:
+                # Pré-remplissage : suivi si dispo, sinon estimation 75% du brut
+                default_nb_lave = nb_lave_suivi if nb_lave_suivi > 0 else max(1, int(poids_brut * 0.75 / 1900))
                 nb_pallox_lave = st.number_input("Nb Pallox", min_value=0,
-                    value=max(1, int(poids_brut * 0.75 / 1900)),
+                    value=default_nb_lave,
                     key=f"nb_lave_full_{job_en_terminaison}")
             with col_type:
                 type_lave = st.selectbox("Type conditionnement", TYPES_COND,
@@ -3041,7 +3511,11 @@ with tab1:
 
             # Si pas de pesées, calcul auto
             if not pesees_lave_raw or not pesees_lave:
-                poids_lave_auto = nb_pallox_lave * poids_unit_lave
+                # Si nb correspond au suivi, on utilise le poids du suivi (Q-bis 1 / Q7-A)
+                if nb_lave_suivi > 0 and nb_pallox_lave == nb_lave_suivi and poids_lave_suivi > 0:
+                    poids_lave_auto = poids_lave_suivi
+                else:
+                    poids_lave_auto = nb_pallox_lave * poids_unit_lave
 
             st.metric("⚖️ Poids retenu", f"{poids_lave_auto:,.0f} kg",
                 help=f"{nb_pallox_lave} × {poids_unit_lave if not pesees_lave else int(sum(pesees_lave)/len(pesees_lave))} kg")
@@ -3074,7 +3548,10 @@ with tab1:
             
             col_nb_g, col_type_g = st.columns([1, 2])
             with col_nb_g:
-                nb_pallox_gren = st.number_input("Nb Pallox", min_value=0, value=0,
+                # Pré-remplissage : suivi si dispo
+                default_nb_gren = nb_gren_suivi if nb_gren_suivi > 0 else 0
+                nb_pallox_gren = st.number_input("Nb Pallox", min_value=0,
+                    value=default_nb_gren,
                     key=f"nb_gren_full_{job_en_terminaison}")
             with col_type_g:
                 type_gren = st.selectbox("Type conditionnement", TYPES_COND,
@@ -3112,7 +3589,11 @@ with tab1:
                         poids_gren_auto = nb_pallox_gren * poids_unit_gren
 
                 if not pesees_gren_raw or not pesees_gren:
-                    poids_gren_auto = nb_pallox_gren * poids_unit_gren
+                    # Si nb correspond au suivi, on utilise le poids du suivi (Q-bis 1 / Q7-A)
+                    if nb_gren_suivi > 0 and nb_pallox_gren == nb_gren_suivi and poids_gren_suivi > 0:
+                        poids_gren_auto = poids_gren_suivi
+                    else:
+                        poids_gren_auto = nb_pallox_gren * poids_unit_gren
 
                 st.metric("⚖️ Poids retenu", f"{poids_gren_auto:,.0f} kg",
                     help=f"{nb_pallox_gren} × {poids_unit_gren if not pesees_gren else int(sum(pesees_gren)/len(pesees_gren))} kg")
@@ -3159,8 +3640,10 @@ with tab1:
 
             col_nd1, col_nd2 = st.columns([1, 2])
             with col_nd1:
+                # Pré-remplissage : suivi si dispo
+                default_nb_dech = nb_dech_suivi if nb_dech_suivi > 0 else 0
                 nb_pallox_dech = st.number_input("Nb Pallox", min_value=0,
-                    value=0, key=f"nb_pallox_dech_{job_en_terminaison}")
+                    value=default_nb_dech, key=f"nb_pallox_dech_{job_en_terminaison}")
             with col_nd2:
                 type_dech = st.selectbox("Type conditionnement", TYPES_COND,
                     key=f"type_dech_full_{job_en_terminaison}")
@@ -3194,7 +3677,11 @@ with tab1:
                     poids_dech_auto = nb_pallox_dech * poids_unit_dech
 
             if not pesees_dech_raw or not pesees_dech:
-                poids_dech_auto = nb_pallox_dech * poids_unit_dech
+                # Si nb_pallox_dech correspond au suivi, on utilise le poids du suivi (Q-bis 1 = A)
+                if nb_dech_suivi > 0 and nb_pallox_dech == nb_dech_suivi and poids_dech_suivi > 0:
+                    poids_dech_auto = poids_dech_suivi
+                else:
+                    poids_dech_auto = nb_pallox_dech * poids_unit_dech
 
             st.metric("⚖️ Poids retenu", f"{poids_dech_auto:,.0f} kg",
                 help=f"{nb_pallox_dech} × {poids_unit_dech if not pesees_dech else int(sum(pesees_dech)/len(pesees_dech))} kg")
@@ -3844,8 +4331,49 @@ with tab1:
                                 if pd.notna(elem.get('etiquette_pallox')) and elem.get('etiquette_pallox'):
                                     infos_metier_parts.append(f"🏷️P:{elem['etiquette_pallox']}")
                                 infos_metier_ligne = f"<br><small>{' | '.join(infos_metier_parts)}</small>" if infos_metier_parts else ""
+                                
+                                # Tooltip mouseover : détail complet (infos création + suivi si EN_COURS)
+                                # Préservation des infos initiales même en cours (demande Julien)
+                                tooltip_parts = []
+                                tooltip_parts.append(f"Job #{int(elem['job_id'])} — {job_statut}")
+                                tooltip_parts.append(f"🌱 Variété : {elem['variete']}")
+                                if pd.notna(elem.get('code_lot_interne')):
+                                    tooltip_parts.append(f"📦 Lot : {elem['code_lot_interne']}")
+                                if producteur:
+                                    tooltip_parts.append(f"👤 Producteur : {producteur}")
+                                if empl_code:
+                                    tooltip_parts.append(f"📍 Source : {empl_site}/{empl_code}")
+                                if pd.notna(elem.get('quantite_pallox')):
+                                    tooltip_parts.append(f"📦 Quantité prévue : {int(elem['quantite_pallox'])} pallox")
+                                if pd.notna(elem.get('poids_brut_kg')):
+                                    tooltip_parts.append(f"⚖️ Poids brut : {float(elem['poids_brut_kg'])/1000:.1f} T")
+                                if pd.notna(elem.get('type_tapis')) and elem.get('type_tapis'):
+                                    tooltip_parts.append(f"🎢 Tapis : {elem['type_tapis']}")
+                                if pd.notna(elem.get('calibre_seuil')) and elem.get('calibre_seuil'):
+                                    cs_t = int(elem['calibre_seuil'])
+                                    tooltip_parts.append(f"📏 Calibres : Gren 0-{cs_t}mm / Lavé {cs_t}-70mm")
+                                if pd.notna(elem.get('etiquette_grenailles')) and elem.get('etiquette_grenailles'):
+                                    tooltip_parts.append(f"🏷️ Étiq grenailles : {elem['etiquette_grenailles']}")
+                                if pd.notna(elem.get('etiquette_pallox')) and elem.get('etiquette_pallox'):
+                                    tooltip_parts.append(f"🏷️ Étiq pallox : {elem['etiquette_pallox']}")
+                                if produits_aff:
+                                    tooltip_parts.append(f"🛒 Produit affecté : {produits_aff}")
+                                # Ajout du suivi si EN_COURS
+                                if job_statut == 'EN_COURS':
+                                    try:
+                                        ag_t = get_agregats_suivis_job(int(elem['job_id']))
+                                        if ag_t['nb_total_saisies'] > 0:
+                                            tooltip_parts.append("--- Suivi en cours ---")
+                                            tooltip_parts.append(f"✨ Lavés : {ag_t['LAVÉ']['nb_pallox']} pal ({ag_t['LAVÉ']['poids_kg']:.0f} kg)")
+                                            tooltip_parts.append(f"🌾 Grenailles : {ag_t['GRENAILLES']['nb_pallox']} pal ({ag_t['GRENAILLES']['poids_kg']:.0f} kg)")
+                                            tooltip_parts.append(f"🗑️ Déchets : {ag_t['DÉCHETS']['nb_pallox']} pal ({ag_t['DÉCHETS']['poids_kg']:.0f} kg)")
+                                            if ag_t.get('operateur_dernier'):
+                                                tooltip_parts.append(f"👷 Opérateur : {ag_t['operateur_dernier']}")
+                                    except Exception:
+                                        pass
+                                tooltip_text = "\n".join(tooltip_parts).replace('"', "'")
 
-                                st.markdown(f"""<div class="{css_class}">
+                                st.markdown(f"""<div class="{css_class}" title="{tooltip_text}">
                                     <strong>{h_deb}</strong> {statut_emoji}<br>
                                     Job #{int(elem['job_id'])}{badge_source}<br>
                                     🌱 {elem['variete']}{producteur_ligne}{empl_ligne}{produit_ligne}<br>
@@ -3939,11 +4467,39 @@ with tab1:
                                         minutes_ecoulees = int(delta.total_seconds() / 60)
                                         st.caption(f"⏱️ {minutes_ecoulees // 60}h{minutes_ecoulees % 60:02d} écoulées")
                                     
-                                    if st.button("⏹️ Terminer", key=f"finish_{elem['id']}", type="primary", use_container_width=True):
-                                        st.session_state[f'show_finish_{int(elem["job_id"])}'] = True
-                                        st.rerun()
+                                    # Suivi en cours : récap rapide opérateur + progression
+                                    try:
+                                        agreg_card = get_agregats_suivis_job(int(elem['job_id']))
+                                        qty_prev_card = int(elem['quantite_pallox']) if pd.notna(elem.get('quantite_pallox')) else 0
+                                        nb_lave_card = agreg_card['LAVÉ']['nb_pallox']
+                                        nb_gren_card = agreg_card['GRENAILLES']['nb_pallox']
+                                        nb_dech_card = agreg_card['DÉCHETS']['nb_pallox']
+                                        op_actuel    = agreg_card.get('operateur_dernier')
+                                        if op_actuel:
+                                            st.caption(f"👷 **{op_actuel}**")
+                                        if qty_prev_card > 0:
+                                            pct = min(100, int(nb_lave_card / qty_prev_card * 100))
+                                            st.progress(pct / 100,
+                                                       text=f"Lavés : {nb_lave_card}/{qty_prev_card} ({pct}%)")
+                                        if nb_lave_card or nb_gren_card or nb_dech_card:
+                                            st.caption(f"✨{nb_lave_card} • 🌾{nb_gren_card} • 🗑️{nb_dech_card}")
+                                    except Exception:
+                                        pass
                                     
-                                    # Note: Le formulaire de terminaison s'affiche en pleine largeur au-dessus du calendrier
+                                    col_suivi_btn, col_term_btn = st.columns(2)
+                                    with col_suivi_btn:
+                                        if st.button("📊 Suivi", key=f"suivi_{elem['id']}",
+                                                    use_container_width=True, help="Saisir pallox en cours"):
+                                            st.session_state[f'show_suivi_{int(elem["job_id"])}'] = True
+                                            st.rerun()
+                                    with col_term_btn:
+                                        if st.button("⏹️ Terminer", key=f"finish_{elem['id']}",
+                                                    type="primary", use_container_width=True):
+                                            st.session_state[f'show_finish_{int(elem["job_id"])}'] = True
+                                            st.rerun()
+                                    
+                                    # Note: Le formulaire de terminaison et le suivi s'affichent en pleine
+                                    # largeur au-dessus du calendrier
                                 
                                 elif job_statut == 'TERMINÉ':
                                     # Afficher stats temps
