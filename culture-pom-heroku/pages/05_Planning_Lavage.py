@@ -5361,6 +5361,13 @@ with tab4:
             conn = get_connection()
             cursor = conn.cursor()
             
+            # SELECT enrichi (refonte fiche imprimable) :
+            # - Producteur + emplacement source (via lots_bruts / lots fille)
+            # - Infos métier : type_tapis, étiquettes, calibre seuil
+            # - Multi-lot : détail des N lots fille (json_agg)
+            # - Produit affecté (besoin commercial)
+            # - Suivi temps réel : agrégats LAVÉ / GRENAILLES / DÉCHETS + dernier opérateur
+            # - Cadence et type conditionnement du job
             cursor.execute("""
                 SELECT 
                     lpe.id,
@@ -5374,14 +5381,70 @@ with tab4:
                     lj.variete,
                     lj.quantite_pallox,
                     lj.poids_brut_kg,
+                    lj.capacite_th as cadence,
                     lj.statut as job_statut,
+                    lj.notes as job_notes,
+                    COALESCE(lj.is_multi_lot, FALSE) as is_multi_lot,
+                    COALESCE(lj.nb_lots, 1) as nb_lots,
+                    lj.type_tapis,
+                    lj.etiquette_grenailles,
+                    lj.etiquette_pallox,
+                    lj.calibre_seuil,
+                    -- Producteur (BDD via lots_bruts en mono, sinon 1er lot fille en multi)
+                    COALESCE(p.nom, ljl_first.producteur, lj.producteur) as producteur,
+                    se.site_stockage as empl_site,
+                    se.emplacement_stockage as empl_code,
+                    -- Type de conditionnement (1er lot fille)
+                    ljl_first.type_conditionnement,
+                    -- Produits commerciaux affectés
+                    STRING_AGG(DISTINCT pc.marque || ' ' || pc.libelle, ', ') as produits_affectes,
+                    -- Détail multi-lot (json pour itérer côté Python)
+                    COALESCE(
+                        (SELECT json_agg(
+                            json_build_object(
+                                'code_lot_interne', ljl2.code_lot_interne,
+                                'producteur', ljl2.producteur,
+                                'quantite_pallox', ljl2.quantite_pallox,
+                                'poids_brut_kg', ljl2.poids_brut_kg,
+                                'type_conditionnement', ljl2.type_conditionnement,
+                                'calibre_min', ljl2.calibre_min,
+                                'calibre_max', ljl2.calibre_max,
+                                'ordre', ljl2.ordre
+                            ) ORDER BY ljl2.ordre)
+                        FROM lavages_jobs_lots ljl2 WHERE ljl2.job_id = lj.id),
+                        '[]'::json
+                    ) as lots_detail,
                     ltc.libelle as custom_libelle,
                     ltc.emoji as custom_emoji
                 FROM lavages_planning_elements lpe
                 LEFT JOIN lavages_jobs lj ON lpe.job_id = lj.id
+                LEFT JOIN lots_bruts lb ON lj.lot_id = lb.id
+                LEFT JOIN ref_producteurs p ON lb.code_producteur = p.code_producteur
+                -- 1er lot fille (pour multi-lot : emplacement, producteur, type cond)
+                LEFT JOIN LATERAL (
+                    SELECT ljl.emplacement_id, ljl.producteur, ljl.lot_id, ljl.type_conditionnement
+                    FROM lavages_jobs_lots ljl
+                    WHERE ljl.job_id = lj.id
+                    ORDER BY ljl.ordre LIMIT 1
+                ) ljl_first ON TRUE
+                LEFT JOIN stock_emplacements se ON COALESCE(lj.emplacement_id, ljl_first.emplacement_id) = se.id
+                -- Produit commercial affecté (besoin)
+                LEFT JOIN previsions_affectations pa ON pa.lot_id = COALESCE(lj.lot_id, ljl_first.lot_id)
+                    AND pa.is_active = TRUE AND pa.statut_stock = 'BRUT'
+                LEFT JOIN ref_produits_commerciaux pc ON pa.code_produit_commercial = pc.code_produit
                 LEFT JOIN lavages_temps_customs ltc ON lpe.temps_custom_id = ltc.id
                 WHERE lpe.date_prevue = %s 
                   AND lpe.ligne_lavage = %s
+                GROUP BY lpe.id, lpe.type_element, lpe.heure_debut, lpe.heure_fin,
+                    lpe.duree_minutes, lpe.ordre_jour,
+                    lj.id, lj.code_lot_interne, lj.variete, lj.quantite_pallox,
+                    lj.poids_brut_kg, lj.capacite_th, lj.statut, lj.notes,
+                    lj.is_multi_lot, lj.nb_lots,
+                    lj.type_tapis, lj.etiquette_grenailles, lj.etiquette_pallox,
+                    lj.calibre_seuil, lj.producteur,
+                    p.nom, ljl_first.producteur, ljl_first.type_conditionnement,
+                    se.site_stockage, se.emplacement_stockage,
+                    ltc.libelle, ltc.emoji
                 ORDER BY lpe.heure_debut, lpe.ordre_jour
             """, (date_print, ligne_print_code))
             
@@ -5410,6 +5473,9 @@ with tab4:
             if elements_filtres:
                 st.markdown("---")
                 
+                # ────────────────────────────────────────────────
+                # APERÇU STREAMLIT (raccourci pour vérif avant impression)
+                # ────────────────────────────────────────────────
                 for el in elements_filtres:
                     heure_deb = el['heure_debut'].strftime('%H:%M') if el['heure_debut'] else "--:--"
                     heure_f = el['heure_fin'].strftime('%H:%M') if el['heure_fin'] else "--:--"
@@ -5418,17 +5484,20 @@ with tab4:
                     if el['type_element'] == 'JOB':
                         statut_emoji = "🟢" if el['job_statut'] == 'PRÉVU' else ("🟠" if el['job_statut'] == 'EN_COURS' else "✅")
                         poids_t = (el['poids_brut_kg'] or 0) / 1000
-                        st.markdown(f"""
-                        **{heure_deb} → {heure_f}** ({duree} min) {statut_emoji}  
-                        📦 **Job #{el['job_id']}** - {el['code_lot_interne']}  
-                        🥔 {el['variete']}  
-                        ⚖️ {el['quantite_pallox']} pallox ({poids_t:.2f} T)
-                        """)
+                        is_multi = bool(el.get('is_multi_lot'))
+                        nb_lots_j = int(el.get('nb_lots') or 1)
+                        # Ligne 1 — synthèse
+                        st.markdown(
+                            f"**{heure_deb} → {heure_f}** ({duree} min) {statut_emoji}  \n"
+                            f"📦 **Job #{el['job_id']}** — {el['code_lot_interne'] or ('BATCH ' + str(nb_lots_j) + ' lots' if is_multi else '?')}  \n"
+                            f"🥔 {el['variete'] or '-'}  \n"
+                            f"⚖️ {el['quantite_pallox'] or '?'} pallox ({poids_t:.2f} T)"
+                        )
                     else:
-                        st.markdown(f"""
-                        **{heure_deb} → {heure_f}** ({duree} min)  
-                        {el['custom_emoji'] or '⚙️'} **{el['custom_libelle']}**
-                        """)
+                        st.markdown(
+                            f"**{heure_deb} → {heure_f}** ({duree} min)  \n"
+                            f"{el['custom_emoji'] or '⚙️'} **{el['custom_libelle']}**"
+                        )
                     st.markdown("---")
                 
                 # Calcul temps total
@@ -5441,46 +5510,186 @@ with tab4:
                 
                 st.markdown("---")
                 
-                # Bouton imprimer avec HTML
+                # ────────────────────────────────────────────────
+                # BOUTON GÉNÉRATION FICHE IMPRIMABLE
+                # ────────────────────────────────────────────────
                 if st.button("🖨️ Générer fiche imprimable", type="primary", use_container_width=True):
                     
-                    # Générer HTML
+                    # Helpers locaux
+                    def _h(v):
+                        """Format heure ou '--:--'"""
+                        if v is None:
+                            return "--:--"
+                        try:
+                            return v.strftime('%H:%M')
+                        except Exception:
+                            return str(v)
+                    
+                    def _esc(v):
+                        """Echappe le HTML pour les valeurs dynamiques"""
+                        if v is None:
+                            return ""
+                        s = str(v)
+                        return (s.replace('&', '&amp;').replace('<', '&lt;')
+                                 .replace('>', '&gt;').replace('"', '&quot;'))
+                    
+                    # ─── Génération des lignes du tableau (2 lignes par JOB) ───
                     rows_html = ""
                     for el in elements_filtres:
-                        heure_deb = el['heure_debut'].strftime('%H:%M') if el['heure_debut'] else "--:--"
-                        heure_f = el['heure_fin'].strftime('%H:%M') if el['heure_fin'] else "--:--"
-                        duree = el['duree_minutes'] or 0
+                        heure_deb = _h(el['heure_debut'])
+                        heure_f   = _h(el['heure_fin'])
+                        duree     = el['duree_minutes'] or 0
                         
                         if el['type_element'] == 'JOB':
-                            statut = el['job_statut'] or ''
-                            poids_t = (el['poids_brut_kg'] or 0) / 1000
+                            statut   = _esc(el['job_statut'] or '')
+                            poids_t  = (el['poids_brut_kg'] or 0) / 1000
+                            qty_p    = el['quantite_pallox'] or '?'
+                            is_multi = bool(el.get('is_multi_lot'))
+                            nb_lots_j = int(el.get('nb_lots') or 1)
+                            
+                            # Label : code lot mono, "BATCH N lots" multi
+                            if is_multi and nb_lots_j > 1:
+                                lot_label = f"📦 BATCH {nb_lots_j} lots"
+                            else:
+                                lot_label = f"📦 {_esc(el['code_lot_interne'] or '?')}"
+                            
+                            statut_class = "stat-prev" if statut == "PRÉVU" else ("stat-encours" if statut == "EN_COURS" else ("stat-termine" if statut == "TERMINÉ" else "stat-other"))
+                            
+                            # Ligne 1 : synthèse principale
                             rows_html += f"""
-                            <tr>
-                                <td style="text-align:center;font-weight:bold;">{heure_deb}</td>
-                                <td style="text-align:center;">{heure_f}</td>
-                                <td style="text-align:center;">{duree}</td>
-                                <td>Job #{el['job_id']} - {el['code_lot_interne']}</td>
-                                <td>{el['variete']}</td>
-                                <td style="text-align:center;">{el['quantite_pallox']}</td>
-                                <td style="text-align:center;">{poids_t:.2f} T</td>
-                                <td style="text-align:center;">{statut}</td>
-                                <td></td>
-                            </tr>
-                            """
+                            <tr class="job-main {statut_class}">
+                                <td class="td-h">{heure_deb}</td>
+                                <td class="td-h">{heure_f}</td>
+                                <td class="td-c">{duree}'</td>
+                                <td><strong>Job #{el['job_id']}</strong> — {lot_label}</td>
+                                <td>{_esc(el['variete'] or '-')}</td>
+                                <td class="td-c">{qty_p}</td>
+                                <td class="td-c">{poids_t:.2f} T</td>
+                                <td class="td-c"><span class="badge {statut_class}">{statut}</span></td>
+                            </tr>"""
+                            
+                            # Ligne 2 : détail métier fusionné sur 8 colonnes
+                            cadence_v = el.get('cadence')
+                            type_tapis_v = el.get('type_tapis')
+                            cal_seuil_v = el.get('calibre_seuil')
+                            etiq_g_v = el.get('etiquette_grenailles')
+                            etiq_p_v = el.get('etiquette_pallox')
+                            type_cond_v = el.get('type_conditionnement')
+                            producteur_v = el.get('producteur')
+                            empl_site_v = el.get('empl_site')
+                            empl_code_v = el.get('empl_code')
+                            produits_aff_v = el.get('produits_affectes')
+                            notes_v = el.get('job_notes')
+                            
+                            detail_parts = []
+                            if producteur_v:
+                                detail_parts.append(f"<span class='dt'>👤 Producteur :</span> <strong>{_esc(producteur_v)}</strong>")
+                            if empl_code_v:
+                                detail_parts.append(f"<span class='dt'>📍 Source :</span> {_esc(empl_site_v or '')}/{_esc(empl_code_v)}")
+                            if type_tapis_v:
+                                detail_parts.append(f"<span class='dt'>🎢 Tapis :</span> <strong>{_esc(type_tapis_v)}</strong>")
+                            if cal_seuil_v is not None:
+                                detail_parts.append(f"<span class='dt'>📏 Cal. :</span> Gren 0-{int(cal_seuil_v)} / Lavé {int(cal_seuil_v)}-70")
+                            if etiq_g_v:
+                                detail_parts.append(f"<span class='dt'>🏷️ Étiq. gren :</span> {_esc(etiq_g_v)}")
+                            if etiq_p_v:
+                                detail_parts.append(f"<span class='dt'>🏷️ Étiq. pallox :</span> {_esc(etiq_p_v)}")
+                            if type_cond_v:
+                                detail_parts.append(f"<span class='dt'>📦 Cond. :</span> {_esc(type_cond_v)}")
+                            if cadence_v is not None:
+                                try:
+                                    detail_parts.append(f"<span class='dt'>⚡ Cadence :</span> {float(cadence_v):.1f} T/h")
+                                except Exception:
+                                    pass
+                            if produits_aff_v:
+                                detail_parts.append(f"<span class='dt'>🛒 Affecté :</span> {_esc(produits_aff_v)}")
+                            if notes_v:
+                                detail_parts.append(f"<span class='dt'>📝 Notes :</span> <em>{_esc(notes_v)}</em>")
+                            
+                            detail_html = " &nbsp;•&nbsp; ".join(detail_parts) if detail_parts else "<em>(pas de détail métier saisi)</em>"
+                            
+                            rows_html += f"""
+                            <tr class="job-detail {statut_class}">
+                                <td colspan="8" class="td-detail">{detail_html}</td>
+                            </tr>"""
+                            
+                            # Sous-tableau multi-lot (Q-tech 2 = A)
+                            if is_multi and nb_lots_j > 1:
+                                lots_detail = el.get('lots_detail') or []
+                                # lots_detail peut être une str JSON (psycopg2 selon version)
+                                if isinstance(lots_detail, str):
+                                    try:
+                                        import json as _json_l
+                                        lots_detail = _json_l.loads(lots_detail)
+                                    except Exception:
+                                        lots_detail = []
+                                if lots_detail:
+                                    lots_rows = ""
+                                    for ld in lots_detail:
+                                        cal_min_l = ld.get('calibre_min')
+                                        cal_max_l = ld.get('calibre_max')
+                                        cal_str = ""
+                                        if cal_min_l is not None and cal_max_l is not None:
+                                            cal_str = f"{cal_min_l}-{cal_max_l} mm"
+                                        elif cal_min_l is not None:
+                                            cal_str = f"+{cal_min_l} mm"
+                                        poids_l = float(ld.get('poids_brut_kg') or 0) / 1000
+                                        lots_rows += f"""
+                                            <tr>
+                                                <td>{ld.get('ordre', '?')}</td>
+                                                <td>{_esc(ld.get('code_lot_interne') or '?')}</td>
+                                                <td>{_esc(ld.get('producteur') or '-')}</td>
+                                                <td class='td-c'>{ld.get('quantite_pallox') or '?'}</td>
+                                                <td class='td-c'>{poids_l:.2f} T</td>
+                                                <td class='td-c'>{_esc(ld.get('type_conditionnement') or '-')}</td>
+                                                <td class='td-c'>{cal_str}</td>
+                                            </tr>"""
+                                    rows_html += f"""
+                                    <tr class="job-multilot {statut_class}">
+                                        <td colspan="8" class="td-multilot">
+                                            <div class="multi-title">🔀 Détail des {nb_lots_j} lots fille du batch</div>
+                                            <table class="multi-sub">
+                                                <thead>
+                                                    <tr><th>#</th><th>Code lot</th><th>Producteur</th><th>Pallox</th><th>Poids</th><th>Cond.</th><th>Calibre</th></tr>
+                                                </thead>
+                                                <tbody>{lots_rows}</tbody>
+                                            </table>
+                                        </td>
+                                    </tr>"""
+                            
+                            # Ligne 3 : SUIVI TEMPS RÉEL (Q2=B) — seulement si EN_COURS / TERMINÉ et au moins 1 saisie
+                            if el['job_statut'] in ('EN_COURS', 'TERMINÉ'):
+                                try:
+                                    ag_imp = get_agregats_suivis_job(int(el['job_id']))
+                                    if ag_imp['nb_total_saisies'] > 0:
+                                        op_imp = _esc(ag_imp.get('operateur_dernier') or '?')
+                                        suivi_html = (
+                                            f"<span class='dt'>📊 Réalisé :</span> "
+                                            f"✨ <strong>{ag_imp['LAVÉ']['nb_pallox']}</strong> lavés ({ag_imp['LAVÉ']['poids_kg']:.0f} kg) &nbsp;•&nbsp; "
+                                            f"🌾 <strong>{ag_imp['GRENAILLES']['nb_pallox']}</strong> gren ({ag_imp['GRENAILLES']['poids_kg']:.0f} kg) &nbsp;•&nbsp; "
+                                            f"🗑️ <strong>{ag_imp['DÉCHETS']['nb_pallox']}</strong> déchets ({ag_imp['DÉCHETS']['poids_kg']:.0f} kg) &nbsp;•&nbsp; "
+                                            f"👷 Opérateur : <strong>{op_imp}</strong>"
+                                        )
+                                        rows_html += f"""
+                                        <tr class="job-suivi {statut_class}">
+                                            <td colspan="8" class="td-suivi">{suivi_html}</td>
+                                        </tr>"""
+                                except Exception:
+                                    pass
                         else:
+                            # Temps custom (pause, panne, nettoyage, etc.)
                             rows_html += f"""
-                            <tr style="background-color:#e8f5e9;">
-                                <td style="text-align:center;font-weight:bold;">{heure_deb}</td>
-                                <td style="text-align:center;">{heure_f}</td>
-                                <td style="text-align:center;">{duree}</td>
-                                <td colspan="5">{el['custom_emoji'] or '⚙️'} {el['custom_libelle']}</td>
-                                <td></td>
-                            </tr>
-                            """
+                            <tr class="custom">
+                                <td class="td-h">{heure_deb}</td>
+                                <td class="td-h">{heure_f}</td>
+                                <td class="td-c">{duree}'</td>
+                                <td colspan="5"><strong>{el['custom_emoji'] or '⚙️'} {_esc(el['custom_libelle'] or '')}</strong></td>
+                            </tr>"""
                     
                     amplitude_txt = f"{heure_debut_print.strftime('%H:%M')} - {heure_fin_print.strftime('%H:%M')}"
                     jour_txt = f"{jour_nom} {date_print.strftime('%d/%m/%Y')}"
                     
+                    # ─── HTML COMPLET ───
                     html_content = f"""
                     <!DOCTYPE html>
                     <html>
@@ -5488,49 +5697,78 @@ with tab4:
                         <meta charset="UTF-8">
                         <title>Planning Lavage - {jour_txt}</title>
                         <style>
-                            body {{ font-family: Arial, sans-serif; margin: 20px; font-size: 12px; }}
-                            h1 {{ text-align: center; color: #333; margin-bottom: 5px; font-size: 18px; }}
-                            h2 {{ text-align: center; color: #666; margin-top: 0; font-size: 14px; }}
-                            .header-info {{ display: flex; justify-content: space-between; margin-bottom: 15px; padding: 10px; background: #f5f5f5; border-radius: 5px; }}
-                            .header-info div {{ text-align: center; }}
-                            .header-info strong {{ display: block; font-size: 14px; }}
-                            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
-                            th {{ background: #1976d2; color: white; padding: 8px; text-align: left; font-size: 11px; }}
-                            td {{ border: 1px solid #ddd; padding: 6px; font-size: 11px; }}
-                            tr:nth-child(even) {{ background: #fafafa; }}
-                            .footer {{ margin-top: 20px; text-align: center; font-size: 10px; color: #999; }}
-                            .signature {{ margin-top: 30px; display: flex; justify-content: space-around; }}
-                            .signature div {{ width: 200px; border-top: 1px solid #333; padding-top: 5px; text-align: center; }}
+                            @page {{ size: A4 portrait; margin: 10mm; }}
+                            * {{ box-sizing: border-box; }}
+                            body {{ font-family: Arial, sans-serif; margin: 10px; font-size: 11px; color: #222; }}
+                            h1 {{ text-align: center; color: #333; margin: 0 0 4px 0; font-size: 18px; }}
+                            h2 {{ text-align: center; color: #666; margin: 0 0 12px 0; font-size: 13px; font-weight: normal; }}
+                            
+                            .header-info {{ display: flex; justify-content: space-between; margin-bottom: 12px; padding: 8px 10px; background: #f5f5f5; border: 1px solid #ddd; border-radius: 5px; }}
+                            .header-info div {{ text-align: center; flex: 1; }}
+                            .header-info strong {{ display: block; font-size: 11px; color: #555; font-weight: normal; }}
+                            .header-info .v {{ display: block; font-size: 13px; font-weight: bold; color: #222; }}
+                            
+                            table.main {{ width: 100%; border-collapse: collapse; margin-top: 6px; }}
+                            table.main th {{ background: #7A7A7A; color: white; padding: 6px 4px; text-align: left; font-size: 10px; border: 1px solid #555; }}
+                            table.main td {{ border: 1px solid #ccc; padding: 4px 6px; font-size: 10px; vertical-align: middle; }}
+                            
+                            .td-h {{ text-align: center; font-weight: bold; white-space: nowrap; }}
+                            .td-c {{ text-align: center; white-space: nowrap; }}
+                            
+                            tr.job-main td {{ border-bottom: none; padding-top: 6px; padding-bottom: 4px; background: #fafafa; }}
+                            tr.job-detail td.td-detail {{ border-top: none; padding: 3px 6px 6px 6px; font-size: 9.5px; color: #333; background: #fafafa; line-height: 1.5; }}
+                            tr.job-detail .dt {{ color: #777; font-size: 9px; }}
+                            
+                            tr.job-multilot td.td-multilot {{ border-top: none; padding: 0 8px 6px 8px; background: #fafafa; }}
+                            tr.job-multilot .multi-title {{ font-size: 9.5px; color: #555; font-weight: bold; padding: 3px 0 2px 0; }}
+                            table.multi-sub {{ width: 100%; border-collapse: collapse; margin-top: 2px; background: #fff; }}
+                            table.multi-sub th {{ background: #d0d0d0; color: #333; padding: 3px 4px; font-size: 9px; border: 1px solid #aaa; text-align: left; font-weight: bold; }}
+                            table.multi-sub td {{ border: 1px solid #ccc; padding: 2px 4px; font-size: 9px; background: #fff; }}
+                            
+                            tr.job-suivi td.td-suivi {{ border-top: 1px dashed #aaa; padding: 4px 8px; font-size: 9.5px; background: #fff8e1; line-height: 1.5; }}
+                            tr.job-suivi .dt {{ color: #b07000; font-size: 9px; font-weight: bold; }}
+                            
+                            tr.custom td {{ background: #e8f5e9; }}
+                            
+                            .badge {{ display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 9px; font-weight: bold; }}
+                            .stat-prev .badge {{ background: #e3f2fd; color: #0d47a1; }}
+                            .stat-encours .badge {{ background: #fff3e0; color: #e65100; }}
+                            .stat-termine .badge {{ background: #e8f5e9; color: #1b5e20; }}
+                            .stat-other .badge {{ background: #f5f5f5; color: #666; }}
+                            
+                            .footer {{ margin-top: 16px; text-align: center; font-size: 9px; color: #999; }}
+                            
                             @media print {{
-                                body {{ margin: 10px; }}
+                                body {{ margin: 5mm; }}
                                 .no-print {{ display: none; }}
+                                tr.job-main, tr.job-detail, tr.job-multilot, tr.job-suivi {{ page-break-inside: avoid; }}
                             }}
                         </style>
                     </head>
                     <body>
-                        <h1>🧼 Planning Lavage</h1>
-                        <h2>{ligne_print_libelle} ({ligne_print_code})</h2>
+                        <h1>🧼 Planning Lavage — {_esc(ligne_print_libelle)} ({_esc(ligne_print_code)})</h1>
+                        <h2>{jour_txt} | Amplitude {amplitude_txt}</h2>
                         
                         <div class="header-info">
-                            <div><strong>📅 Date</strong>{jour_txt}</div>
-                            <div><strong>⏰ Amplitude</strong>{amplitude_txt}</div>
-                            <div><strong>⚡ Capacité</strong>{ligne_print_capacite} T/h</div>
-                            <div><strong>📦 Jobs</strong>{nb_jobs}</div>
-                            <div><strong>⚖️ Tonnage</strong>{poids_total:.1f} T</div>
+                            <div><strong>📅 Date</strong><span class="v">{jour_txt}</span></div>
+                            <div><strong>⏰ Amplitude</strong><span class="v">{amplitude_txt}</span></div>
+                            <div><strong>⚡ Capacité</strong><span class="v">{ligne_print_capacite} T/h</span></div>
+                            <div><strong>📦 Jobs</strong><span class="v">{nb_jobs}</span></div>
+                            <div><strong>⚖️ Tonnage</strong><span class="v">{poids_total:.1f} T</span></div>
+                            <div><strong>⏱️ Temps total</strong><span class="v">{temps_total_min} min</span></div>
                         </div>
                         
-                        <table>
+                        <table class="main">
                             <thead>
                                 <tr>
-                                    <th style="width:60px;">Début</th>
-                                    <th style="width:60px;">Fin</th>
-                                    <th style="width:50px;">Durée</th>
-                                    <th>Lot / Opération</th>
-                                    <th>Variété</th>
-                                    <th style="width:60px;">Pallox</th>
+                                    <th style="width:48px;">Début</th>
+                                    <th style="width:48px;">Fin</th>
+                                    <th style="width:42px;">Durée</th>
+                                    <th>Job / Lot</th>
+                                    <th style="width:90px;">Variété</th>
+                                    <th style="width:54px;">Pallox</th>
                                     <th style="width:60px;">Poids</th>
                                     <th style="width:70px;">Statut</th>
-                                    <th style="width:80px;">Validé ✓</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -5538,14 +5776,8 @@ with tab4:
                             </tbody>
                         </table>
                         
-                        <div class="signature">
-                            <div>Chef d'équipe</div>
-                            <div>Opérateur lavage</div>
-                            <div>Contrôle qualité</div>
-                        </div>
-                        
                         <div class="footer">
-                            Imprimé le {datetime.now().strftime('%d/%m/%Y à %H:%M')} - Culture Pom
+                            Imprimé le {datetime.now().strftime('%d/%m/%Y à %H:%M')} — Culture Pom — POMI
                         </div>
                         
                         <script>
