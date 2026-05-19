@@ -3579,6 +3579,71 @@ with tab1:
         # En multi-lot : N lignes, total recalculé en bas
         is_multi_ui = len(lots_fille_ui) > 1
         
+        # ────────────────────────────────────────────────
+        # CALCULATEUR PESÉES INDIVIDUELLES (pallox sales)
+        # Calcule la moyenne d'un échantillon pesé → applique au poids unit
+        # (Nb pallox reste en saisie manuelle car seule une partie peut être pesée)
+        # ────────────────────────────────────────────────
+        with st.expander("🔢 Calculer poids unitaire moyen depuis pesées individuelles"):
+            st.caption(
+                "Saisir le poids de chaque pallox sale pesé (kg), séparé par des espaces ou virgules. "
+                "Le poids moyen sera calculé et pourra être appliqué au champ 'Poids unitaire réel'. "
+                "Le nombre de pallox reste en saisie manuelle (cas où seule une partie est pesée)."
+            )
+            pesees_sales_raw = st.text_input(
+                "Pesées (kg)",
+                placeholder="ex: 1920 1850 1935 1780",
+                key=f"pesees_sales_{job_en_terminaison}"
+            )
+            pesees_sales = []
+            if pesees_sales_raw:
+                import re as _re_s
+                tokens_s = _re_s.split(r"[,;\s]+", pesees_sales_raw.strip())
+                for t in tokens_s:
+                    try:
+                        v = float(t)
+                        if v > 0:
+                            pesees_sales.append(v)
+                    except ValueError:
+                        pass
+            
+            moy_sales = None
+            if pesees_sales:
+                moy_sales = sum(pesees_sales) / len(pesees_sales)
+                col_ps1, col_ps2, col_ps3 = st.columns(3)
+                col_ps1.metric("Nb pallox pesés", len(pesees_sales))
+                col_ps2.metric("Poids moyen / pallox", f"{moy_sales:,.1f} kg")
+                col_ps3.metric("Total pesé", f"{sum(pesees_sales):,.0f} kg")
+                
+                # Bouton(s) d'application
+                if is_multi_ui:
+                    if st.button(
+                        f"✅ Appliquer {moy_sales:.1f} kg à TOUS les lots fille",
+                        key=f"apply_moy_sales_all_{job_en_terminaison}",
+                        type="primary", use_container_width=True
+                    ):
+                        # Écrase tous les session_state des poids unitaires des lots fille
+                        for lf_ap in lots_fille_ui:
+                            lf_id_ap = lf_ap.get('id')
+                            ks = f"{job_en_terminaison}_{lf_id_ap if lf_id_ap else 'mono'}_{lf_ap.get('ordre', 1)}"
+                            st.session_state[f"unitreel_{ks}"] = round(moy_sales, 1)
+                        st.success(f"✅ Poids unitaire de {moy_sales:.1f} kg appliqué à {len(lots_fille_ui)} lots")
+                        st.rerun()
+                else:
+                    if st.button(
+                        f"✅ Appliquer {moy_sales:.1f} kg comme poids unitaire",
+                        key=f"apply_moy_sales_mono_{job_en_terminaison}",
+                        type="primary", use_container_width=True
+                    ):
+                        lf_ap = lots_fille_ui[0]
+                        lf_id_ap = lf_ap.get('id')
+                        ks = f"{job_en_terminaison}_{lf_id_ap if lf_id_ap else 'mono'}_{lf_ap.get('ordre', 1)}"
+                        st.session_state[f"unitreel_{ks}"] = round(moy_sales, 1)
+                        st.success(f"✅ Poids unitaire de {moy_sales:.1f} kg appliqué")
+                        st.rerun()
+            else:
+                st.caption("_(Aucune pesée saisie)_")
+        
         if is_multi_ui:
             # Entêtes du sous-tableau
             colh1, colh2, colh3, colh4, colh5, colh6 = st.columns([2, 2, 1, 1.2, 1.2, 1.2])
