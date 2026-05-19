@@ -1476,7 +1476,9 @@ def terminer_job(job_id,
                  # Déchets (reste en kg)
                  poids_dechets,
                  # Destination
-                 site_dest, emplacement_dest, notes=""):
+                 site_dest, emplacement_dest, notes="",
+                 # ⭐ Correction pallox sales RÉELS (par lot fille)
+                 lots_pallox_reel=None):
     """Termine un job avec création stocks LAVÉ/GRENAILLES et déduction source.
     
     SUPPORT MULTI-LOT (Commit 4) :
@@ -1488,6 +1490,15 @@ def terminer_job(job_id,
       - nb_pallox_lave + poids_lave = total batch LAVÉ
       - nb_pallox_gren + poids_grenailles = total batch GRENAILLES
       - Ces totaux sont répartis pro-rata sur chaque lot fille
+    
+    ⭐ Correction pallox sales RÉELS (2026-05) :
+      - lots_pallox_reel : dict {lot_fille_id : (nb_pallox_reel, poids_unit_reel)} ou None
+        Si fourni, ces valeurs remplacent quantite_pallox/poids_brut_kg dans :
+          - le calcul du poids_brut_total_reel (utilisé pour le bouclage)
+          - le pro-rata sur les sorties (lavé/gren)
+          - la déduction du stock source (nombre_unites + poids_total_kg)
+          - les colonnes _reelle stockées sur parent + fille pour traçabilité
+        Si None (legacy), comportement inchangé (utilise le prévu).
     
     Si source = BRUT → crée LAVÉ + GRENAILLES_BRUTES par lot fille
     Si source = GRENAILLES_BRUTES → crée GRENAILLES_LAVÉES par lot fille (pas de sous-grenailles)
@@ -1518,7 +1529,7 @@ def terminer_job(job_id,
         # 2. Récupérer les lots fille (1 si mono, N si multi)
         # ============================================================
         cursor.execute("""
-            SELECT lot_id, emplacement_id, code_lot_interne, variete,
+            SELECT id, lot_id, emplacement_id, code_lot_interne, variete,
                    quantite_pallox, poids_brut_kg, ordre
             FROM lavages_jobs_lots
             WHERE job_id = %s
@@ -1532,6 +1543,7 @@ def terminer_job(job_id,
             if not job['lot_id']:
                 return False, "❌ Job sans détail de lots (ni table fille, ni lot_id sur parent)"
             lots_fille = [{
+                'id': None,  # pas d'ID fille en fallback (UPDATE _reelle ignoré)
                 'lot_id': job['lot_id'],
                 'emplacement_id': job['emplacement_id'],
                 'code_lot_interne': job['code_lot_interne'],
@@ -1542,9 +1554,39 @@ def terminer_job(job_id,
             }]
         
         # ============================================================
-        # 3. Vérifier cohérence poids globaux
+        # ⭐ 2bis. Résolution des "pallox réels" par lot fille
         # ============================================================
-        poids_brut_total = float(job['poids_brut_kg'])
+        # lots_pallox_reel = dict {lot_fille_id: (nb_reel, poids_unit_reel)} ou None
+        # On construit deux listes parallèles à lots_fille :
+        #   - nb_pallox_reel_par_lot  (int)
+        #   - poids_brut_reel_par_lot (float, = nb_reel * poids_unit_reel)
+        # Fallback par lot : si pas d'entrée dans le dict, on utilise le prévu.
+        nb_pallox_reel_par_lot = []
+        poids_brut_reel_par_lot = []
+        a_correction = False  # True si au moins 1 lot a une correction explicite
+        for lf in lots_fille:
+            lf_id = lf.get('id')
+            prevu_nb = int(lf['quantite_pallox'])
+            prevu_poids = float(lf['poids_brut_kg'])
+            if lots_pallox_reel and lf_id is not None and lf_id in lots_pallox_reel:
+                nb_r, poids_unit_r = lots_pallox_reel[lf_id]
+                nb_r = int(nb_r) if nb_r is not None else prevu_nb
+                poids_unit_r = float(poids_unit_r) if poids_unit_r is not None else (prevu_poids / prevu_nb if prevu_nb > 0 else 0)
+                poids_total_r = nb_r * poids_unit_r
+                # Marqueur : correction si différent du prévu
+                if nb_r != prevu_nb or abs(poids_total_r - prevu_poids) > 0.01:
+                    a_correction = True
+            else:
+                nb_r = prevu_nb
+                poids_total_r = prevu_poids
+            nb_pallox_reel_par_lot.append(nb_r)
+            poids_brut_reel_par_lot.append(poids_total_r)
+        
+        # ============================================================
+        # 3. Vérifier cohérence poids globaux (sur les valeurs RÉELLES)
+        # ============================================================
+        # Le bouclage se fait sur le poids brut TOTAL RÉEL (si correction) ou prévu (sinon)
+        poids_brut_total = sum(poids_brut_reel_par_lot)
         statut_source = job['statut_source'] or 'BRUT'
         is_grenailles_source = (statut_source == 'GRENAILLES_BRUTES')
         
@@ -1568,14 +1610,16 @@ def terminer_job(job_id,
         
         total_sorties = poids_lave + poids_grenailles + poids_dechets + poids_terre
         if abs(poids_brut_total - total_sorties) > 1:
-            return False, f"❌ Poids incohérents ! Brut={poids_brut_total:.0f} vs Total={total_sorties:.0f}"
+            return False, f"❌ Poids incohérents ! Brut réel={poids_brut_total:.0f} vs Total sorties={total_sorties:.0f}"
         
         # ============================================================
         # 4. Distribution pro-rata des pallox et poids sur les lots fille
+        # ⭐ Pro-rata utilise les POIDS BRUTS RÉELS (si correction) ou prévus (sinon)
         # ============================================================
-        poids_brut_par_lot = [float(lf['poids_brut_kg']) for lf in lots_fille]
+        # Liste des poids bruts par lot (réels si correction, sinon prévus — déjà résolus en 2bis)
+        poids_brut_par_lot = poids_brut_reel_par_lot
         
-        # Pallox LAVÉ et GRENAILLES répartis pro-rata du poids_brut_kg de chaque fille
+        # Pallox LAVÉ et GRENAILLES répartis pro-rata du poids_brut de chaque fille
         pallox_lave_par_lot = _distribute_pro_rata(nb_pallox_lave, poids_brut_par_lot)
         pallox_gren_par_lot = _distribute_pro_rata(nb_pallox_gren, poids_brut_par_lot)
         
@@ -1595,8 +1639,13 @@ def terminer_job(job_id,
             temps_reel_minutes = int(delta.total_seconds() / 60)
         
         # ============================================================
-        # 5. UPDATE lavages_jobs (totaux agrégés au parent)
+        # 5. UPDATE lavages_jobs (totaux agrégés au parent + colonnes _reelle si correction)
         # ============================================================
+        # On stocke les colonnes _reelle UNIQUEMENT si une correction a été appliquée.
+        # Sinon NULL = fallback sur quantite_pallox / poids_brut_kg (prévu).
+        nb_pallox_reel_total = sum(nb_pallox_reel_par_lot) if a_correction else None
+        poids_brut_reel_total = sum(poids_brut_reel_par_lot) if a_correction else None
+        
         cursor.execute("""
             UPDATE lavages_jobs
             SET statut = 'TERMINÉ',
@@ -1610,11 +1659,15 @@ def terminer_job(job_id,
                 site_destination = %s,
                 emplacement_destination = %s,
                 terminated_by = %s,
-                notes = %s
+                notes = %s,
+                quantite_pallox_reelle = %s,
+                poids_brut_reel_kg = %s
             WHERE id = %s
         """, (poids_lave, poids_grenailles, poids_dechets, poids_terre,
               tare_reelle, rendement, site_dest, emplacement_dest,
-              terminated_by, notes, job_id))
+              terminated_by, notes,
+              nb_pallox_reel_total, poids_brut_reel_total,
+              job_id))
         
         # ============================================================
         # 6. POUR CHAQUE LOT FILLE : déduction source + création stocks
@@ -1633,12 +1686,27 @@ def terminer_job(job_id,
         for i, lf in enumerate(lots_fille):
             lf_lot_id = int(lf['lot_id'])
             lf_emp_id = int(lf['emplacement_id']) if lf['emplacement_id'] else None
-            lf_qty_brut = int(lf['quantite_pallox'])
-            lf_poids_brut = float(lf['poids_brut_kg'])
+            lf_id = lf.get('id')  # ID de la ligne fille (None en fallback rétrocompat)
+            # ⭐ Utilisation des valeurs RÉELLES (corrigées) pour la déduction de stock
+            lf_qty_brut_reel = int(nb_pallox_reel_par_lot[i])
+            lf_poids_brut_reel = float(poids_brut_reel_par_lot[i])
+            # Valeurs prévues (pour traçabilité dans le mouvement)
+            lf_qty_brut_prevu = int(lf['quantite_pallox'])
+            lf_poids_brut_prevu = float(lf['poids_brut_kg'])
             lf_pallox_lave = pallox_lave_par_lot[i]
             lf_pallox_gren = pallox_gren_par_lot[i]
             lf_poids_lave = poids_lave_par_lot[i]
             lf_poids_gren = poids_gren_par_lot[i]
+            
+            # ⭐ UPDATE _reelle sur la ligne fille (si correction et id dispo)
+            if a_correction and lf_id is not None:
+                # On stocke même si == prévu pour ce lot (pour repérer qu'il a été "validé")
+                cursor.execute("""
+                    UPDATE lavages_jobs_lots
+                    SET quantite_pallox_reelle = %s,
+                        poids_brut_reel_kg = %s
+                    WHERE id = %s
+                """, (lf_qty_brut_reel, lf_poids_brut_reel, lf_id))
             
             # 6a. Lire l'emplacement source de ce lot fille
             if lf_emp_id:
@@ -1696,9 +1764,9 @@ def terminer_job(job_id,
                       type_cond_gren, lf_poids_gren, 
                       int(calibre_min_gren), int(calibre_max_gren), job_id))
             
-            # 6d. Déduire du stock source
-            nouveau_nb = int(stock_source['nombre_unites']) - lf_qty_brut
-            nouveau_poids = float(stock_source['poids_total_kg']) - lf_poids_brut
+            # 6d. ⭐ Déduire du stock source les quantités RÉELLES (pas les prévues)
+            nouveau_nb = int(stock_source['nombre_unites']) - lf_qty_brut_reel
+            nouveau_poids = float(stock_source['poids_total_kg']) - lf_poids_brut_reel
             if nouveau_nb <= 0:
                 cursor.execute("""
                     UPDATE stock_emplacements
@@ -1712,7 +1780,10 @@ def terminer_job(job_id,
                     WHERE id = %s
                 """, (nouveau_nb, max(nouveau_poids, 0), stock_source['id']))
             
-            # 6e. Mouvement réduction source
+            # 6e. Mouvement réduction source (avec note d'écart si correction appliquée)
+            note_mvt = f"Job #{job_id} - Sortie lavage (lot {i+1}/{len(lots_fille)})"
+            if a_correction and (lf_qty_brut_reel != lf_qty_brut_prevu or abs(lf_poids_brut_reel - lf_poids_brut_prevu) > 0.01):
+                note_mvt += f" — Réel:{lf_qty_brut_reel}p/{lf_poids_brut_reel:.0f}kg vs Prévu:{lf_qty_brut_prevu}p/{lf_poids_brut_prevu:.0f}kg"
             cursor.execute("""
                 INSERT INTO stock_mouvements 
                 (lot_id, type_mouvement, site_origine, emplacement_origine,
@@ -1720,8 +1791,8 @@ def terminer_job(job_id,
                 VALUES (%s, %s, %s, %s, %s, 'Pallox', %s, %s, %s, %s)
             """, (lf_lot_id, type_mvt_source,
                   stock_source['site_stockage'], stock_source['emplacement_stockage'],
-                  lf_qty_brut, lf_poids_brut, terminated_by,
-                  f"Job #{job_id} - Sortie lavage (lot {i+1}/{len(lots_fille)})", terminated_by))
+                  lf_qty_brut_reel, lf_poids_brut_reel, terminated_by,
+                  note_mvt, terminated_by))
             
             # 6f. Mouvement création sortie (LAVÉ ou GRENAILLES_LAVÉES)
             if lf_pallox_lave > 0:
@@ -3458,6 +3529,157 @@ with tab1:
                 f"Les chiffres ci-dessous sont modifiables pour ajustement final."
             )
         
+        # ============================================================
+        # ⭐ BLOC "SALES RÉELLEMENT TRAITÉS" (en haut du formulaire)
+        # Q1=B saisie par lot fille, Q2=A bloc principal visible, Q3=B colonnes _reelle
+        # ============================================================
+        # Lecture des lots fille pour ce job (1 si mono, N si multi)
+        lots_fille_ui = []
+        try:
+            conn_ui = get_connection()
+            cur_ui = conn_ui.cursor()
+            cur_ui.execute("""
+                SELECT id, code_lot_interne, producteur, quantite_pallox, poids_brut_kg,
+                       type_conditionnement, ordre
+                FROM lavages_jobs_lots
+                WHERE job_id = %s
+                ORDER BY ordre
+            """, (job_en_terminaison,))
+            lots_fille_ui = [dict(r) for r in cur_ui.fetchall()]
+            cur_ui.close()
+            conn_ui.close()
+        except Exception:
+            lots_fille_ui = []
+        
+        # Si pas de lots fille (vieux jobs), on construit une fille fictive à partir du parent
+        if not lots_fille_ui:
+            lots_fille_ui = [{
+                'id': None,
+                'code_lot_interne': elem.get('code_lot_interne') or '?',
+                'producteur': None,
+                'quantite_pallox': int(poids_brut / 1900) if poids_brut else 1,
+                'poids_brut_kg': poids_brut,
+                'type_conditionnement': 'Pallox',
+                'ordre': 1,
+            }]
+        
+        st.markdown("### 🧺 Sales réellement traités")
+        st.caption(
+            "Pré-remplis avec le prévu. Modifie uniquement si le réel diffère. "
+            "Les calculs de bouclage, le pro-rata et la déduction de stock utiliseront ces valeurs."
+        )
+        
+        # Dict en session : {lot_fille_id: (nb_reel, poids_unit_reel)}
+        ss_pallox_reel_key = f"pallox_reel_{job_en_terminaison}"
+        if ss_pallox_reel_key not in st.session_state:
+            st.session_state[ss_pallox_reel_key] = {}
+        
+        # Affichage : 1 ligne par lot fille
+        # En mono-lot : 1 seule ligne, lecture simple
+        # En multi-lot : N lignes, total recalculé en bas
+        is_multi_ui = len(lots_fille_ui) > 1
+        
+        if is_multi_ui:
+            # Entêtes du sous-tableau
+            colh1, colh2, colh3, colh4, colh5, colh6 = st.columns([2, 2, 1, 1.2, 1.2, 1.2])
+            colh1.markdown("**Lot**")
+            colh2.markdown("**Producteur**")
+            colh3.markdown("**Prévu**")
+            colh4.markdown("**Nb réel**")
+            colh5.markdown("**Poids unit. (kg)**")
+            colh6.markdown("**Poids total (kg)**")
+        
+        total_poids_brut_reel_ui = 0.0
+        total_nb_reel_ui = 0
+        lots_pallox_reel_dict = {}
+        a_correction_ui = False
+        
+        for lf_ui in lots_fille_ui:
+            lf_id = lf_ui.get('id')
+            prevu_nb = int(lf_ui['quantite_pallox'])
+            prevu_poids = float(lf_ui['poids_brut_kg'])
+            prevu_unit = (prevu_poids / prevu_nb) if prevu_nb > 0 else 0.0
+            
+            key_suffix = f"{job_en_terminaison}_{lf_id if lf_id else 'mono'}_{lf_ui.get('ordre', 1)}"
+            
+            if is_multi_ui:
+                cf1, cf2, cf3, cf4, cf5, cf6 = st.columns([2, 2, 1, 1.2, 1.2, 1.2])
+                cf1.markdown(f"#{lf_ui.get('ordre','?')} {lf_ui['code_lot_interne']}")
+                cf2.markdown(f"{lf_ui.get('producteur') or '-'}")
+                cf3.markdown(f"{prevu_nb}p / {prevu_poids:.0f} kg")
+                with cf4:
+                    nb_reel = st.number_input(
+                        " ", min_value=0, max_value=prevu_nb + 50, value=prevu_nb, step=1,
+                        key=f"nbreel_{key_suffix}", label_visibility="collapsed",
+                    )
+                with cf5:
+                    poids_unit_reel = st.number_input(
+                        " ", min_value=0.0, max_value=5000.0,
+                        value=round(prevu_unit, 1), step=10.0,
+                        key=f"unitreel_{key_suffix}", label_visibility="collapsed",
+                    )
+                poids_total_reel = nb_reel * poids_unit_reel
+                with cf6:
+                    if abs(poids_total_reel - prevu_poids) > 0.5 or nb_reel != prevu_nb:
+                        st.markdown(f"⚠️ **{poids_total_reel:.0f}**")
+                    else:
+                        st.markdown(f"{poids_total_reel:.0f}")
+            else:
+                # MONO-LOT : 2 inputs côte à côte, affichage plus généreux
+                cf_m1, cf_m2, cf_m3 = st.columns([1, 1, 1])
+                with cf_m1:
+                    nb_reel = st.number_input(
+                        "Nb pallox réels", min_value=0, max_value=prevu_nb + 50,
+                        value=prevu_nb, step=1,
+                        key=f"nbreel_{key_suffix}",
+                        help=f"Prévu : {prevu_nb} pallox"
+                    )
+                with cf_m2:
+                    poids_unit_reel = st.number_input(
+                        "Poids unitaire réel (kg)", min_value=0.0, max_value=5000.0,
+                        value=round(prevu_unit, 1), step=10.0,
+                        key=f"unitreel_{key_suffix}",
+                        help=f"Prévu : {prevu_unit:.0f} kg/pallox"
+                    )
+                poids_total_reel = nb_reel * poids_unit_reel
+                with cf_m3:
+                    st.metric("Poids brut total réel", f"{poids_total_reel:,.0f} kg",
+                             delta=f"{poids_total_reel - prevu_poids:+.0f} kg vs prévu" if abs(poids_total_reel - prevu_poids) > 0.5 else "= prévu")
+            
+            total_poids_brut_reel_ui += poids_total_reel
+            total_nb_reel_ui += nb_reel
+            
+            # Si correction pour ce lot, on stocke dans le dict
+            if nb_reel != prevu_nb or abs(poids_total_reel - prevu_poids) > 0.5:
+                a_correction_ui = True
+            
+            # Stocke TOUS les lots dans le dict (même non corrigés) : terminer_job décide
+            if lf_id is not None:
+                lots_pallox_reel_dict[lf_id] = (nb_reel, poids_unit_reel)
+        
+        st.session_state[ss_pallox_reel_key] = lots_pallox_reel_dict
+        
+        # Récap si correction
+        if is_multi_ui:
+            total_prevu = sum(float(lf['poids_brut_kg']) for lf in lots_fille_ui)
+            total_nb_prevu = sum(int(lf['quantite_pallox']) for lf in lots_fille_ui)
+            if a_correction_ui:
+                st.warning(
+                    f"⚠️ **Écart détecté** — Total réel : {total_nb_reel_ui} pallox / {total_poids_brut_reel_ui:.0f} kg "
+                    f"(prévu : {total_nb_prevu} pallox / {total_prevu:.0f} kg)"
+                )
+            else:
+                st.info(f"✅ Total = prévu : {total_nb_prevu} pallox / {total_prevu:.0f} kg")
+        else:
+            if a_correction_ui:
+                st.warning(
+                    f"⚠️ **Écart détecté** — Réel : {total_nb_reel_ui} pallox / {total_poids_brut_reel_ui:.0f} kg "
+                    f"(prévu : {int(lots_fille_ui[0]['quantite_pallox'])} pallox / {float(lots_fille_ui[0]['poids_brut_kg']):.0f} kg)"
+                )
+        
+        # ⭐ Variable utilisée comme "poids brut effectif" pour la suite du formulaire
+        poids_brut = total_poids_brut_reel_ui if a_correction_ui else poids_brut
+        
         st.markdown(f"### ⚖️ Poids brut en entrée : {poids_brut:,.0f} kg")
         st.markdown("---")
         
@@ -3732,15 +3954,21 @@ with tab1:
             can_validate = terre_ok and calibres_ok and empl != ""
             
             if st.button("✅ Valider terminaison", key=f"val_finish_full_{job_en_terminaison}", type="primary", disabled=not can_validate, use_container_width=True):
+                # ⭐ Récupération du dict pallox réels saisis (Q1=B par lot fille)
+                lots_pallox_reel_to_pass = st.session_state.get(f"pallox_reel_{job_en_terminaison}", {}) or None
                 success, msg = terminer_job(
                     job_en_terminaison,
                     nb_pallox_lave, type_lave, p_lave, cal_min_lave, cal_max_lave,
                     nb_pallox_gren, type_gren, p_gren, cal_min_gren, cal_max_gren,
                     p_dech,
-                    "SAINT_FLAVY", empl
+                    "SAINT_FLAVY", empl,
+                    notes="",
+                    lots_pallox_reel=lots_pallox_reel_to_pass,
                 )
                 if success:
                     st.success(msg)
+                    # Nettoyage du session_state des pallox réels
+                    st.session_state.pop(f"pallox_reel_{job_en_terminaison}", None)
                     st.session_state.pop(f'show_finish_{job_en_terminaison}', None)
                     st.rerun()
                 else:
