@@ -1478,7 +1478,9 @@ def terminer_job(job_id,
                  # Destination
                  site_dest, emplacement_dest, notes="",
                  # ⭐ Correction pallox sales RÉELS (par lot fille)
-                 lots_pallox_reel=None):
+                 lots_pallox_reel=None,
+                 # ⭐ Destination séparée pour les grenailles brutes (frigo différent)
+                 emplacement_dest_gren=None):
     """Termine un job avec création stocks LAVÉ/GRENAILLES et déduction source.
     
     SUPPORT MULTI-LOT (Commit 4) :
@@ -1675,13 +1677,16 @@ def terminer_job(job_id,
         if is_grenailles_source:
             statut_sortie = 'GRENAILLES_LAVÉES'
             type_stock_sortie = 'GRENAILLES_LAVÉES'
-            type_mvt_source = 'LAVAGE_GRENAILLES_REDUIT'
-            type_mvt_sortie = 'LAVAGE_CREATION_GRENAILLES_LAVEES'
+            type_mvt_source = 'LAVAGE_GREN_REDUIT'
+            type_mvt_sortie = 'LAVAGE_CREATION_GREN_LAVEES'
         else:
             statut_sortie = 'LAVÉ'
             type_stock_sortie = 'LAVÉ'
             type_mvt_source = 'LAVAGE_BRUT_REDUIT'
             type_mvt_sortie = 'LAVAGE_CREATION_LAVE'
+        
+        # ⭐ Emplacement des grenailles : si non fourni, fallback sur l'emplacement lavé
+        empl_dest_gren = emplacement_dest_gren if emplacement_dest_gren else emplacement_dest
         
         for i, lf in enumerate(lots_fille):
             lf_lot_id = int(lf['lot_id'])
@@ -1760,7 +1765,7 @@ def terminer_job(job_id,
                      type_conditionnement, poids_total_kg, type_stock, statut_lavage, 
                      calibre_min, calibre_max, lavage_job_id, is_active)
                     VALUES (%s, %s, %s, %s, %s, %s, 'GRENAILLES', 'GRENAILLES_BRUTES', %s, %s, %s, TRUE)
-                """, (lf_lot_id, site_dest, emplacement_dest, lf_pallox_gren, 
+                """, (lf_lot_id, site_dest, empl_dest_gren, lf_pallox_gren, 
                       type_cond_gren, lf_poids_gren, 
                       int(calibre_min_gren), int(calibre_max_gren), job_id))
             
@@ -1813,7 +1818,7 @@ def terminer_job(job_id,
                     (lot_id, type_mouvement, site_destination, emplacement_destination,
                      quantite, type_conditionnement, poids_kg, user_action, notes, created_by)
                     VALUES (%s, 'LAVAGE_CREATION_GRENAILLES', %s, %s, %s, 'Pallox', %s, %s, %s, %s)
-                """, (lf_lot_id, site_dest, emplacement_dest, lf_pallox_gren, 
+                """, (lf_lot_id, site_dest, empl_dest_gren, lf_pallox_gren, 
                       lf_poids_gren, terminated_by,
                       f"Job #{job_id} - Entrée grenailles brutes (lot {i+1}/{len(lots_fille)})",
                       terminated_by))
@@ -3588,14 +3593,36 @@ with tab1:
             st.caption(
                 "Saisir le poids de chaque pallox sale pesé (kg), séparé par des espaces ou virgules. "
                 "Le poids moyen sera calculé et pourra être appliqué au champ 'Poids unitaire réel'. "
-                "Le nombre de pallox reste en saisie manuelle (cas où seule une partie est pesée)."
+                "Le nombre de pallox reste en saisie manuelle (cas où seule une partie est pesée). "
+                "La tare du contenant est déduite automatiquement de chaque pesée."
             )
-            pesees_sales_raw = st.text_input(
-                "Pesées (kg)",
-                placeholder="ex: 1920 1850 1935 1780",
-                key=f"pesees_sales_{job_en_terminaison}"
-            )
-            pesees_sales = []
+            
+            # Tare contenant par type de conditionnement (déduite de chaque pesée brute)
+            TARE_CONTENANT = {"Pallox": 220, "Petit Pallox": 150, "Big Bag": 0}
+            
+            # Type de conditionnement pour la déduction : pré-rempli depuis le 1er lot fille
+            type_cond_defaut_sales = lots_fille_ui[0].get('type_conditionnement') or 'Pallox'
+            if type_cond_defaut_sales not in TARE_CONTENANT:
+                type_cond_defaut_sales = 'Pallox'
+            
+            col_tc_s, col_pe_s = st.columns([1, 2])
+            with col_tc_s:
+                type_cond_sales = st.selectbox(
+                    "Type contenant pesé",
+                    list(TARE_CONTENANT.keys()),
+                    index=list(TARE_CONTENANT.keys()).index(type_cond_defaut_sales),
+                    key=f"type_cond_sales_{job_en_terminaison}",
+                    help="Tare déduite : Pallox -220 kg, Petit Pallox -150 kg, Big Bag -0 kg"
+                )
+            tare_unit = TARE_CONTENANT[type_cond_sales]
+            with col_pe_s:
+                pesees_sales_raw = st.text_input(
+                    f"Pesées brutes (kg) — tare {tare_unit} kg déduite par pallox",
+                    placeholder="ex: 1920 1850 1935 1780",
+                    key=f"pesees_sales_{job_en_terminaison}"
+                )
+            
+            pesees_sales_brutes = []
             if pesees_sales_raw:
                 import re as _re_s
                 tokens_s = _re_s.split(r"[,;\s]+", pesees_sales_raw.strip())
@@ -3603,22 +3630,27 @@ with tab1:
                     try:
                         v = float(t)
                         if v > 0:
-                            pesees_sales.append(v)
+                            pesees_sales_brutes.append(v)
                     except ValueError:
                         pass
+            
+            # Déduction de la tare contenant sur chaque pesée (Q3a : sur chaque pesée)
+            pesees_sales = [max(0.0, p - tare_unit) for p in pesees_sales_brutes]
             
             moy_sales = None
             if pesees_sales:
                 moy_sales = sum(pesees_sales) / len(pesees_sales)
-                col_ps1, col_ps2, col_ps3 = st.columns(3)
+                moy_brute = sum(pesees_sales_brutes) / len(pesees_sales_brutes)
+                col_ps1, col_ps2, col_ps3, col_ps4 = st.columns(4)
                 col_ps1.metric("Nb pallox pesés", len(pesees_sales))
-                col_ps2.metric("Poids moyen / pallox", f"{moy_sales:,.1f} kg")
-                col_ps3.metric("Total pesé", f"{sum(pesees_sales):,.0f} kg")
+                col_ps2.metric("Moy. brute", f"{moy_brute:,.1f} kg")
+                col_ps3.metric(f"Moy. nette (-{tare_unit})", f"{moy_sales:,.1f} kg")
+                col_ps4.metric("Total net", f"{sum(pesees_sales):,.0f} kg")
                 
                 # Bouton(s) d'application
                 if is_multi_ui:
                     if st.button(
-                        f"✅ Appliquer {moy_sales:.1f} kg à TOUS les lots fille",
+                        f"✅ Appliquer {moy_sales:.1f} kg (net) à TOUS les lots fille",
                         key=f"apply_moy_sales_all_{job_en_terminaison}",
                         type="primary", use_container_width=True
                     ):
@@ -3627,11 +3659,11 @@ with tab1:
                             lf_id_ap = lf_ap.get('id')
                             ks = f"{job_en_terminaison}_{lf_id_ap if lf_id_ap else 'mono'}_{lf_ap.get('ordre', 1)}"
                             st.session_state[f"unitreel_{ks}"] = round(moy_sales, 1)
-                        st.success(f"✅ Poids unitaire de {moy_sales:.1f} kg appliqué à {len(lots_fille_ui)} lots")
+                        st.success(f"✅ Poids unitaire net de {moy_sales:.1f} kg appliqué à {len(lots_fille_ui)} lots")
                         st.rerun()
                 else:
                     if st.button(
-                        f"✅ Appliquer {moy_sales:.1f} kg comme poids unitaire",
+                        f"✅ Appliquer {moy_sales:.1f} kg (net) comme poids unitaire",
                         key=f"apply_moy_sales_mono_{job_en_terminaison}",
                         type="primary", use_container_width=True
                     ):
@@ -3639,7 +3671,7 @@ with tab1:
                         lf_id_ap = lf_ap.get('id')
                         ks = f"{job_en_terminaison}_{lf_id_ap if lf_id_ap else 'mono'}_{lf_ap.get('ordre', 1)}"
                         st.session_state[f"unitreel_{ks}"] = round(moy_sales, 1)
-                        st.success(f"✅ Poids unitaire de {moy_sales:.1f} kg appliqué")
+                        st.success(f"✅ Poids unitaire net de {moy_sales:.1f} kg appliqué")
                         st.rerun()
             else:
                 st.caption("_(Aucune pesée saisie)_")
@@ -4012,15 +4044,35 @@ with tab1:
         with col_dest:
             st.markdown("### 📍 Destination")
             empls = get_emplacements_saint_flavy()
-            empl = st.selectbox("Emplacement stockage SAINT_FLAVY", [""] + [e[0] for e in empls], key=f"empl_full_{job_en_terminaison}")
+            empl = st.selectbox(
+                "📦 Emplacement LAVÉ (SAINT_FLAVY)",
+                [""] + [e[0] for e in empls],
+                key=f"empl_full_{job_en_terminaison}",
+                help="Frigo de rangement des pallox lavés"
+            )
+            # Emplacement séparé pour les grenailles (frigo différent) — seulement si grenailles
+            empl_gren = ""
+            if nb_pallox_gren > 0:
+                empl_gren = st.selectbox(
+                    "🌾 Emplacement GRENAILLES (SAINT_FLAVY)",
+                    [""] + [e[0] for e in empls],
+                    key=f"empl_gren_full_{job_en_terminaison}",
+                    help="Frigo de rangement des grenailles brutes (peut différer du lavé)"
+                )
         
         with col_btns:
             st.markdown("### ✅ Actions")
-            can_validate = terre_ok and calibres_ok and empl != ""
+            # Validation : emplacement lavé requis + emplacement grenailles requis si grenailles
+            empl_gren_ok = (nb_pallox_gren == 0) or (empl_gren != "")
+            can_validate = terre_ok and calibres_ok and empl != "" and empl_gren_ok
+            if nb_pallox_gren > 0 and empl_gren == "":
+                st.caption("⚠️ Choisis aussi l'emplacement des grenailles")
             
             if st.button("✅ Valider terminaison", key=f"val_finish_full_{job_en_terminaison}", type="primary", disabled=not can_validate, use_container_width=True):
                 # ⭐ Récupération du dict pallox réels saisis (Q1=B par lot fille)
                 lots_pallox_reel_to_pass = st.session_state.get(f"pallox_reel_{job_en_terminaison}", {}) or None
+                # Emplacement grenailles : si pas de grenailles, on réutilise l'emplacement lavé (ignoré de toute façon)
+                empl_gren_final = empl_gren if (nb_pallox_gren > 0 and empl_gren) else empl
                 success, msg = terminer_job(
                     job_en_terminaison,
                     nb_pallox_lave, type_lave, p_lave, cal_min_lave, cal_max_lave,
@@ -4029,6 +4081,7 @@ with tab1:
                     "SAINT_FLAVY", empl,
                     notes="",
                     lots_pallox_reel=lots_pallox_reel_to_pass,
+                    emplacement_dest_gren=empl_gren_final,
                 )
                 if success:
                     st.success(msg)
