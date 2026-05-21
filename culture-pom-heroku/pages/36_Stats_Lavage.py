@@ -1157,30 +1157,33 @@ with tab_histo:
 # ONGLET 3 — STATS POMI (BDD)
 # ============================================================
 with tab_pomi:
-    st.subheader("Analyse — Donnees POMI")
-    st.caption("Jobs de lavage termines sur la plateforme POMI. Source independante du fichier historique.")
+    st.subheader("Analyse — Données POMI")
+    st.caption("Jobs de lavage terminés sur la plateforme POMI. Source indépendante du fichier historique.")
 
-    col_p1, col_p2 = st.columns([3, 1])
-    with col_p2:
-        st.markdown("**Parametres objectif cadence**")
-        obj_th_p = st.number_input("Obj. cadence (T/h)", 1.0, 30.0, 13.0, 0.5, key="obj_p")
-        h_jour_p = st.number_input("Heures marche / jour", 1.0, 24.0, 13.0, 0.5, key="hj_p")
-        if st.button("🔄 Rafraîchir", key="refresh_pomi"):
-            get_jobs_termines_pomi.clear()
-            st.rerun()
+    # Paramètres dans un expander discret (libère la pleine largeur)
+    with st.expander("⚙️ Paramètres objectif cadence", expanded=False):
+        cpa, cpb, cpc = st.columns([1, 1, 1])
+        with cpa:
+            obj_th_p = st.number_input("Obj. cadence (T/h)", 1.0, 30.0, 13.0, 0.5, key="obj_p")
+        with cpb:
+            h_jour_p = st.number_input("Heures marche / jour", 1.0, 24.0, 13.0, 0.5, key="hj_p")
+        with cpc:
+            st.markdown("&nbsp;")  # aligne le bouton avec les inputs
+            if st.button("🔄 Rafraîchir les données", key="refresh_pomi", use_container_width=True):
+                get_jobs_termines_pomi.clear()
+                st.rerun()
 
-    with col_p1:
-        with st.spinner("Chargement donnees POMI..."):
-            df_pomi = get_jobs_termines_pomi()
+    with st.spinner("Chargement données POMI..."):
+        df_pomi = get_jobs_termines_pomi()
 
     if df_pomi.empty:
-        st.info("Aucun job de lavage termine dans POMI. Les statistiques apparaitront ici des que des jobs seront termines depuis le planning.")
+        st.info("Aucun job de lavage terminé dans POMI. Les statistiques apparaîtront ici dès que des jobs seront terminés depuis le planning.")
     else:
         nb_jobs = len(df_pomi)
         total_t = df_pomi["poids_brut"].sum() / 1000
         rend_moy = (df_pomi["poids_lave"].sum() / df_pomi["poids_brut"].sum() * 100
                     if df_pomi["poids_brut"].sum() > 0 else 0)
-        st.success(f"**{nb_jobs} jobs termines** — {total_t:.1f} T brut — Rendement moyen : {rend_moy:.1f}%")
+        st.success(f"**{nb_jobs} jobs terminés** — {total_t:.1f} T brut — Rendement moyen : {rend_moy:.1f}%")
         st.markdown("---")
         afficher_analyse(df_pomi, source="pomi",
                          objectif_th=obj_th_p, heures_jour=h_jour_p)
