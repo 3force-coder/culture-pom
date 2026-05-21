@@ -315,6 +315,8 @@ def get_jobs_termines_pomi():
                 lj.statut_source,
                 lj.quantite_pallox,
                 lj.poids_brut_kg,
+                lj.quantite_pallox_reelle,
+                lj.poids_brut_reel_kg,
                 lj.poids_lave_net_kg,
                 lj.poids_grenailles_kg,
                 lj.poids_dechets_kg,
@@ -326,10 +328,25 @@ def get_jobs_termines_pomi():
                 lj.date_prevue,
                 lj.date_activation,
                 lj.date_terminaison,
-                lj.notes
+                lj.notes,
+                -- Opérateur principal (celui qui a saisi le plus de pallox dans le suivi)
+                sv.operateur_principal,
+                sv.nb_operateurs,
+                sv.operateurs_liste
             FROM lavages_jobs lj
             LEFT JOIN lots_bruts lb ON lj.lot_id = lb.id
             LEFT JOIN ref_producteurs p ON lb.code_producteur = p.code_producteur
+            -- Agrégat opérateurs depuis le suivi en cours
+            LEFT JOIN LATERAL (
+                SELECT
+                    (SELECT operateur FROM lavages_jobs_suivis s2
+                     WHERE s2.job_id = lj.id AND s2.operateur IS NOT NULL AND TRIM(s2.operateur) <> ''
+                     GROUP BY operateur ORDER BY SUM(nb_pallox) DESC LIMIT 1) as operateur_principal,
+                    COUNT(DISTINCT s.operateur) FILTER (WHERE s.operateur IS NOT NULL AND TRIM(s.operateur) <> '') as nb_operateurs,
+                    STRING_AGG(DISTINCT s.operateur, ', ') FILTER (WHERE s.operateur IS NOT NULL AND TRIM(s.operateur) <> '') as operateurs_liste
+                FROM lavages_jobs_suivis s
+                WHERE s.job_id = lj.id
+            ) sv ON TRUE
             WHERE lj.statut = 'TERMINÉ'
             ORDER BY lj.date_terminaison DESC
         """)
@@ -340,7 +357,8 @@ def get_jobs_termines_pomi():
             df = pd.DataFrame([dict(r) for r in rows])
             num_cols = ['poids_brut_kg','poids_lave_net_kg','poids_grenailles_kg',
                         'poids_dechets_kg','poids_terre_calcule_kg','rendement_pct',
-                        'tare_reelle_pct','temps_estime_heures','capacite_th','quantite_pallox']
+                        'tare_reelle_pct','temps_estime_heures','capacite_th','quantite_pallox',
+                        'quantite_pallox_reelle','poids_brut_reel_kg']
             for c in num_cols:
                 if c in df.columns:
                     df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
@@ -360,6 +378,37 @@ def get_jobs_termines_pomi():
                 df['poids_brut_kg'] / 1000 / df['temps_reel_h'],
                 np.nan
             )
+            # ⭐ Pallox / poids effectifs (réels si corrigés, sinon prévus)
+            df['pallox_effectif'] = np.where(
+                df['quantite_pallox_reelle'] > 0,
+                df['quantite_pallox_reelle'], df['quantite_pallox'])
+            df['poids_brut_effectif'] = np.where(
+                df['poids_brut_reel_kg'] > 0,
+                df['poids_brut_reel_kg'], df['poids_brut_kg'])
+            # ⭐ Écart temps réel vs estimé
+            df['ecart_temps_h']  = df['temps_reel_h'] - df['temps_estime_heures']
+            df['ecart_temps_pct'] = np.where(
+                df['temps_estime_heures'] > 0,
+                (df['temps_reel_h'] - df['temps_estime_heures']) / df['temps_estime_heures'] * 100,
+                np.nan)
+            df['en_retard'] = df['ecart_temps_h'] > 0
+            # ⭐ Cadences additionnelles
+            df['cadence_pallox_h'] = np.where(
+                df['temps_reel_h'] > 0,
+                df['pallox_effectif'] / df['temps_reel_h'], np.nan)
+            df['cadence_lave_th'] = np.where(
+                df['temps_reel_h'] > 0,
+                df['poids_lave_net_kg'] / 1000 / df['temps_reel_h'], np.nan)
+            df['min_par_pallox'] = np.where(
+                df['pallox_effectif'] > 0,
+                df['temps_reel_min'] / df['pallox_effectif'], np.nan)
+            # ⭐ Opérateur (depuis suivi) — "Non attribué" si aucun
+            if 'operateur_principal' in df.columns:
+                df['operateur_principal'] = df['operateur_principal'].fillna('').replace('', 'Non attribué')
+            else:
+                df['operateur_principal'] = 'Non attribué'
+            if 'operateurs_liste' not in df.columns:
+                df['operateurs_liste'] = None
             # Renommage pour cohérence avec onglet fichier
             df['poids_brut']      = df['poids_brut_kg']
             df['poids_lave']      = df['poids_lave_net_kg']
@@ -551,12 +600,14 @@ def afficher_analyse(df, source="fichier", objectif_th=13.0, heures_jour=13.0):
 
     # ========== ONGLETS ANALYSE ==========
     if source == 'pomi':
-        t1, t2, t3, t4, t_prod, t5 = st.tabs([
+        t1, t2, t3, t4, t_prod, t_temps, t_equipe, t5 = st.tabs([
             "📈 Vue hebdomadaire",
             "📅 Vue journalière",
             "🌱 Par variété",
             "📦 Par lot",
             "👨‍🌾 Par producteur",
+            "⏱️ Temps & Cadence",
+            "👥 Par équipe",
             "📋 Tableau détaillé"
         ])
     else:
@@ -568,6 +619,8 @@ def afficher_analyse(df, source="fichier", objectif_th=13.0, heures_jour=13.0):
             "📋 Tableau détaillé"
         ])
         t_prod = None
+        t_temps = None
+        t_equipe = None
 
     # ─────────────────────────────────────────
     # TAB 1 : VUE HEBDOMADAIRE
@@ -987,6 +1040,175 @@ def afficher_analyse(df, source="fichier", objectif_th=13.0, heures_jour=13.0):
                             'pct_grenailles': '% Gren', 'pct_terre': '% Terre'
                         })
                         st.dataframe(g_disp, use_container_width=True, hide_index=True)
+
+    # ─────────────────────────────────────────
+    # TAB TEMPS & CADENCE (POMI uniquement)
+    # ─────────────────────────────────────────
+    if t_temps is not None:
+        with t_temps:
+            dft = df_filt.copy()
+            # On ne garde que les jobs avec temps réel exploitable
+            dft = dft[dft['temps_reel_h'].notna() & (dft['temps_reel_h'] > 0)]
+            if dft.empty:
+                st.info("Aucun job avec temps réel exploitable (date activation + terminaison) sur la sélection.")
+            else:
+                # ===== KPIs synthèse =====
+                st.markdown("#### ⏱️ Synthèse temps réel vs estimé")
+                k1, k2, k3, k4 = st.columns(4)
+                temps_reel_tot = dft['temps_reel_h'].sum()
+                temps_est_tot  = dft['temps_estime_heures'].sum()
+                ecart_tot = temps_reel_tot - temps_est_tot
+                nb_retard = int(dft['en_retard'].sum())
+                k1.metric("Temps réel total", f"{temps_reel_tot:.1f} h")
+                k2.metric("Temps estimé total", f"{temps_est_tot:.1f} h")
+                k3.metric("Écart total", f"{ecart_tot:+.1f} h",
+                          delta=f"{(ecart_tot/temps_est_tot*100):+.0f}%" if temps_est_tot > 0 else None,
+                          delta_color="inverse")
+                k4.metric("Jobs en retard", f"{nb_retard} / {len(dft)}",
+                          help="Jobs ayant dépassé leur temps estimé")
+
+                st.markdown("---")
+
+                # ===== Cadences moyennes (Q2) =====
+                st.markdown("#### ⚡ Cadences moyennes")
+                c1, c2, c3, c4 = st.columns(4)
+                cad_brut = dft['cadence_reelle'].replace([np.inf, -np.inf], np.nan).mean()
+                cad_pallox = dft['cadence_pallox_h'].replace([np.inf, -np.inf], np.nan).mean()
+                cad_lave = dft['cadence_lave_th'].replace([np.inf, -np.inf], np.nan).mean()
+                min_pallox = dft['min_par_pallox'].replace([np.inf, -np.inf], np.nan).mean()
+                c1.metric("Cadence brute", f"{cad_brut:.1f} T/h" if not np.isnan(cad_brut) else "N/A",
+                          delta=f"obj {objectif_th:.0f}" if objectif_th else None)
+                c2.metric("Cadence pallox", f"{cad_pallox:.1f} pal/h" if not np.isnan(cad_pallox) else "N/A")
+                c3.metric("Cadence lavé", f"{cad_lave:.1f} T/h" if not np.isnan(cad_lave) else "N/A")
+                c4.metric("Minutes / pallox", f"{min_pallox:.1f} min" if not np.isnan(min_pallox) else "N/A")
+
+                st.markdown("---")
+
+                # ===== Graphique cadence réelle vs objectif par job =====
+                st.markdown("#### 📊 Cadence réelle vs objectif (par job)")
+                dft_sorted = dft.sort_values('date_terminaison')
+                lbl = dft_sorted['code_lot_interne'].fillna('?').astype(str)
+                fig_c = go.Figure()
+                fig_c.add_bar(name="Cadence réelle (T/h)", x=lbl, y=dft_sorted['cadence_reelle'],
+                              marker_color=C_LAVE)
+                fig_c.add_hline(y=objectif_th, line_dash="dash", line_color=C_OBJ,
+                                annotation_text=f"Objectif {objectif_th} T/h")
+                fig_c.update_layout(height=320, margin=dict(l=0,r=0,t=10,b=0),
+                                    xaxis_title="Job (code lot)", yaxis_title="T/h")
+                st.plotly_chart(fig_c, use_container_width=True)
+
+                # ===== Distribution des écarts de temps =====
+                st.markdown("#### 📊 Distribution des écarts de temps (réel - estimé)")
+                fig_e = go.Figure(go.Histogram(
+                    x=dft['ecart_temps_h'], nbinsx=20, marker_color=C_GREN))
+                fig_e.add_vline(x=0, line_dash="dash", line_color="#333",
+                                annotation_text="À l'heure")
+                fig_e.update_layout(height=280, margin=dict(l=0,r=0,t=10,b=0),
+                                    xaxis_title="Écart (heures)", yaxis_title="Nb jobs")
+                st.plotly_chart(fig_e, use_container_width=True)
+
+                # ===== Tableau prévu vs réel (pallox + poids) =====
+                st.markdown("#### 📋 Prévu vs Réel (pallox sales + poids brut)")
+                cols_pr = ['code_lot_interne','variete','producteur',
+                           'quantite_pallox','quantite_pallox_reelle',
+                           'poids_brut_kg','poids_brut_reel_kg',
+                           'temps_estime_heures','temps_reel_h','ecart_temps_h']
+                cols_pr = [c for c in cols_pr if c in dft.columns]
+                dpr = dft[cols_pr].copy()
+                # Conversions lisibles
+                for c in ['poids_brut_kg','poids_brut_reel_kg']:
+                    if c in dpr.columns:
+                        dpr[c] = (dpr[c] / 1000).round(2)
+                for c in ['temps_estime_heures','temps_reel_h','ecart_temps_h']:
+                    if c in dpr.columns:
+                        dpr[c] = dpr[c].round(2)
+                dpr = dpr.rename(columns={
+                    'code_lot_interne':'Code lot','variete':'Variété','producteur':'Producteur',
+                    'quantite_pallox':'Pallox prévu','quantite_pallox_reelle':'Pallox réel',
+                    'poids_brut_kg':'Brut prévu (T)','poids_brut_reel_kg':'Brut réel (T)',
+                    'temps_estime_heures':'Tps estimé (h)','temps_reel_h':'Tps réel (h)',
+                    'ecart_temps_h':'Écart (h)'
+                })
+                st.dataframe(dpr, use_container_width=True, hide_index=True)
+                st.caption("Pallox réel / Brut réel = 0 signifie qu'aucune correction n'a été saisie (= prévu utilisé).")
+
+    # ─────────────────────────────────────────
+    # TAB PAR ÉQUIPE / OPÉRATEUR (POMI uniquement)
+    # ─────────────────────────────────────────
+    if t_equipe is not None:
+        with t_equipe:
+            dfe = df_filt.copy()
+            dfe = dfe[dfe['temps_reel_h'].notna() & (dfe['temps_reel_h'] > 0)]
+            if 'operateur_principal' not in dfe.columns or dfe.empty:
+                st.info("Aucune donnée opérateur exploitable sur la sélection.")
+            else:
+                st.markdown("#### 👥 Performance par opérateur")
+                st.caption("L'opérateur provient des saisies de suivi en cours de lavage. "
+                           "Les jobs terminés sans suivi apparaissent en « Non attribué ».")
+
+                grp = dfe.groupby('operateur_principal')
+                rows_e = []
+                for op, g in grp:
+                    tps_h = g['temps_reel_h'].sum()
+                    pb = g['poids_brut_effectif'].sum()
+                    pl = g['poids_lave_net_kg'].sum()
+                    pallox = g['pallox_effectif'].sum()
+                    nb_respect = int((~g['en_retard']).sum())
+                    rows_e.append({
+                        'Opérateur': op,
+                        'Nb jobs': len(g),
+                        'Tonnage brut (T)': round(pb/1000, 1),
+                        'Cadence moy (T/h)': round(pb/1000/tps_h, 1) if tps_h > 0 else 0,
+                        'Cadence pallox (pal/h)': round(pallox/tps_h, 1) if tps_h > 0 else 0,
+                        '% respect temps': round(nb_respect/len(g)*100, 0) if len(g) else 0,
+                    })
+                df_e = pd.DataFrame(rows_e)
+                # Trier : "Non attribué" en dernier, le reste par tonnage
+                df_e['_sort'] = df_e['Opérateur'].apply(lambda x: 1 if x == 'Non attribué' else 0)
+                df_e = df_e.sort_values(['_sort','Tonnage brut (T)'], ascending=[True, False]).drop(columns=['_sort'])
+
+                st.dataframe(
+                    df_e, use_container_width=True, hide_index=True,
+                    column_config={
+                        "Cadence moy (T/h)": st.column_config.NumberColumn(format="%.1f"),
+                        "Cadence pallox (pal/h)": st.column_config.NumberColumn(format="%.1f"),
+                        "% respect temps": st.column_config.NumberColumn(format="%.0f%%"),
+                    }
+                )
+
+                # Graphique comparatif cadence par opérateur (hors non attribué)
+                df_e_chart = df_e[df_e['Opérateur'] != 'Non attribué']
+                if not df_e_chart.empty:
+                    st.markdown("#### 📊 Cadence moyenne par opérateur")
+                    fig_op = go.Figure(go.Bar(
+                        x=df_e_chart['Opérateur'], y=df_e_chart['Cadence moy (T/h)'],
+                        marker_color=C_LAVE, text=df_e_chart['Cadence moy (T/h)'],
+                        textposition='outside'))
+                    fig_op.add_hline(y=objectif_th, line_dash="dash", line_color=C_OBJ,
+                                     annotation_text=f"Obj {objectif_th} T/h")
+                    fig_op.update_layout(height=320, margin=dict(l=0,r=0,t=10,b=0),
+                                         yaxis_title="T/h")
+                    st.plotly_chart(fig_op, use_container_width=True)
+
+                # Détail des jobs par opérateur (dépliable)
+                st.markdown("#### 📦 Détail des jobs par opérateur")
+                for op in df_e['Opérateur'].tolist():
+                    g = dfe[dfe['operateur_principal'] == op]
+                    with st.expander(f"👤 {op} — {len(g)} job(s)"):
+                        cols_d = ['code_lot_interne','variete','date','temps_reel_h',
+                                  'temps_estime_heures','cadence_reelle','cadence_pallox_h']
+                        cols_d = [c for c in cols_d if c in g.columns]
+                        gd = g[cols_d].copy()
+                        if 'date' in gd.columns:
+                            gd['date'] = pd.to_datetime(gd['date'], errors='coerce').dt.strftime('%d/%m/%Y')
+                        for c in ['temps_reel_h','temps_estime_heures','cadence_reelle','cadence_pallox_h']:
+                            if c in gd.columns:
+                                gd[c] = gd[c].round(1)
+                        gd = gd.rename(columns={
+                            'code_lot_interne':'Code lot','variete':'Variété','date':'Date',
+                            'temps_reel_h':'Tps réel (h)','temps_estime_heures':'Tps est (h)',
+                            'cadence_reelle':'Cad T/h','cadence_pallox_h':'Cad pal/h'})
+                        st.dataframe(gd, use_container_width=True, hide_index=True)
 
     # ─────────────────────────────────────────
     # TAB 5 : TABLEAU DÉTAILLÉ
