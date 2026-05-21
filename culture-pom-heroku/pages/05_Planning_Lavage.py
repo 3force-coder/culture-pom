@@ -3802,9 +3802,9 @@ with tab1:
 
             # ── Calculateur pesées individuelles ──
             with st.expander("🔢 Calculer depuis pesées individuelles"):
-                st.caption("Saisir le poids de chaque pallox pesé (kg) séparé par des espaces ou virgules")
+                st.caption("Saisir le poids de chaque pallox PLEIN pesé (kg) séparé par des espaces ou virgules")
                 pesees_lave_raw = st.text_input(
-                    "Pesées (kg)", placeholder="ex: 1920 1850 1935 1780",
+                    "Pesées pallox pleins (kg)", placeholder="ex: 1920 1850 1935 1780",
                     key=f"pesees_lave_{job_en_terminaison}")
                 pesees_lave = []
                 if pesees_lave_raw:
@@ -3817,14 +3817,54 @@ with tab1:
                                 pesees_lave.append(v)
                         except ValueError:
                             pass
+                
+                # ⭐ Pallox partiel (dernier pallox non plein) — exclu de la moyenne (Q1=A, Q5=+1)
+                ajouter_partiel = st.checkbox(
+                    "➕ Ajouter un dernier pallox partiel (non plein)",
+                    key=f"chk_partiel_lave_{job_en_terminaison}",
+                    help="Le pallox partiel n'entre PAS dans la moyenne des pleins, "
+                         "mais son poids réel s'ajoute au total et compte pour +1 pallox."
+                )
+                poids_partiel_lave = 0.0
+                if ajouter_partiel:
+                    poids_partiel_lave = st.number_input(
+                        "Poids du pallox partiel (kg)",
+                        min_value=0.0, max_value=5000.0, value=0.0, step=10.0,
+                        key=f"poids_partiel_lave_{job_en_terminaison}",
+                        help="Poids réel pesé du dernier pallox non plein"
+                    )
+                
                 if pesees_lave:
                     moy_lave = sum(pesees_lave) / len(pesees_lave)
-                    poids_moy_lave_calc = moy_lave * nb_pallox_lave
-                    col_pm1, col_pm2, col_pm3 = st.columns(3)
-                    col_pm1.metric(f"Nb pesées", len(pesees_lave))
-                    col_pm2.metric("Poids moyen/pallox", f"{moy_lave:,.0f} kg")
-                    col_pm3.metric(f"→ Total ({nb_pallox_lave}p)", f"{poids_moy_lave_calc:,.0f} kg")
+                    nb_pleins_peses = len(pesees_lave)
+                    # ⭐ Total = (nb pesées pleines × moyenne pleins) + poids partiel
+                    total_pleins = moy_lave * nb_pleins_peses
+                    poids_moy_lave_calc = total_pleins + poids_partiel_lave
+                    # Nb pallox final = pleins pesés + 1 si partiel
+                    nb_pallox_calc = nb_pleins_peses + (1 if (ajouter_partiel and poids_partiel_lave > 0) else 0)
+                    
+                    if ajouter_partiel and poids_partiel_lave > 0:
+                        col_pm1, col_pm2, col_pm3, col_pm4 = st.columns(4)
+                        col_pm1.metric("Pleins pesés", nb_pleins_peses)
+                        col_pm2.metric("Moy. pleins", f"{moy_lave:,.0f} kg")
+                        col_pm3.metric("Partiel", f"{poids_partiel_lave:,.0f} kg")
+                        col_pm4.metric(f"→ Total ({nb_pallox_calc}p)", f"{poids_moy_lave_calc:,.0f} kg")
+                    else:
+                        col_pm1, col_pm2, col_pm3 = st.columns(3)
+                        col_pm1.metric("Nb pesées", nb_pleins_peses)
+                        col_pm2.metric("Poids moyen/pallox", f"{moy_lave:,.0f} kg")
+                        col_pm3.metric(f"→ Total ({nb_pallox_calc}p)", f"{poids_moy_lave_calc:,.0f} kg")
+                    
                     poids_lave_auto = poids_moy_lave_calc
+                    
+                    # Vérif cohérence avec le Nb Pallox saisi en haut
+                    if nb_pallox_calc != nb_pallox_lave:
+                        st.warning(
+                            f"⚠️ Le calculateur donne **{nb_pallox_calc} pallox** "
+                            f"({nb_pleins_peses} pleins{' + 1 partiel' if (ajouter_partiel and poids_partiel_lave > 0) else ''}) "
+                            f"mais 'Nb Pallox' en haut = **{nb_pallox_lave}**. "
+                            f"Ajuste 'Nb Pallox' à {nb_pallox_calc} pour cohérence."
+                        )
                 else:
                     poids_lave_auto = nb_pallox_lave * poids_unit_lave
 
@@ -3837,7 +3877,7 @@ with tab1:
                     poids_lave_auto = nb_pallox_lave * poids_unit_lave
 
             st.metric("⚖️ Poids retenu", f"{poids_lave_auto:,.0f} kg",
-                help=f"{nb_pallox_lave} × {poids_unit_lave if not pesees_lave else int(sum(pesees_lave)/len(pesees_lave))} kg")
+                help="Calcul depuis pesées (pleins + partiel éventuel)" if pesees_lave else f"{nb_pallox_lave} × {poids_unit_lave} kg")
             p_lave = poids_lave_auto  # synchronisation automatique
 
             col_cal1, col_cal2 = st.columns(2)
