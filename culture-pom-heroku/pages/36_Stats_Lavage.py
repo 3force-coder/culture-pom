@@ -514,20 +514,24 @@ def afficher_analyse(df, source="fichier", objectif_th=13.0, heures_jour=13.0):
     semaines_dispo = sorted(df_ann['semaine'].dropna().unique().tolist())
 
     with col_f2:
-        sem_min, sem_max = int(min(semaines_dispo)), int(max(semaines_dispo))
-        if sem_min == sem_max:
-            sems_sel = [sem_min]
-            st.info(f"Semaine {sem_min} uniquement")
+        semaines_int = [int(s) for s in semaines_dispo]
+        # Bouton "tout sélectionner" : pré-remplit le multiselect via session_state
+        ck_all_key = f"sems_all_{source}"
+        ms_key = f"sems_ms_{source}"
+        if st.checkbox("Toutes les semaines", value=True, key=ck_all_key):
+            sems_sel = semaines_int
+            st.caption(f"📅 {len(semaines_int)} semaine(s) : S{min(semaines_int)} → S{max(semaines_int)}")
         else:
-            sems_sel = st.select_slider(
-                "Semaines",
-                options=semaines_dispo,
-                value=(sem_min, sem_max),
-                key=f"sems_{source}"
+            sems_sel = st.multiselect(
+                "Semaines (sélection libre)",
+                options=semaines_int,
+                default=semaines_int,
+                format_func=lambda s: f"S{s}",
+                key=ms_key,
+                placeholder="Choisir une ou plusieurs semaines"
             )
-            if isinstance(sems_sel, (int, float)):
-                sems_sel = (sems_sel, sems_sel)
-            sems_sel = list(range(int(sems_sel[0]), int(sems_sel[1]) + 1))
+            if not sems_sel:
+                sems_sel = semaines_int  # garde-fou : si rien coché, on prend tout
 
     df_filt = df_ann[df_ann['semaine'].isin(sems_sel)].copy()
 
@@ -546,13 +550,24 @@ def afficher_analyse(df, source="fichier", objectif_th=13.0, heures_jour=13.0):
     st.markdown("---")
 
     # ========== ONGLETS ANALYSE ==========
-    t1, t2, t3, t4, t5 = st.tabs([
-        "📈 Vue hebdomadaire",
-        "📅 Vue journalière",
-        "🌱 Par variété",
-        "📦 Par lot",
-        "📋 Tableau détaillé"
-    ])
+    if source == 'pomi':
+        t1, t2, t3, t4, t_prod, t5 = st.tabs([
+            "📈 Vue hebdomadaire",
+            "📅 Vue journalière",
+            "🌱 Par variété",
+            "📦 Par lot",
+            "👨‍🌾 Par producteur",
+            "📋 Tableau détaillé"
+        ])
+    else:
+        t1, t2, t3, t4, t5 = st.tabs([
+            "📈 Vue hebdomadaire",
+            "📅 Vue journalière",
+            "🌱 Par variété",
+            "📦 Par lot",
+            "📋 Tableau détaillé"
+        ])
+        t_prod = None
 
     # ─────────────────────────────────────────
     # TAB 1 : VUE HEBDOMADAIRE
@@ -786,8 +801,15 @@ def afficher_analyse(df, source="fichier", objectif_th=13.0, heures_jour=13.0):
     with t4:
         # Colonne identifiant lot selon la source
         if source == 'pomi':
-            id_col = 'code_lot_interne'
-            label_lot = "Code lot"
+            # Label enrichi : Code lot | Variété | Producteur
+            def _build_lot_label_pomi(r):
+                code = str(r.get('code_lot_interne') or '?')
+                var  = str(r.get('variete') or '-')
+                prod = str(r.get('producteur') or '-')
+                return f"{code} | {var} | {prod}"
+            df_filt['lot_label'] = df_filt.apply(_build_lot_label_pomi, axis=1)
+            id_col = 'lot_label'
+            label_lot = "Lot (Code | Variété | Producteur)"
         else:
             # Dans fichier historique, pas de N° lot fiable → on utilise variete+producteur+date
             if 'producteur' in df_filt.columns:
@@ -798,7 +820,7 @@ def afficher_analyse(df, source="fichier", objectif_th=13.0, heures_jour=13.0):
             label_lot = "Lot (Variété | Producteur | Date)"
 
         lots_dispo = sorted(df_filt[id_col].dropna().unique().tolist())
-        lot_sel = st.selectbox(f"🔍 Sélectionner un lot", lots_dispo, key=f"lot_{source}")
+        lot_sel = st.selectbox(f"🔍 Sélectionner un lot — {label_lot}", lots_dispo, key=f"lot_{source}")
 
         df_lot = df_filt[df_filt[id_col] == lot_sel].copy()
 
@@ -872,6 +894,99 @@ def afficher_analyse(df, source="fichier", objectif_th=13.0, heures_jour=13.0):
                                   margin=dict(l=0,r=0,t=35,b=0),
                                   showlegend=False)
             st.plotly_chart(fig_lot, use_container_width=True)
+
+    # ─────────────────────────────────────────
+    # TAB PAR PRODUCTEUR (POMI uniquement)
+    # ─────────────────────────────────────────
+    if t_prod is not None:
+        with t_prod:
+            if 'producteur' not in df_filt.columns:
+                st.info("Producteur non disponible sur ces données.")
+            else:
+                dfp = df_filt.copy()
+                dfp['producteur'] = dfp['producteur'].fillna('(inconnu)')
+
+                # ─── Récap agrégé par producteur ───
+                st.markdown("#### 👨‍🌾 Récap par producteur")
+                grp = dfp.groupby('producteur')
+                recap_rows = []
+                for prod, g in grp:
+                    pb = g['poids_brut'].sum()
+                    pl = g['poids_lave'].sum()
+                    pd_ = g['poids_dechets'].sum()
+                    pg = g['poids_grenailles'].sum()
+                    pt = g['poids_terre'].sum()
+                    # nb lots distincts (code_lot_interne si dispo, sinon nb lignes)
+                    if 'code_lot_interne' in g.columns:
+                        nb_lots = g['code_lot_interne'].dropna().nunique() or len(g)
+                    else:
+                        nb_lots = len(g)
+                    recap_rows.append({
+                        'Producteur': prod,
+                        'Nb lots': int(nb_lots),
+                        'Poids brut (T)': round(pb / 1000, 2),
+                        'Poids lavé (T)': round(pl / 1000, 2),
+                        'Rendement %': round(safe_pct(pl, pb), 1),
+                        '% Déchets': round(safe_pct(pd_, pb), 1),
+                        '% Grenailles': round(safe_pct(pg, pb), 1),
+                        '% Terre': round(safe_pct(pt, pb), 1),
+                    })
+                df_recap = pd.DataFrame(recap_rows).sort_values('Poids brut (T)', ascending=False)
+
+                st.dataframe(
+                    df_recap,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Rendement %": st.column_config.NumberColumn("Rendement %", format="%.1f%%"),
+                        "% Déchets": st.column_config.NumberColumn("% Déchets", format="%.1f%%"),
+                        "% Grenailles": st.column_config.NumberColumn("% Grenailles", format="%.1f%%"),
+                        "% Terre": st.column_config.NumberColumn("% Terre", format="%.1f%%"),
+                    }
+                )
+
+                # Ligne TOTAL
+                tot_pb = dfp['poids_brut'].sum()
+                tot_pl = dfp['poids_lave'].sum()
+                st.caption(
+                    f"**Total : {len(df_recap)} producteur(s)** | "
+                    f"Brut {tot_pb/1000:.1f} T | Lavé {tot_pl/1000:.1f} T | "
+                    f"Rendement global {safe_pct(tot_pl, tot_pb):.1f}%"
+                )
+
+                st.markdown("---")
+
+                # ─── Détail des lots par producteur (dépliable) ───
+                st.markdown("#### 📦 Détail des lots par producteur")
+                for prod in df_recap['Producteur'].tolist():
+                    g = dfp[dfp['producteur'] == prod].copy()
+                    nb_l = df_recap[df_recap['Producteur'] == prod]['Nb lots'].iloc[0]
+                    pb_p = g['poids_brut'].sum() / 1000
+                    with st.expander(f"👨‍🌾 {prod} — {nb_l} lot(s) — {pb_p:.1f} T brut"):
+                        cols_lot = []
+                        if 'code_lot_interne' in g.columns:
+                            cols_lot.append('code_lot_interne')
+                        cols_lot += ['variete', 'date', 'pallox', 'poids_brut', 'poids_lave',
+                                     'rendement_pct', 'pct_dechets', 'pct_grenailles', 'pct_terre']
+                        cols_lot = [c for c in cols_lot if c in g.columns]
+                        g_disp = g[cols_lot].copy()
+                        # Mise en forme
+                        if 'date' in g_disp.columns:
+                            g_disp['date'] = pd.to_datetime(g_disp['date'], errors='coerce').dt.strftime('%d/%m/%Y')
+                        for c in ['poids_brut', 'poids_lave']:
+                            if c in g_disp.columns:
+                                g_disp[c] = (g_disp[c] / 1000).round(2)
+                        for c in ['rendement_pct', 'pct_dechets', 'pct_grenailles', 'pct_terre']:
+                            if c in g_disp.columns:
+                                g_disp[c] = g_disp[c].round(1)
+                        # Renommage entêtes
+                        g_disp = g_disp.rename(columns={
+                            'code_lot_interne': 'Code lot', 'variete': 'Variété', 'date': 'Date',
+                            'pallox': 'Pallox', 'poids_brut': 'Brut (T)', 'poids_lave': 'Lavé (T)',
+                            'rendement_pct': 'Rdt %', 'pct_dechets': '% Déch',
+                            'pct_grenailles': '% Gren', 'pct_terre': '% Terre'
+                        })
+                        st.dataframe(g_disp, use_container_width=True, hide_index=True)
 
     # ─────────────────────────────────────────
     # TAB 5 : TABLEAU DÉTAILLÉ
