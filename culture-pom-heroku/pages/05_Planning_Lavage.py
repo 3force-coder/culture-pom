@@ -261,6 +261,7 @@ def get_jobs_a_placer(ligne_lavage=None):
                 COALESCE(lj.nb_lots, 1) as nb_lots,
                 COALESCE(p.nom, lj.producteur) as producteur,
                 lj.type_tapis, lj.etiquette_grenailles, lj.etiquette_pallox, lj.calibre_seuil,
+                lj.calibre_min_sortie, lj.calibre_max_sortie,
                 COALESCE(
                     (SELECT json_agg(
                         json_build_object(
@@ -334,6 +335,7 @@ def get_planning_semaine(annee, semaine):
                 lj.date_activation, lj.date_terminaison,
                 lj.temps_estime_heures, lj.statut_source,
                 lj.type_tapis, lj.etiquette_grenailles, lj.etiquette_pallox, lj.calibre_seuil,
+                lj.calibre_min_sortie, lj.calibre_max_sortie,
                 COALESCE(lj.emplacement_id, ljl_first.emplacement_id) as emplacement_id,
                 COALESCE(lj.is_multi_lot, FALSE) as is_multi_lot,
                 COALESCE(lj.nb_lots, 1) as nb_lots,
@@ -2176,23 +2178,27 @@ def get_etiquettes_historiques(type_etiquette):
         return []
 
 
-def _calculer_bornes_calibre(calibre_seuil):
-    """Calcule les 4 bornes calibre_min/max_lave/gren à partir du seuil unique.
+def _calculer_bornes_calibre(calibre_seuil, calibre_min_sortie=None, calibre_max_sortie=None):
+    """Calcule les 4 bornes calibre_min/max_lave/gren à partir du seuil + bornes optionnelles.
 
     Règle métier (validée Julien 2026-05) :
-      - Borne haute fixée à 70
-      - Grenailles : 0 → seuil
-      - Lavé       : seuil → 70
+      - Borne basse grenailles : calibre_min_sortie (défaut 0 si None)
+      - Séparation grenailles/lavé : calibre_seuil
+      - Borne haute lavé : calibre_max_sortie (défaut 70 si None)
+      - Grenailles : min_sortie → seuil
+      - Lavé       : seuil → max_sortie
 
-    Si seuil est None : retourne (None, None, None, None) → comportement legacy
-    (colonnes restent NULL, terminer_job utilise ce qui est saisi à la fin).
+    Si seuil est None : retourne (None, None, None, None) → comportement legacy.
 
     Retourne : (calibre_min_lave, calibre_max_lave, calibre_min_gren, calibre_max_gren)
     """
     if calibre_seuil is None:
         return (None, None, None, None)
     s = int(calibre_seuil)
-    return (s, 70, 0, s)
+    bmin = int(calibre_min_sortie) if calibre_min_sortie is not None else 0
+    bmax = int(calibre_max_sortie) if calibre_max_sortie is not None else 70
+    # Lavé : seuil → max | Grenailles : min → seuil
+    return (s, bmax, bmin, s)
 
 
 # ============================================================
@@ -2439,13 +2445,32 @@ def ui_saisie_infos_metier_lavage(key_prefix):
         # Calibre seuil
         cal_seuil = st.number_input(
             "📏 Calibre seuil (mm) *",
-            min_value=0, max_value=69, value=0, step=1,
+            min_value=0, max_value=200, value=0, step=1,
             key=f"calseuil_{key_prefix}",
-            help="Seuil entre grenailles et lavé. Ex : 35 → grenailles 0-35, lavé 35-70."
+            help="Seuil entre grenailles et lavé. Ex : 35 → grenailles min-35, lavé 35-max."
         )
         calibre_seuil = int(cal_seuil) if cal_seuil > 0 else None
-        if calibre_seuil is not None:
-            st.caption(f"→ Grenailles : 0-{calibre_seuil} mm | Lavé : {calibre_seuil}-70 mm")
+
+    # Bornes min (grenailles) et max (lavé) — saisissables (Q5 défaut 70, Q6 borne basse saisissable)
+    col_bmin, col_bmax = st.columns([1, 1])
+    with col_bmin:
+        cal_min_sortie = st.number_input(
+            "📏 Calibre min grenailles (mm)",
+            min_value=0, max_value=200, value=0, step=1,
+            key=f"calmin_{key_prefix}",
+            help="Borne basse des grenailles (défaut 0)."
+        )
+    with col_bmax:
+        cal_max_sortie = st.number_input(
+            "📏 Calibre max lavé (mm)",
+            min_value=1, max_value=200, value=70, step=1,
+            key=f"calmax_{key_prefix}",
+            help="Borne haute du lavé (défaut 70, modifiable)."
+        )
+    calibre_min_sortie = int(cal_min_sortie)
+    calibre_max_sortie = int(cal_max_sortie)
+    if calibre_seuil is not None:
+        st.caption(f"→ Grenailles : {calibre_min_sortie}-{calibre_seuil} mm | Lavé : {calibre_seuil}-{calibre_max_sortie} mm")
     
     # Étiquette grenailles : selectbox historique + "➕ Nouvelle"
     col_eg, col_ep = st.columns([1, 1])
@@ -2498,17 +2523,25 @@ def ui_saisie_infos_metier_lavage(key_prefix):
         erreurs.append("Étiquette pallox")
     if calibre_seuil is None:
         erreurs.append("Calibre seuil")
-    
+    # Cohérence des bornes : min < seuil < max
+    if calibre_seuil is not None:
+        if calibre_seuil <= calibre_min_sortie:
+            erreurs.append(f"Seuil ({calibre_seuil}) doit être > borne min ({calibre_min_sortie})")
+        if calibre_seuil >= calibre_max_sortie:
+            erreurs.append(f"Seuil ({calibre_seuil}) doit être < borne max ({calibre_max_sortie})")
+
     is_valid = len(erreurs) == 0
-    
+
     if not is_valid:
-        st.caption(f"⚠️ Champ(s) manquant(s) : {', '.join(erreurs)}")
-    
+        st.caption(f"⚠️ Champ(s) manquant(s) ou incohérent(s) : {', '.join(erreurs)}")
+
     return {
         'type_tapis': type_tapis,
         'etiquette_grenailles': etiquette_grenailles,
         'etiquette_pallox': etiquette_pallox,
         'calibre_seuil': calibre_seuil,
+        'calibre_min_sortie': calibre_min_sortie,
+        'calibre_max_sortie': calibre_max_sortie,
         'is_valid': is_valid,
         'erreurs': erreurs,
     }
@@ -2517,7 +2550,8 @@ def ui_saisie_infos_metier_lavage(key_prefix):
 def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg, 
                      date_prevue, ligne_lavage, capacite_th, notes="",
                      type_tapis=None, etiquette_grenailles=None,
-                     etiquette_pallox=None, calibre_seuil=None):
+                     etiquette_pallox=None, calibre_seuil=None,
+                     calibre_min_sortie=None, calibre_max_sortie=None):
     """Crée un nouveau job de lavage MONO-LOT
     
     Schéma multi-lot (Commit 1) :
@@ -2623,15 +2657,18 @@ def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg,
                 lot_id, emplacement_id, code_lot_interne, variete, quantite_pallox, poids_brut_kg,
                 date_prevue, ligne_lavage, capacite_th, temps_estime_heures,
                 statut, statut_source, is_multi_lot, nb_lots, created_by, notes,
-                type_tapis, etiquette_grenailles, etiquette_pallox, calibre_seuil
+                type_tapis, etiquette_grenailles, etiquette_pallox, calibre_seuil,
+                calibre_min_sortie, calibre_max_sortie
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'PRÉVU', %s,
                       FALSE, 1, %s, %s,
-                      %s, %s, %s, %s)
+                      %s, %s, %s, %s,
+                      %s, %s)
             RETURNING id
         """, (lot_id, emplacement_id, lot_info['code_lot_interne'], lot_info['variete'],
               quantite_pallox, poids_brut_kg, date_prevue, ligne_lavage,
               capacite_th, temps_estime, statut_source, created_by, notes,
-              type_tapis, etiquette_grenailles, etiquette_pallox, calibre_seuil))
+              type_tapis, etiquette_grenailles, etiquette_pallox, calibre_seuil,
+              calibre_min_sortie, calibre_max_sortie))
         job_id = int(cursor.fetchone()['id'])
         
         # INSERT lavages_jobs_lots (1 ligne fille)
@@ -2656,7 +2693,8 @@ def create_job_lavage(lot_id, emplacement_id, quantite_pallox, poids_brut_kg,
 
 def create_batch_jobs(lots_selection, date_prevue, ligne_lavage, cadence, notes="",
                      type_tapis=None, etiquette_grenailles=None,
-                     etiquette_pallox=None, calibre_seuil=None):
+                     etiquette_pallox=None, calibre_seuil=None,
+                     calibre_min_sortie=None, calibre_max_sortie=None):
     """
     Crée UN SEUL job multi-lot avec N lignes filles dans lavages_jobs_lots.
     
@@ -2862,14 +2900,16 @@ def create_batch_jobs(lots_selection, date_prevue, ligne_lavage, cadence, notes=
                 date_prevue, ligne_lavage, capacite_th, temps_estime_heures,
                 statut, statut_source, is_multi_lot, nb_lots, batch_id,
                 created_by, notes,
-                type_tapis, etiquette_grenailles, etiquette_pallox, calibre_seuil
+                type_tapis, etiquette_grenailles, etiquette_pallox, calibre_seuil,
+                calibre_min_sortie, calibre_max_sortie
             ) VALUES (
                 NULL, NULL, NULL, %s,
                 %s, %s,
                 %s, %s, %s, %s,
                 'PRÉVU', %s, TRUE, %s, %s,
                 %s, %s,
-                %s, %s, %s, %s
+                %s, %s, %s, %s,
+                %s, %s
             )
             RETURNING id
         """, (variete_batch,
@@ -2877,7 +2917,8 @@ def create_batch_jobs(lots_selection, date_prevue, ligne_lavage, cadence, notes=
               date_prevue, ligne_lavage, capacite_th, temps_estime,
               statut_source_batch, nb_lots, batch_id,
               created_by, notes,
-              type_tapis, etiquette_grenailles, etiquette_pallox, calibre_seuil))
+              type_tapis, etiquette_grenailles, etiquette_pallox, calibre_seuil,
+              calibre_min_sortie, calibre_max_sortie))
         job_id = int(cursor.fetchone()['id'])
         
         # ============================================================
@@ -3070,6 +3111,142 @@ def annuler_job_termine(job_id):
         cursor.close()
         conn.close()
         return True, f"✅ Job annulé - Stock {statut_source} restauré (+{quantite_pallox} pallox)"
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"❌ Erreur : {str(e)}"
+
+
+def corriger_job_termine(job_id):
+    """Rouvre un job TERMINÉ pour correction (admin only).
+
+    Réutilise EXACTEMENT la logique de rollback de annuler_job_termine
+    (suppression stocks créés, restauration stock source, suppression mouvements)
+    MAIS remet le job en EN_COURS au lieu de PRÉVU, en conservant date_activation,
+    afin que l'opérateur puisse re-saisir directement les résultats via le
+    formulaire de terminaison habituel.
+
+    Les colonnes de résultat (poids lavé/gren/déchets, rendement, destination, _reelle)
+    sont remises à NULL pour repartir sur une saisie propre.
+
+    Retourne (ok, message).
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        # Vérifier que le job est TERMINÉ + récupérer infos source
+        cursor.execute("""
+            SELECT statut, lot_id, quantite_pallox, poids_brut_kg, emplacement_id, statut_source,
+                   quantite_pallox_reelle, poids_brut_reel_kg
+            FROM lavages_jobs WHERE id = %s
+        """, (job_id,))
+        result = cursor.fetchone()
+        if not result:
+            return False, "❌ Job introuvable"
+        if result['statut'] != 'TERMINÉ':
+            return False, f"❌ Ce job est {result['statut']}, pas TERMINÉ"
+
+        lot_id = result['lot_id']
+        emplacement_id = result['emplacement_id']
+        statut_source = result['statut_source'] or 'BRUT'
+        # Restaurer le RÉEL si une correction avait été faite, sinon le prévu
+        quantite_a_restaurer = (int(result['quantite_pallox_reelle'])
+                                if result['quantite_pallox_reelle'] else int(result['quantite_pallox']))
+        poids_a_restaurer = (float(result['poids_brut_reel_kg'])
+                             if result['poids_brut_reel_kg'] else float(result['poids_brut_kg']))
+
+        # 1. Supprimer les stocks créés par ce job
+        cursor.execute("""
+            DELETE FROM stock_emplacements 
+            WHERE lavage_job_id = %s AND statut_lavage IN ('LAVÉ', 'GRENAILLES', 'GRENAILLES_BRUTES', 'GRENAILLES_LAVÉES')
+        """, (job_id,))
+
+        # 2. Restaurer le stock source (mono-lot via emplacement_id, sinon par lot)
+        # Pour les multi-lot, on restaure chaque emplacement source via les lots fille
+        cursor.execute("""
+            SELECT id, emplacement_id, quantite_pallox, poids_brut_kg,
+                   quantite_pallox_reelle, poids_brut_reel_kg
+            FROM lavages_jobs_lots WHERE job_id = %s
+        """, (job_id,))
+        lots_fille = cursor.fetchall()
+
+        if lots_fille:
+            # Multi-lot ou mono avec table fille : restaurer chaque emplacement source
+            for lf in lots_fille:
+                lf_emp = lf['emplacement_id']
+                lf_qty = (int(lf['quantite_pallox_reelle']) if lf['quantite_pallox_reelle']
+                          else int(lf['quantite_pallox']))
+                lf_poids = (float(lf['poids_brut_reel_kg']) if lf['poids_brut_reel_kg']
+                            else float(lf['poids_brut_kg']))
+                if lf_emp:
+                    cursor.execute("""
+                        SELECT id, nombre_unites, poids_total_kg FROM stock_emplacements WHERE id = %s
+                    """, (lf_emp,))
+                    ss = cursor.fetchone()
+                    if ss:
+                        cursor.execute("""
+                            UPDATE stock_emplacements
+                            SET nombre_unites = %s, poids_total_kg = %s, is_active = TRUE
+                            WHERE id = %s
+                        """, (int(ss['nombre_unites']) + lf_qty,
+                              float(ss['poids_total_kg']) + lf_poids, lf_emp))
+        else:
+            # Fallback legacy : restaurer via emplacement_id du parent ou lot_id
+            if emplacement_id:
+                cursor.execute("""
+                    SELECT id, nombre_unites, poids_total_kg FROM stock_emplacements WHERE id = %s
+                """, (emplacement_id,))
+            else:
+                cursor.execute("""
+                    SELECT id, nombre_unites, poids_total_kg FROM stock_emplacements
+                    WHERE lot_id = %s AND (statut_lavage = %s OR statut_lavage IS NULL)
+                    ORDER BY id LIMIT 1
+                """, (lot_id, statut_source))
+            ss = cursor.fetchone()
+            if ss:
+                cursor.execute("""
+                    UPDATE stock_emplacements
+                    SET nombre_unites = %s, poids_total_kg = %s, is_active = TRUE
+                    WHERE id = %s
+                """, (int(ss['nombre_unites']) + quantite_a_restaurer,
+                      float(ss['poids_total_kg']) + poids_a_restaurer, ss['id']))
+
+        # 3. Supprimer les mouvements de stock liés
+        cursor.execute("DELETE FROM stock_mouvements WHERE notes LIKE %s", (f"Job #{job_id}%",))
+
+        # 4. Remettre le job EN_COURS (conserve date_activation), reset des résultats
+        cursor.execute("""
+            UPDATE lavages_jobs
+            SET statut = 'EN_COURS',
+                date_terminaison = NULL,
+                terminated_by = NULL,
+                poids_lave_net_kg = NULL,
+                poids_grenailles_kg = NULL,
+                poids_dechets_kg = NULL,
+                poids_terre_calcule_kg = NULL,
+                tare_reelle_pct = NULL,
+                rendement_pct = NULL,
+                site_destination = NULL,
+                emplacement_destination = NULL,
+                quantite_pallox_reelle = NULL,
+                poids_brut_reel_kg = NULL,
+                date_activation = COALESCE(date_activation, CURRENT_TIMESTAMP)
+            WHERE id = %s
+        """, (job_id,))
+
+        # Reset des colonnes _reelle sur les lots fille
+        cursor.execute("""
+            UPDATE lavages_jobs_lots
+            SET quantite_pallox_reelle = NULL, poids_brut_reel_kg = NULL
+            WHERE job_id = %s
+        """, (job_id,))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, (f"✅ Job #{job_id} rouvert pour correction — stock source restauré. "
+                      f"Il est repassé EN_COURS : re-saisis les résultats puis valide la terminaison.")
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
@@ -3498,12 +3675,15 @@ with tab1:
         etiq_gren_c = elem.get('etiquette_grenailles') if pd.notna(elem.get('etiquette_grenailles')) else None
         etiq_pal_c = elem.get('etiquette_pallox') if pd.notna(elem.get('etiquette_pallox')) else None
         cal_seuil_c = elem.get('calibre_seuil') if pd.notna(elem.get('calibre_seuil')) else None
+        # Bornes paramétrables (défaut 0 / 70 si non saisies à la création)
+        cal_min_c = int(elem.get('calibre_min_sortie')) if pd.notna(elem.get('calibre_min_sortie')) else 0
+        cal_max_c = int(elem.get('calibre_max_sortie')) if pd.notna(elem.get('calibre_max_sortie')) else 70
         if any([type_tapis_c, etiq_gren_c, etiq_pal_c, cal_seuil_c]):
             parts = []
             if type_tapis_c:
                 parts.append(f"🎢 Tapis: **{type_tapis_c}**")
             if cal_seuil_c is not None:
-                parts.append(f"📏 Gren 0-{int(cal_seuil_c)} mm / Lavé {int(cal_seuil_c)}-70 mm")
+                parts.append(f"📏 Gren {cal_min_c}-{int(cal_seuil_c)} mm / Lavé {int(cal_seuil_c)}-{cal_max_c} mm")
             if etiq_gren_c:
                 parts.append(f"🏷️ Étiq gren: **{etiq_gren_c}**")
             if etiq_pal_c:
@@ -3884,7 +4064,7 @@ with tab1:
             # Si calibre_seuil saisi à la création, on impose les bornes (read-only Q6)
             if cal_seuil_c is not None:
                 cal_min_lave = int(cal_seuil_c)
-                cal_max_lave = 70
+                cal_max_lave = cal_max_c
                 with col_cal1:
                     st.number_input("Calibre min (mm)", 0, 100, cal_min_lave,
                         key=f"cal_min_lave_full_{job_en_terminaison}", disabled=True,
@@ -3961,7 +4141,7 @@ with tab1:
                 col_cal1_g, col_cal2_g = st.columns(2)
                 # Si calibre_seuil saisi à la création, on impose les bornes (read-only Q6)
                 if cal_seuil_c is not None:
-                    cal_min_gren = 0
+                    cal_min_gren = cal_min_c
                     cal_max_gren = int(cal_seuil_c)
                     with col_cal1_g:
                         st.number_input("Calibre min (mm)", 0, 100, cal_min_gren,
@@ -3982,7 +4162,7 @@ with tab1:
                 p_gren = 0.0
                 # Si calibre_seuil saisi à la création, on prend ses bornes même si pas de grenailles
                 if cal_seuil_c is not None:
-                    cal_min_gren = 0
+                    cal_min_gren = cal_min_c
                     cal_max_gren = int(cal_seuil_c)
                 else:
                     cal_min_gren = 20
@@ -4711,7 +4891,9 @@ with tab1:
                                 if pd.notna(elem.get('type_tapis')) and elem.get('type_tapis'):
                                     infos_metier_parts.append(f"🎢 {elem['type_tapis']}")
                                 if pd.notna(elem.get('calibre_seuil')) and elem.get('calibre_seuil'):
-                                    infos_metier_parts.append(f"📏 0-{int(elem['calibre_seuil'])}/{int(elem['calibre_seuil'])}-70")
+                                    _cmin = int(elem['calibre_min_sortie']) if pd.notna(elem.get('calibre_min_sortie')) else 0
+                                    _cmax = int(elem['calibre_max_sortie']) if pd.notna(elem.get('calibre_max_sortie')) else 70
+                                    infos_metier_parts.append(f"📏 {_cmin}-{int(elem['calibre_seuil'])}/{int(elem['calibre_seuil'])}-{_cmax}")
                                 if pd.notna(elem.get('etiquette_grenailles')) and elem.get('etiquette_grenailles'):
                                     infos_metier_parts.append(f"🏷️G:{elem['etiquette_grenailles']}")
                                 if pd.notna(elem.get('etiquette_pallox')) and elem.get('etiquette_pallox'):
@@ -4737,7 +4919,9 @@ with tab1:
                                     tooltip_parts.append(f"🎢 Tapis : {elem['type_tapis']}")
                                 if pd.notna(elem.get('calibre_seuil')) and elem.get('calibre_seuil'):
                                     cs_t = int(elem['calibre_seuil'])
-                                    tooltip_parts.append(f"📏 Calibres : Gren 0-{cs_t}mm / Lavé {cs_t}-70mm")
+                                    _cmin_t = int(elem['calibre_min_sortie']) if pd.notna(elem.get('calibre_min_sortie')) else 0
+                                    _cmax_t = int(elem['calibre_max_sortie']) if pd.notna(elem.get('calibre_max_sortie')) else 70
+                                    tooltip_parts.append(f"📏 Calibres : Gren {_cmin_t}-{cs_t}mm / Lavé {cs_t}-{_cmax_t}mm")
                                 if pd.notna(elem.get('etiquette_grenailles')) and elem.get('etiquette_grenailles'):
                                     tooltip_parts.append(f"🏷️ Étiq grenailles : {elem['etiquette_grenailles']}")
                                 if pd.notna(elem.get('etiquette_pallox')) and elem.get('etiquette_pallox'):
@@ -4896,6 +5080,18 @@ with tab1:
                                         ecart = temps_reel - temps_prevu
                                         color = "temps-ok" if ecart <= 0 else "temps-warning" if ecart < 15 else "temps-bad"
                                         st.markdown(f"<small class='{color}'>Prévu: {temps_prevu:.0f}' | Réel: {temps_reel:.0f}'</small>", unsafe_allow_html=True)
+                                    # Bouton correction (admin only) : rouvre le job EN_COURS
+                                    if is_admin():
+                                        if st.button("✏️ Corriger", key=f"corr_card_{elem['id']}",
+                                                     use_container_width=True,
+                                                     help="Rouvre le job pour re-saisie (restaure le stock)"):
+                                            ok_c, msg_c = corriger_job_termine(int(elem['job_id']))
+                                            if ok_c:
+                                                st.session_state[f'show_finish_{int(elem["job_id"])}'] = True
+                                                st.toast("Job rouvert pour correction", icon="✅")
+                                                st.rerun()
+                                            else:
+                                                st.error(msg_c)
                             else:
                                 # Temps custom
                                 st.markdown(f"""<div class="planned-custom">
@@ -5333,6 +5529,8 @@ with tab3:
                                 etiquette_grenailles=infos_metier['etiquette_grenailles'],
                                 etiquette_pallox=infos_metier['etiquette_pallox'],
                                 calibre_seuil=infos_metier['calibre_seuil'],
+                                calibre_min_sortie=infos_metier.get('calibre_min_sortie'),
+                                calibre_max_sortie=infos_metier.get('calibre_max_sortie'),
                             )
                             if success:
                                 st.success(message)
@@ -5656,6 +5854,8 @@ with tab3:
                                     etiquette_grenailles=infos_metier_t2['etiquette_grenailles'],
                                     etiquette_pallox=infos_metier_t2['etiquette_pallox'],
                                     calibre_seuil=infos_metier_t2['calibre_seuil'],
+                                    calibre_min_sortie=infos_metier_t2.get('calibre_min_sortie'),
+                                    calibre_max_sortie=infos_metier_t2.get('calibre_max_sortie'),
                                 )
                                 if ok_b:
                                     st.success(msg_b)
@@ -5675,6 +5875,8 @@ with tab3:
                                     etiquette_grenailles=infos_metier_t2['etiquette_grenailles'],
                                     etiquette_pallox=infos_metier_t2['etiquette_pallox'],
                                     calibre_seuil=infos_metier_t2['calibre_seuil'],
+                                    calibre_min_sortie=infos_metier_t2.get('calibre_min_sortie'),
+                                    calibre_max_sortie=infos_metier_t2.get('calibre_max_sortie'),
                                 )
                                 if ok_s:
                                     st.success(msg_s)
@@ -5776,6 +5978,8 @@ with tab4:
                     lj.etiquette_grenailles,
                     lj.etiquette_pallox,
                     lj.calibre_seuil,
+                    lj.calibre_min_sortie,
+                    lj.calibre_max_sortie,
                     -- Producteur (BDD via lots_bruts en mono, sinon 1er lot fille en multi)
                     COALESCE(p.nom, ljl_first.producteur, lj.producteur) as producteur,
                     se.site_stockage as empl_site,
@@ -5827,7 +6031,7 @@ with tab4:
                     lj.poids_brut_kg, lj.capacite_th, lj.statut, lj.notes,
                     lj.is_multi_lot, lj.nb_lots,
                     lj.type_tapis, lj.etiquette_grenailles, lj.etiquette_pallox,
-                    lj.calibre_seuil, lj.producteur,
+                    lj.calibre_seuil, lj.calibre_min_sortie, lj.calibre_max_sortie, lj.producteur,
                     p.nom, ljl_first.producteur, ljl_first.type_conditionnement,
                     se.site_stockage, se.emplacement_stockage,
                     ltc.libelle, ltc.emoji
@@ -5958,6 +6162,8 @@ with tab4:
                             cadence_v = el.get('cadence')
                             type_tapis_v = el.get('type_tapis')
                             cal_seuil_v = el.get('calibre_seuil')
+                            cal_min_v = el.get('calibre_min_sortie')
+                            cal_max_v = el.get('calibre_max_sortie')
                             etiq_g_v = el.get('etiquette_grenailles')
                             etiq_p_v = el.get('etiquette_pallox')
                             type_cond_v = el.get('type_conditionnement')
@@ -5975,7 +6181,9 @@ with tab4:
                             if type_tapis_v:
                                 detail_parts.append(f"<span class='dt'>🎢 Tapis :</span> <strong>{_esc(type_tapis_v)}</strong>")
                             if cal_seuil_v is not None:
-                                detail_parts.append(f"<span class='dt'>📏 Cal. :</span> Gren 0-{int(cal_seuil_v)} / Lavé {int(cal_seuil_v)}-70")
+                                _cmin_v = int(cal_min_v) if cal_min_v is not None else 0
+                                _cmax_v = int(cal_max_v) if cal_max_v is not None else 70
+                                detail_parts.append(f"<span class='dt'>📏 Cal. :</span> Gren {_cmin_v}-{int(cal_seuil_v)} / Lavé {int(cal_seuil_v)}-{_cmax_v}")
                             if etiq_g_v:
                                 detail_parts.append(f"<span class='dt'>🏷️ Étiq. gren :</span> {_esc(etiq_g_v)}")
                             if etiq_p_v:
@@ -6309,10 +6517,21 @@ with tab5:
                     
                     if jobs_termines:
                         for job in jobs_termines:
-                            col_info, col_btn = st.columns([4, 1])
+                            col_info, col_corr, col_btn = st.columns([4, 1, 1])
                             with col_info:
                                 rend = f"{job['rendement_pct']:.1f}%" if job['rendement_pct'] else "N/A"
                                 st.markdown(f"**Job #{job['id']}** - {job['code_lot_interne']} - Rend: {rend}")
+                            with col_corr:
+                                if st.button("✏️", key=f"corr_job_{job['id']}",
+                                             help="Corriger (rouvre le job EN_COURS pour re-saisie)"):
+                                    success, msg = corriger_job_termine(job['id'])
+                                    if success:
+                                        st.success(msg)
+                                        # Ouvre directement le formulaire de terminaison du job rouvert
+                                        st.session_state[f'show_finish_{int(job["id"])}'] = True
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
                             with col_btn:
                                 if st.button("↩️", key=f"cancel_job_{job['id']}", help="Annuler"):
                                     success, msg = annuler_job_termine(job['id'])
