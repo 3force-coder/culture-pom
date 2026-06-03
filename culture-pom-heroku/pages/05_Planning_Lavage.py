@@ -1724,11 +1724,12 @@ def terminer_job(job_id,
                 """, (lf_emp_id,))
             else:
                 # Fallback : chercher via lot_id (anciens jobs sans emplacement_id)
+                # Inclut les statuts lavés pour supporter le relavage (2e passage)
                 cursor.execute("""
                     SELECT id, nombre_unites, poids_total_kg, site_stockage, emplacement_stockage, statut_lavage
                     FROM stock_emplacements
                     WHERE lot_id = %s
-                      AND statut_lavage IN ('BRUT', 'GRENAILLES_BRUTES')
+                      AND statut_lavage IN ('BRUT', 'GRENAILLES_BRUTES', 'LAVÉ', 'GRENAILLES_LAVÉES')
                     ORDER BY is_active DESC, id
                     LIMIT 1
                 """, (lf_lot_id,))
@@ -1928,6 +1929,79 @@ def get_lots_bruts_disponibles():
         return pd.DataFrame()
     except Exception as e:
         st.error(f"❌ Erreur get_lots_bruts_disponibles : {str(e)}")
+        return pd.DataFrame()
+
+
+def get_lots_laves_disponibles():
+    """Récupère les emplacements de lots DÉJÀ LAVÉS, disponibles pour un relavage (2e passage).
+
+    Même logique que get_lots_bruts_disponibles mais filtre sur les statuts lavés :
+      - LAVÉ
+      - GRENAILLES_LAVÉES
+    Réservations calculées par emplacement (jobs PRÉVU/EN_COURS).
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                l.id as lot_id, 
+                l.code_lot_interne, 
+                l.nom_usage,
+                l.code_producteur,
+                COALESCE(p.nom, l.code_producteur) as producteur,
+                l.calibre_min, 
+                l.calibre_max,
+                COALESCE(v.nom_variete, l.code_variete) as variete,
+                se.id as emplacement_id, 
+                se.site_stockage, 
+                se.emplacement_stockage,
+                se.statut_lavage,
+                se.nombre_unites as stock_total,
+                COALESCE(jobs_reserves.pallox_reserves, 0) as pallox_reserves,
+                se.nombre_unites - COALESCE(jobs_reserves.pallox_reserves, 0) as nombre_unites,
+                se.poids_total_kg - COALESCE(jobs_reserves.poids_reserve, 0) as poids_total_kg,
+                se.type_conditionnement,
+                STRING_AGG(DISTINCT pc.marque || ' ' || pc.libelle, ', ') as produits_affectes
+            FROM lots_bruts l
+            JOIN stock_emplacements se ON l.id = se.lot_id
+            LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
+            LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
+            LEFT JOIN previsions_affectations pa ON pa.lot_id = l.id
+                AND pa.is_active = TRUE AND pa.statut_stock = 'LAVÉ'
+            LEFT JOIN ref_produits_commerciaux pc ON pa.code_produit_commercial = pc.code_produit
+            LEFT JOIN (
+                SELECT emplacement_id,
+                       SUM(quantite_pallox) as pallox_reserves,
+                       SUM(poids_brut_kg) as poids_reserve
+                FROM lavages_jobs
+                WHERE statut IN ('PRÉVU', 'EN_COURS')
+                  AND emplacement_id IS NOT NULL
+                GROUP BY emplacement_id
+            ) jobs_reserves ON se.id = jobs_reserves.emplacement_id
+            WHERE l.is_active = TRUE
+              AND se.is_active = TRUE 
+              AND se.statut_lavage IN ('LAVÉ', 'GRENAILLES_LAVÉES')
+              AND (se.nombre_unites - COALESCE(jobs_reserves.pallox_reserves, 0)) > 0
+            GROUP BY l.id, l.code_lot_interne, l.nom_usage, l.code_producteur,
+                p.nom, l.calibre_min, l.calibre_max, v.nom_variete, l.code_variete,
+                se.id, se.site_stockage, se.emplacement_stockage, se.statut_lavage,
+                se.nombre_unites, jobs_reserves.pallox_reserves,
+                se.poids_total_kg, jobs_reserves.poids_reserve, se.type_conditionnement
+            ORDER BY l.code_lot_interne, se.site_stockage, se.emplacement_stockage
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        if rows:
+            df = pd.DataFrame([dict(r) for r in rows])
+            for col in ['nombre_unites', 'poids_total_kg', 'calibre_min', 'calibre_max', 'stock_total', 'pallox_reserves']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            return df
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"❌ Erreur get_lots_laves_disponibles : {str(e)}")
         return pd.DataFrame()
 
 
@@ -4587,7 +4661,9 @@ with tab1:
         else:
             for _, job in jobs_non_planifies.iterrows():
                 statut_source = job.get('statut_source', 'BRUT')
-                badge_source = "🔄" if statut_source == 'GRENAILLES_BRUTES' else "🥔"
+                badge_source = ("🔄" if statut_source == 'GRENAILLES_BRUTES'
+                                else "♻️" if statut_source in ('LAVÉ', 'GRENAILLES_LAVÉES')
+                                else "🥔")
                 
                 # Détection multi-lot (Commit 1+2)
                 is_multi = bool(job.get('is_multi_lot', False))
@@ -4862,7 +4938,9 @@ with tab1:
                                 
                                 # Badge source BRUT vs GRENAILLES
                                 statut_source = elem.get('statut_source', 'BRUT')
-                                badge_source = " 🔄" if statut_source == 'GRENAILLES_BRUTES' else " 🥔"
+                                badge_source = (" 🔄" if statut_source == 'GRENAILLES_BRUTES'
+                                                else " ♻️" if statut_source in ('LAVÉ', 'GRENAILLES_LAVÉES')
+                                                else " 🥔")
                                 
                                 # Producteur
                                 producteur = elem.get('producteur') or ''
@@ -5197,8 +5275,12 @@ with tab2:
 with tab3:
     st.subheader("➕ Créer un Job de Lavage")
     
-    # Deux sous-onglets : Besoins basés sur affectations VS Tous les lots BRUT
-    create_tab1, create_tab2 = st.tabs(["📊 Besoins Affectations", "📋 Tous les lots BRUT"])
+    # Trois sous-onglets : Besoins affectations | Lots BRUT | Relavage (lots lavés)
+    create_tab1, create_tab2, create_tab3 = st.tabs([
+        "📊 Besoins Affectations",
+        "📋 Tous les lots BRUT",
+        "♻️ Relavage (lots lavés)"
+    ])
     
     # ============================================================
     # SOUS-ONGLET 1 : BESOINS BASÉS SUR AFFECTATIONS
@@ -5892,6 +5974,352 @@ with tab3:
                 st.warning("Aucun lot avec ces filtres")
         else:
             st.warning("Aucun lot BRUT disponible")
+
+
+    with create_tab3:
+        st.markdown("*Relavage : lots DÉJÀ LAVÉS, pour un second passage — sélection simple ou multi-lot*")
+        
+        lots_dispo = get_lots_laves_disponibles()
+        
+        if not lots_dispo.empty:
+            # ── FILTRES ──────────────────────────────────────────
+            st.markdown("#### 🔍 Filtres")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                varietes = ["Toutes"] + sorted(lots_dispo['variete'].dropna().unique().tolist())
+                f_var = st.selectbox("Variété", varietes, key="f_var_relav")
+            with col2:
+                producteurs = ["Tous"] + sorted(lots_dispo['producteur'].dropna().unique().tolist())
+                f_prod = st.selectbox("Producteur", producteurs, key="f_prod_relav")
+            with col3:
+                sites = ["Tous"] + sorted(lots_dispo['site_stockage'].dropna().unique().tolist())
+                f_site = st.selectbox("Site", sites, key="f_site_relav")
+
+            col4, col5, col6 = st.columns(3)
+            with col4:
+                # Filtre type : BRUT / GRENAILLES / Tous
+                type_opts = ["Tous", "🔵 BRUT uniquement", "🟠 GRENAILLES uniquement"]
+                f_type = st.selectbox("Type stock", type_opts, key="f_type_relav")
+            with col5:
+                # Filtre calibre min/max
+                cal_min_vals = lots_dispo['calibre_min'].dropna()
+                cal_max_vals = lots_dispo['calibre_max'].dropna()
+                if not cal_min_vals.empty and not cal_max_vals.empty:
+                    cal_global_min = int(cal_min_vals.min())
+                    cal_global_max = int(cal_max_vals.max())
+                    f_cal = st.slider("Calibre (mm)", cal_global_min, cal_global_max,
+                                      (cal_global_min, cal_global_max), key="f_cal_relav")
+                else:
+                    f_cal = None
+            with col6:
+                # Filtre produit commercial affecté
+                produits_dispo = set()
+                for p in lots_dispo['produits_affectes'].dropna():
+                    for pp in str(p).split(','):
+                        pp = pp.strip()
+                        if pp:
+                            produits_dispo.add(pp)
+                produits_opts = sorted(produits_dispo)
+                f_produit = st.multiselect("Produit affecté", produits_opts,
+                                           key="f_produit_relav",
+                                           placeholder="Tous les produits...")
+
+            lots_f = lots_dispo.copy()
+            if f_var != "Toutes":
+                lots_f = lots_f[lots_f['variete'] == f_var]
+            if f_prod != "Tous":
+                lots_f = lots_f[lots_f['producteur'] == f_prod]
+            if f_site != "Tous":
+                lots_f = lots_f[lots_f['site_stockage'] == f_site]
+            if f_type == "🔵 BRUT uniquement":
+                lots_f = lots_f[lots_f['statut_lavage'] == 'BRUT']
+            elif f_type == "🟠 GRENAILLES uniquement":
+                lots_f = lots_f[lots_f['statut_lavage'] == 'GRENAILLES_BRUTES']
+            if f_cal:
+                cal_lo, cal_hi = f_cal
+                lots_f = lots_f[
+                    (lots_f['calibre_min'].fillna(0) <= cal_hi) &
+                    (lots_f['calibre_max'].fillna(999) >= cal_lo)
+                ]
+            if f_produit:
+                mask_prod = lots_f['produits_affectes'].apply(
+                    lambda x: any(p in str(x) for p in f_produit) if pd.notna(x) else False)
+                lots_f = lots_f[mask_prod]
+            
+            st.markdown("---")
+            
+            if not lots_f.empty:
+                st.markdown(f"**{len(lots_f)} emplacement(s)** — Sélection simple ou **multi-lignes** pour batch")
+                st.caption("🔵 BRUT | 🟠 GRENAILLES_BRUTES — Ctrl+clic ou Shift+clic pour sélection multiple")
+
+                POIDS_UNIT_MAP = {'Pallox': 1900, 'Petit Pallox': 800, 'Big Bag': 1600}
+
+                df_display = lots_f[[
+                    'lot_id', 'emplacement_id', 'code_lot_interne', 'nom_usage',
+                    'producteur', 'variete', 'calibre_min', 'calibre_max',
+                    'statut_lavage', 'site_stockage', 'emplacement_stockage',
+                    'stock_total', 'pallox_reserves', 'nombre_unites',
+                    'poids_total_kg', 'type_conditionnement', 'produits_affectes'
+                ]].copy()
+
+                df_display['Cal.'] = df_display.apply(
+                    lambda r: f"{int(r['calibre_min'])}-{int(r['calibre_max'])}"
+                    if pd.notna(r['calibre_min']) and pd.notna(r['calibre_max']) else "-", axis=1)
+                df_display['statut_lavage'] = df_display['statut_lavage'].apply(
+                    lambda x: '🔵 BRUT' if x == 'BRUT' else ('🟠 GREN' if x == 'GRENAILLES_BRUTES' else x))
+                df_display['produits_affectes'] = df_display['produits_affectes'].apply(
+                    lambda x: str(x)[:30] + '..' if pd.notna(x) and len(str(x)) > 32 else (x if pd.notna(x) else '—'))
+                df_display['producteur'] = df_display['producteur'].apply(
+                    lambda x: (str(x)[:14] + '..') if pd.notna(x) and len(str(x)) > 16 else x)
+
+                df_display = df_display.rename(columns={
+                    'code_lot_interne': 'Code Lot', 'nom_usage': 'Nom Lot',
+                    'producteur': 'Producteur', 'variete': 'Variété',
+                    'statut_lavage': 'Type', 'site_stockage': 'Site',
+                    'emplacement_stockage': 'Empl.',
+                    'stock_total': 'Stock', 'pallox_reserves': 'Rés.',
+                    'nombre_unites': 'Dispo', 'poids_total_kg': 'Poids (kg)',
+                    'produits_affectes': 'Produit affecté'
+                }).reset_index(drop=True)
+
+                column_config_t2 = {
+                    "lot_id": None, "emplacement_id": None,
+                    "calibre_min": None, "calibre_max": None,
+                    "type_conditionnement": None,
+                    "Code Lot": st.column_config.TextColumn("Code Lot", width="small"),
+                    "Nom Lot": st.column_config.TextColumn("Nom", width="medium"),
+                    "Producteur": st.column_config.TextColumn("Producteur", width="small"),
+                    "Variété": st.column_config.TextColumn("Variété", width="small"),
+                    "Cal.": st.column_config.TextColumn("Cal.(mm)", width="small"),
+                    "Type": st.column_config.TextColumn("Type", width="small"),
+                    "Site": st.column_config.TextColumn("Site", width="small"),
+                    "Empl.": st.column_config.TextColumn("Empl.", width="small"),
+                    "Stock": st.column_config.NumberColumn("Stock", format="%d"),
+                    "Rés.": st.column_config.NumberColumn("Rés.", format="%d"),
+                    "Dispo": st.column_config.NumberColumn("Dispo", format="%d"),
+                    "Poids (kg)": st.column_config.NumberColumn("Poids kg", format="%.0f"),
+                    "Produit affecté": st.column_config.TextColumn("Produit affecté", width="medium"),
+                }
+
+                event_t2 = st.dataframe(
+                    df_display, column_config=column_config_t2,
+                    use_container_width=True, hide_index=True,
+                    on_select="rerun", selection_mode="multi-row",
+                    key="lots_relav"
+                )
+
+                selected_rows = event_t2.selection.rows if hasattr(event_t2, 'selection') else []
+
+                if selected_rows:
+                    st.markdown("---")
+                    is_batch = len(selected_rows) > 1
+
+                    # Récupérer les données de chaque ligne sélectionnée
+                    lots_sel_data = []
+                    for idx in selected_rows:
+                        row_d = df_display.iloc[idx]
+                        raw = lots_dispo[
+                            (lots_dispo['lot_id'] == row_d['lot_id']) &
+                            (lots_dispo['emplacement_id'] == row_d['emplacement_id'])
+                        ]
+                        if not raw.empty:
+                            lots_sel_data.append(raw.iloc[0])
+
+                    if not lots_sel_data:
+                        st.warning("Aucune donnée récupérée")
+                    else:
+                        # ── Récap sélection ──
+                        if is_batch:
+                            st.info(f"📦 **{len(lots_sel_data)} lots sélectionnés** — Création d'un job batch")
+                            recap_rows = []
+                            for ld in lots_sel_data:
+                                dispo_l = int(ld['nombre_unites'])
+                                recap_rows.append({
+                                    'Code Lot': ld['code_lot_interne'],
+                                    'Variété': ld['variete'],
+                                    'Calibre': f"{int(ld['calibre_min']) if pd.notna(ld['calibre_min']) else '?'}-{int(ld['calibre_max']) if pd.notna(ld['calibre_max']) else '?'}",
+                                    'Dispo': dispo_l,
+                                    'Poids dispo (T)': round(float(ld['poids_total_kg']) / 1000, 1),
+                                })
+                            st.dataframe(pd.DataFrame(recap_rows), hide_index=True, use_container_width=True)
+                        else:
+                            ld = lots_sel_data[0]
+                            reserves = int(ld['pallox_reserves']) if pd.notna(ld['pallox_reserves']) else 0
+                            dispo_s = int(ld['nombre_unites'])
+                            type_emoji = '🔵' if ld['statut_lavage'] == 'BRUT' else '🟠'
+                            if reserves > 0:
+                                st.warning(f"⚠️ {type_emoji} **{ld['code_lot_interne']}** | {int(ld['stock_total'])} total, {reserves} réservés, **{dispo_s} dispo**")
+                            else:
+                                st.success(f"✅ {type_emoji} **{ld['code_lot_interne']}** — {ld['variete']} | **{dispo_s} pallox disponibles**")
+
+                        # ── Paramètres communs ──
+                        col_p1, col_p2 = st.columns(2)
+                        with col_p1:
+                            date_prevue_t2 = st.date_input("Date prévue", datetime.now().date(), key="date_create_relav2")
+                        with col_p2:
+                            lignes_t2 = get_lignes_lavage()
+                            ligne_opts_t2 = [f"{l['code']} ({l['capacite_th']} T/h)" for l in lignes_t2]
+                            ligne_sel_t2 = st.selectbox("Ligne de lavage", ligne_opts_t2, key="ligne_create_relav2")
+                            ligne_idx_t2 = ligne_opts_t2.index(ligne_sel_t2)
+                            cap_ligne_t2 = float(lignes_t2[ligne_idx_t2]['capacite_th'])
+
+                        cadence_t2 = st.number_input(
+                            "⚡ Cadence (T/h)",
+                            min_value=0.5, max_value=25.0,
+                            value=float(cap_ligne_t2), step=0.5, key="cadence_create_relav2",
+                            help=f"Capacité nominale ligne : {cap_ligne_t2} T/h. Max autorisé : 25 T/h.")
+
+                        notes_t2 = st.text_input("Notes (optionnel)", key="notes_create_relav2")
+
+                        # ── Saisie quantités par lot ──
+                        if is_batch:
+                            st.markdown("##### 📦 Quantités par lot")
+                        qtys = {}
+                        TYPES_COND_BATCH = ["Pallox", "Petit Pallox", "Big Bag"]
+                        for ld in lots_sel_data:
+                            dispo_l = int(ld['nombre_unites'])
+                            type_cond_bdd = str(ld.get('type_conditionnement', '')) or 'Pallox'
+                            if is_batch:
+                                # Label enrichi : code_lot — variété — producteur — site/empl
+                                prod_l = str(ld.get('producteur', '') or '')
+                                site_l = str(ld.get('site_stockage', '') or '')
+                                empl_l = str(ld.get('emplacement_stockage', '') or '')
+                                loc_str = ""
+                                if site_l or empl_l:
+                                    loc_str = f" — 📍 {site_l}/{empl_l}".rstrip('/')
+                                prod_str = f" — 👤 {prod_l}" if prod_l else ""
+                                
+                                st.markdown(
+                                    f"**{ld['code_lot_interne']}** — {ld['variete']}"
+                                    f"{prod_str}{loc_str}"
+                                )
+                                col_q1, col_q2, col_q3 = st.columns([1.5, 1, 1])
+                                with col_q1:
+                                    # Selectbox type_conditionnement, pré-sélectionné sur valeur BDD
+                                    default_idx = TYPES_COND_BATCH.index(type_cond_bdd) if type_cond_bdd in TYPES_COND_BATCH else 0
+                                    type_cond_l = st.selectbox(
+                                        "Type cond.",
+                                        TYPES_COND_BATCH,
+                                        index=default_idx,
+                                        key=f"type_batch_{ld['lot_id']}_{ld['emplacement_id']}"
+                                    )
+                                with col_q2:
+                                    # poids unit dépend du type cond sélectionné (peut changer si user override)
+                                    poids_unit_l = POIDS_UNIT_MAP.get(type_cond_l, 1900)
+                                    qty_l = st.number_input(
+                                        "Pallox", 1, dispo_l,
+                                        min(dispo_l, max(1, dispo_l)),
+                                        key=f"qty_batch_{ld['lot_id']}_{ld['emplacement_id']}")
+                                with col_q3:
+                                    poids_l = qty_l * poids_unit_l
+                                    st.metric("Poids", f"{poids_l/1000:.1f} T")
+                                qtys[ld['lot_id']] = (qty_l, poids_l, ld, type_cond_l)
+                                st.markdown("<hr style='margin:0.3rem 0;border:none;border-top:1px solid #eee;'>", unsafe_allow_html=True)
+                            else:
+                                # MONO-LOT inchangé
+                                poids_unit_l = POIDS_UNIT_MAP.get(type_cond_bdd, 1900)
+                                # number_input + bouton "Tout" via callback (pas de st.rerun manuel)
+                                qty_key_t2 = "qty_create_t2_single"
+                                if qty_key_t2 not in st.session_state:
+                                    st.session_state[qty_key_t2] = min(5, dispo_l)
+                                # Plafonner si la valeur en session dépasse le dispo actuel
+                                if st.session_state[qty_key_t2] > dispo_l:
+                                    st.session_state[qty_key_t2] = dispo_l
+                                
+                                def _set_qty_t2_tout():
+                                    st.session_state[qty_key_t2] = dispo_l
+                                
+                                col_qty, col_btn = st.columns([3, 1])
+                                with col_qty:
+                                    qty_l = st.number_input(
+                                        f"Pallox à laver ({ld.get('type_conditionnement') or 'Pallox'} — {poids_unit_l} kg/p)",
+                                        min_value=1, max_value=dispo_l,
+                                        step=1, key=qty_key_t2
+                                    )
+                                with col_btn:
+                                    st.markdown("<br>", unsafe_allow_html=True)
+                                    st.button(f"Tout ({dispo_l}p)", key="btn_relav_tout",
+                                              on_click=_set_qty_t2_tout,
+                                              use_container_width=True)
+                                
+                                poids_l = qty_l * poids_unit_l
+                                col_m1, col_m2 = st.columns(2)
+                                col_m1.metric("Poids total", f"{poids_l:,.0f} kg")
+                                col_m2.metric("Temps estimé", f"{(poids_l/1000)/cadence_t2:.1f} h")
+                                qtys[ld['lot_id']] = (qty_l, poids_l, ld)
+
+                        # ── Récap batch ──
+                        if is_batch:
+                            total_poids_batch = sum(v[1] for v in qtys.values()) / 1000
+                            temps_batch = total_poids_batch / cadence_t2
+                            col_b1, col_b2, col_b3 = st.columns(3)
+                            col_b1.metric("Poids total batch", f"{total_poids_batch:.1f} T")
+                            col_b2.metric("Temps estimé", f"{temps_batch:.1f} h")
+                            col_b3.metric("Nb lots", len(qtys))
+
+                        # Widget des 5 infos métier (obligatoires)
+                        infos_metier_t2 = ui_saisie_infos_metier_lavage(key_prefix="lots_relav")
+
+                        # ── Bouton création ──
+                        label_btn = "✅ Créer Batch" if is_batch else "✅ Créer Job"
+                        if st.button(label_btn, type="primary",
+                                     use_container_width=True, key="btn_create_relav2",
+                                     disabled=not infos_metier_t2['is_valid']):
+                            ligne_code_t2 = lignes_t2[ligne_idx_t2]['code']
+                            if is_batch:
+                                lots_for_batch = [
+                                    {
+                                        'lot_id': ld['lot_id'],
+                                        'emplacement_id': ld['emplacement_id'],
+                                        'quantite_pallox': qtys[ld['lot_id']][0],
+                                        'poids_brut_kg': qtys[ld['lot_id']][1],
+                                        'type_conditionnement': qtys[ld['lot_id']][3],
+                                    }
+                                    for ld in lots_sel_data
+                                ]
+                                ok_b, msg_b, _ = create_batch_jobs(
+                                    lots_for_batch, date_prevue_t2,
+                                    ligne_code_t2, cadence_t2, notes_t2,
+                                    type_tapis=infos_metier_t2['type_tapis'],
+                                    etiquette_grenailles=infos_metier_t2['etiquette_grenailles'],
+                                    etiquette_pallox=infos_metier_t2['etiquette_pallox'],
+                                    calibre_seuil=infos_metier_t2['calibre_seuil'],
+                                    calibre_min_sortie=infos_metier_t2.get('calibre_min_sortie'),
+                                    calibre_max_sortie=infos_metier_t2.get('calibre_max_sortie'),
+                                )
+                                if ok_b:
+                                    st.success(msg_b)
+                                    st.balloons()
+                                    st.rerun()
+                                else:
+                                    st.error(msg_b)
+                            else:
+                                ld = lots_sel_data[0]
+                                qty_s, poids_s, _ = qtys[ld['lot_id']]
+                                ok_s, msg_s = create_job_lavage(
+                                    ld['lot_id'], ld['emplacement_id'],
+                                    qty_s, poids_s,
+                                    date_prevue_t2, ligne_code_t2,
+                                    cadence_t2, notes_t2,
+                                    type_tapis=infos_metier_t2['type_tapis'],
+                                    etiquette_grenailles=infos_metier_t2['etiquette_grenailles'],
+                                    etiquette_pallox=infos_metier_t2['etiquette_pallox'],
+                                    calibre_seuil=infos_metier_t2['calibre_seuil'],
+                                    calibre_min_sortie=infos_metier_t2.get('calibre_min_sortie'),
+                                    calibre_max_sortie=infos_metier_t2.get('calibre_max_sortie'),
+                                )
+                                if ok_s:
+                                    st.success(msg_s)
+                                    st.balloons()
+                                    st.rerun()
+                                else:
+                                    st.error(msg_s)
+                else:
+                    st.info("👆 Sélectionnez un ou plusieurs lots (Ctrl+clic) pour créer un job ou un batch")
+            else:
+                st.warning("Aucun lot avec ces filtres")
+        else:
+            st.warning("Aucun lot LAVÉ disponible pour relavage")
 
 # ============================================================
 # ONGLET 4 : IMPRIMER
