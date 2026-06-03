@@ -3191,6 +3191,56 @@ def annuler_job_termine(job_id):
         return False, f"❌ Erreur : {str(e)}"
 
 
+def get_detail_job_termine(job_id):
+    """Récupère le détail complet d'un job TERMINÉ pour affichage en lecture seule.
+
+    Retourne un dict (infos lot, poids brut, résultats, rendement, tare, calibres,
+    destinations, temps prévu/réel, opérateurs, suivi) ou None si introuvable.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT lj.id, lj.code_lot_interne, lj.variete,
+                   COALESCE(p.nom, lj.producteur) as producteur,
+                   lj.ligne_lavage, lj.statut, lj.statut_source,
+                   lj.quantite_pallox, lj.poids_brut_kg,
+                   lj.quantite_pallox_reelle, lj.poids_brut_reel_kg,
+                   lj.poids_lave_net_kg, lj.poids_grenailles_kg,
+                   lj.poids_dechets_kg, lj.poids_terre_calcule_kg,
+                   lj.rendement_pct, lj.tare_reelle_pct,
+                   lj.calibre_seuil, lj.calibre_min_sortie, lj.calibre_max_sortie,
+                   lj.site_destination, lj.emplacement_destination,
+                   lj.temps_estime_heures, lj.date_prevue,
+                   lj.date_activation, lj.date_terminaison,
+                   lj.type_tapis, lj.etiquette_grenailles, lj.etiquette_pallox,
+                   lj.terminated_by, lj.notes,
+                   COALESCE(lj.is_multi_lot, FALSE) as is_multi_lot,
+                   COALESCE(lj.nb_lots, 1) as nb_lots
+            FROM lavages_jobs lj
+            LEFT JOIN lots_bruts lb ON lj.lot_id = lb.id
+            LEFT JOIN ref_producteurs p ON lb.code_producteur = p.code_producteur
+            WHERE lj.id = %s
+        """, (int(job_id),))
+        job = cursor.fetchone()
+        if not job:
+            cursor.close()
+            conn.close()
+            return None
+        detail = dict(job)
+        cursor.close()
+        conn.close()
+        try:
+            detail['suivi'] = get_agregats_suivis_job(int(job_id))
+            detail['suivi_lignes'] = get_suivis_job(int(job_id))
+        except Exception:
+            detail['suivi'] = None
+            detail['suivi_lignes'] = []
+        return detail
+    except Exception:
+        return None
+
+
 def corriger_job_termine(job_id):
     """Rouvre un job TERMINÉ pour correction (admin only).
 
@@ -3466,6 +3516,84 @@ with tab1:
     horaires_config = get_config_horaires()
     planning_df = get_planning_semaine(annee, semaine)
     lignes_dict = {l['code']: float(l['capacite_th']) for l in lignes} if lignes else {'LIGNE_1': 13.0, 'LIGNE_2': 6.0}
+    
+    # ============================================================
+    # ⭐ BLOC VISUALISATION JOB TERMINÉ PLEINE LARGEUR (lecture seule)
+    # Activation : clic sur "👁️" sur une card TERMINÉE
+    # ============================================================
+    job_a_visualiser = None
+    for key in list(st.session_state.keys()):
+        if key.startswith('show_detail_') and st.session_state.get(key, False):
+            try:
+                job_a_visualiser = int(float(key.replace('show_detail_', '')))
+                break
+            except (ValueError, TypeError):
+                continue
+    if job_a_visualiser:
+        d = get_detail_job_termine(job_a_visualiser)
+        st.markdown("---")
+        col_dh1, col_dh2 = st.columns([5, 1])
+        with col_dh1:
+            st.markdown(f"## 👁️ Détail Job #{job_a_visualiser} (terminé)")
+        with col_dh2:
+            if st.button("✖ Fermer", key=f"close_detail_{job_a_visualiser}", use_container_width=True):
+                st.session_state.pop(f'show_detail_{job_a_visualiser}', None)
+                st.rerun()
+        if not d:
+            st.error("Job introuvable.")
+        else:
+            # Entête lot
+            src_lbl = {'BRUT': '🥔 Brut', 'GRENAILLES_BRUTES': '🔄 Grenailles brutes',
+                       'LAVÉ': '♻️ Relavage', 'GRENAILLES_LAVÉES': '♻️ Grenailles relavées'}.get(d.get('statut_source') or 'BRUT', d.get('statut_source'))
+            st.info(f"🌱 **{d['variete']}** | 📦 Lot : {d['code_lot_interne']} | 👤 {d.get('producteur') or '-'} | Source : {src_lbl} | Ligne : {d['ligne_lavage']}")
+            # Résultats principaux
+            pb = float(d['poids_brut_reel_kg']) if d.get('poids_brut_reel_kg') else float(d['poids_brut_kg'] or 0)
+            cd1, cd2, cd3, cd4 = st.columns(4)
+            cd1.metric("⚖️ Brut entrée", f"{pb/1000:.2f} T")
+            cd2.metric("✨ Lavé", f"{float(d['poids_lave_net_kg'] or 0)/1000:.2f} T")
+            cd3.metric("🌾 Grenailles", f"{float(d['poids_grenailles_kg'] or 0)/1000:.2f} T")
+            cd4.metric("🗑️ Déchets", f"{float(d['poids_dechets_kg'] or 0)/1000:.2f} T")
+            cd5, cd6, cd7, cd8 = st.columns(4)
+            cd5.metric("🟤 Terre", f"{float(d['poids_terre_calcule_kg'] or 0)/1000:.2f} T")
+            cd6.metric("📊 Rendement", f"{float(d['rendement_pct'] or 0):.1f} %")
+            cd7.metric("⚖️ Tare réelle", f"{float(d['tare_reelle_pct'] or 0):.1f} %")
+            # Pallox prévu / réel
+            qp = int(d['quantite_pallox_reelle']) if d.get('quantite_pallox_reelle') else int(d['quantite_pallox'] or 0)
+            cd8.metric("📦 Pallox", f"{qp}")
+            # Bloc consignes + destinations
+            st.markdown("#### 🔧 Consignes & destinations")
+            cs = d.get('calibre_seuil')
+            cmin = int(d['calibre_min_sortie']) if d.get('calibre_min_sortie') is not None else 0
+            cmax = int(d['calibre_max_sortie']) if d.get('calibre_max_sortie') is not None else 70
+            cal_txt = f"Gren {cmin}-{int(cs)} / Lavé {int(cs)}-{cmax} mm" if cs else "non défini"
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                st.markdown(f"- 🎢 **Tapis** : {d.get('type_tapis') or '-'}")
+                st.markdown(f"- 📏 **Calibres** : {cal_txt}")
+                st.markdown(f"- 🏷️ **Étiq. grenailles** : {d.get('etiquette_grenailles') or '-'}")
+                st.markdown(f"- 🏷️ **Étiq. pallox** : {d.get('etiquette_pallox') or '-'}")
+            with cc2:
+                st.markdown(f"- 📍 **Destination** : {d.get('site_destination') or '-'} / {d.get('emplacement_destination') or '-'}")
+                # Temps prévu / réel
+                if d.get('date_activation') and d.get('date_terminaison'):
+                    tr = (d['date_terminaison'] - d['date_activation']).total_seconds() / 3600
+                    te = float(d['temps_estime_heures'] or 0)
+                    st.markdown(f"- ⏱️ **Temps** : prévu {te:.1f}h / réel {tr:.1f}h")
+                if d.get('date_terminaison'):
+                    st.markdown(f"- ✅ **Terminé le** : {d['date_terminaison'].strftime('%d/%m/%Y %H:%M')}")
+                if d.get('terminated_by'):
+                    st.markdown(f"- 👤 **Validé par** : {d['terminated_by']}")
+            # Suivi / opérateurs
+            sv = d.get('suivi')
+            if sv and sv.get('nb_total_saisies', 0) > 0:
+                st.markdown("#### 👥 Suivi en cours (opérateurs)")
+                op = sv.get('operateur_dernier') or '-'
+                st.markdown(f"Opérateur principal : **{op}** — "
+                            f"✨ {sv['LAVÉ']['nb_pallox']} lavés • 🌾 {sv['GRENAILLES']['nb_pallox']} gren • 🗑️ {sv['DÉCHETS']['nb_pallox']} déchets")
+            if d.get('notes'):
+                st.caption(f"📝 Notes : {d['notes']}")
+        st.markdown("---")
+        st.markdown("---")
     
     # ============================================================
     # ⭐ BLOC SUIVI EN COURS DE LAVAGE PLEINE LARGEUR (avant Terminer)
@@ -4057,10 +4185,26 @@ with tab1:
             # ── Calculateur pesées individuelles ──
             with st.expander("🔢 Calculer depuis pesées individuelles"):
                 st.caption("Saisir quelques poids de pallox PLEINS pesés (échantillon). "
-                           "La moyenne sera appliquée à tous les pallox pleins (Nb Pallox saisi en haut).")
-                pesees_lave_raw = st.text_input(
-                    "Pesées échantillon pallox pleins (kg)", placeholder="ex: 1920 1850 1935",
-                    key=f"pesees_lave_{job_en_terminaison}")
+                           "La moyenne sera appliquée à tous les pallox pleins (Nb Pallox saisi en haut). "
+                           "La tare du contenant est déduite de chaque pesée.")
+                # ⭐ Tare contenant déduite de chaque pesée brute (Q3.1)
+                TARE_CONTENANT_LAVE = {"Pallox": 220, "Petit Pallox": 150, "Big Bag": 0}
+                _tc_lave_def = type_lave if type_lave in TARE_CONTENANT_LAVE else "Pallox"
+                col_tcl, col_pel = st.columns([1, 2])
+                with col_tcl:
+                    type_cont_lave = st.selectbox(
+                        "Type contenant pesé",
+                        list(TARE_CONTENANT_LAVE.keys()),
+                        index=list(TARE_CONTENANT_LAVE.keys()).index(_tc_lave_def),
+                        key=f"type_cont_lave_{job_en_terminaison}",
+                        help="Tare déduite : Pallox -220 kg, Petit Pallox -150 kg, Big Bag -0 kg"
+                    )
+                tare_lave = TARE_CONTENANT_LAVE[type_cont_lave]
+                with col_pel:
+                    pesees_lave_raw = st.text_input(
+                        f"Pesées brutes échantillon (kg) — tare {tare_lave} kg/pallox",
+                        placeholder="ex: 1920 1850 1935",
+                        key=f"pesees_lave_{job_en_terminaison}")
                 pesees_lave = []
                 if pesees_lave_raw:
                     import re as _re
@@ -4069,7 +4213,8 @@ with tab1:
                         try:
                             v = float(t)
                             if v > 0:
-                                pesees_lave.append(v)
+                                # Déduction tare contenant sur chaque pesée
+                                pesees_lave.append(max(0.0, v - tare_lave))
                         except ValueError:
                             pass
                 
@@ -4078,16 +4223,18 @@ with tab1:
                     "➕ Ajouter un dernier pallox partiel (non plein)",
                     key=f"chk_partiel_lave_{job_en_terminaison}",
                     help="Le pallox partiel n'entre PAS dans la moyenne. "
-                         "La moyenne est appliquée aux (Nb Pallox - 1) pleins, puis on ajoute le poids réel du partiel."
+                         "La moyenne est appliquée aux (Nb Pallox - 1) pleins, puis on ajoute le poids réel du partiel (tare déduite)."
                 )
                 poids_partiel_lave = 0.0
                 if ajouter_partiel:
-                    poids_partiel_lave = st.number_input(
-                        "Poids du pallox partiel (kg)",
+                    poids_partiel_brut = st.number_input(
+                        "Poids brut du pallox partiel (kg)",
                         min_value=0.0, max_value=5000.0, value=0.0, step=10.0,
                         key=f"poids_partiel_lave_{job_en_terminaison}",
-                        help="Poids réel pesé du dernier pallox non plein"
+                        help=f"Poids réel pesé du dernier pallox non plein (tare {tare_lave} kg déduite)"
                     )
+                    # Tare déduite aussi sur le partiel (Q3.2)
+                    poids_partiel_lave = max(0.0, poids_partiel_brut - tare_lave)
                 
                 if pesees_lave:
                     moy_lave = sum(pesees_lave) / len(pesees_lave)
@@ -4177,10 +4324,25 @@ with tab1:
 
                 # ── Calculateur pesées individuelles grenailles ──
                 with st.expander("🔢 Calculer depuis pesées individuelles"):
-                    st.caption("Saisir le poids de chaque pallox pesé (kg) séparé par des espaces ou virgules")
-                    pesees_gren_raw = st.text_input(
-                        "Pesées grenailles (kg)", placeholder="ex: 850 820 835",
-                        key=f"pesees_gren_{job_en_terminaison}")
+                    st.caption("Saisir le poids de chaque pallox pesé (kg). La tare du contenant est déduite de chaque pesée.")
+                    # ⭐ Tare contenant déduite de chaque pesée brute (Q3.1)
+                    TARE_CONTENANT_GREN = {"Pallox": 220, "Petit Pallox": 150, "Big Bag": 0}
+                    _tc_gren_def = type_gren if type_gren in TARE_CONTENANT_GREN else "Pallox"
+                    col_tcg, col_peg = st.columns([1, 2])
+                    with col_tcg:
+                        type_cont_gren = st.selectbox(
+                            "Type contenant pesé",
+                            list(TARE_CONTENANT_GREN.keys()),
+                            index=list(TARE_CONTENANT_GREN.keys()).index(_tc_gren_def),
+                            key=f"type_cont_gren_{job_en_terminaison}",
+                            help="Tare déduite : Pallox -220 kg, Petit Pallox -150 kg, Big Bag -0 kg"
+                        )
+                    tare_gren = TARE_CONTENANT_GREN[type_cont_gren]
+                    with col_peg:
+                        pesees_gren_raw = st.text_input(
+                            f"Pesées brutes grenailles (kg) — tare {tare_gren} kg/pallox",
+                            placeholder="ex: 850 820 835",
+                            key=f"pesees_gren_{job_en_terminaison}")
                     pesees_gren = []
                     if pesees_gren_raw:
                         import re as _re2
@@ -4189,7 +4351,8 @@ with tab1:
                             try:
                                 v = float(t)
                                 if v > 0:
-                                    pesees_gren.append(v)
+                                    # Déduction tare contenant sur chaque pesée
+                                    pesees_gren.append(max(0.0, v - tare_gren))
                             except ValueError:
                                 pass
                     if pesees_gren:
@@ -4197,7 +4360,7 @@ with tab1:
                         poids_moy_gren_calc = moy_gren * nb_pallox_gren
                         col_gm1, col_gm2, col_gm3 = st.columns(3)
                         col_gm1.metric("Nb pesées", len(pesees_gren))
-                        col_gm2.metric("Poids moyen/pallox", f"{moy_gren:,.0f} kg")
+                        col_gm2.metric("Moy. nette/pallox", f"{moy_gren:,.0f} kg")
                         col_gm3.metric(f"→ Total ({nb_pallox_gren}p)", f"{poids_moy_gren_calc:,.0f} kg")
                         poids_gren_auto = poids_moy_gren_calc
                     else:
@@ -5160,6 +5323,12 @@ with tab1:
                                         ecart = temps_reel - temps_prevu
                                         color = "temps-ok" if ecart <= 0 else "temps-warning" if ecart < 15 else "temps-bad"
                                         st.markdown(f"<small class='{color}'>Prévu: {temps_prevu:.0f}' | Réel: {temps_reel:.0f}'</small>", unsafe_allow_html=True)
+                                    # Bouton Visualiser (tous) : ouvre le détail en lecture seule
+                                    if st.button("👁️ Visualiser", key=f"detail_card_{elem['id']}",
+                                                 use_container_width=True,
+                                                 help="Voir le détail complet du job terminé"):
+                                        st.session_state[f'show_detail_{int(elem["job_id"])}'] = True
+                                        st.rerun()
                                     # Bouton correction (admin only) : rouvre le job EN_COURS
                                     if is_admin():
                                         if st.button("✏️ Corriger", key=f"corr_card_{elem['id']}",
@@ -5179,10 +5348,50 @@ with tab1:
                                     {elem['custom_emoji']} {elem['custom_libelle']}<br>
                                     <small>→{h_fin}</small>
                                 </div>""", unsafe_allow_html=True)
-                                if st.button("❌", key=f"del_{elem['id']}"):
-                                    ok_del, msg_del = retirer_element_planning(int(elem['id']))
-                                    st.toast(msg_del, icon="✅" if ok_del else "❌")
-                                    st.rerun()
+                                col_move_c, col_del_c = st.columns(2)
+                                with col_move_c:
+                                    if st.button("🔀", key=f"move_{elem['id']}", help="Déplacer"):
+                                        st.session_state[f'show_move_{elem["id"]}'] = not st.session_state.get(f'show_move_{elem["id"]}', False)
+                                        st.rerun()
+                                with col_del_c:
+                                    if st.button("❌", key=f"del_{elem['id']}", help="Retirer"):
+                                        ok_del, msg_del = retirer_element_planning(int(elem['id']))
+                                        st.toast(msg_del, icon="✅" if ok_del else "❌")
+                                        st.rerun()
+
+                                # Formulaire inline de déplacement (même logique que les jobs)
+                                if st.session_state.get(f'show_move_{elem["id"]}', False):
+                                    elem_id_move_c = int(elem['id'])
+                                    jours_move_c = [f"{['Lun','Mar','Mer','Jeu','Ven','Sam'][k]} {(week_start + timedelta(days=k)).strftime('%d/%m')}" for k in range(6)]
+                                    try:
+                                        date_elem_str_c = str(elem['date_prevue'])[:10]
+                                        jour_actuel_idx_c = next((k for k in range(6) if str(week_start + timedelta(days=k)) == date_elem_str_c), 0)
+                                    except Exception:
+                                        jour_actuel_idx_c = 0
+                                    jour_cible_str_c = st.selectbox(
+                                        "Nouveau jour", jours_move_c, index=jour_actuel_idx_c,
+                                        key=f"move_jour_{elem_id_move_c}")
+                                    jour_cible_idx_c = jours_move_c.index(jour_cible_str_c)
+                                    date_cible_move_c = week_start + timedelta(days=jour_cible_idx_c)
+                                    heure_cible_c = st.time_input(
+                                        "Nouvelle heure", value=time(6, 0), step=900,
+                                        key=f"move_heure_{elem_id_move_c}")
+                                    col_ok_c, col_ann_c = st.columns(2)
+                                    with col_ok_c:
+                                        if st.button("✅", key=f"move_ok_{elem_id_move_c}", type="primary", use_container_width=True):
+                                            success, msg = deplacer_element_planning(
+                                                elem_id_move_c, date_cible_move_c, heure_cible_c,
+                                                planning_df, st.session_state.selected_ligne, horaires_config)
+                                            if success:
+                                                st.session_state.pop(f'show_move_{elem_id_move_c}', None)
+                                                st.success(msg)
+                                                st.rerun()
+                                            else:
+                                                st.error(msg)
+                                    with col_ann_c:
+                                        if st.button("✖", key=f"move_ann_{elem_id_move_c}", use_container_width=True):
+                                            st.session_state.pop(f'show_move_{elem_id_move_c}', None)
+                                            st.rerun()
                 else:
                     st.caption("_Vide_")
     
