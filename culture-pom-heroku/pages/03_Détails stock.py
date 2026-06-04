@@ -1134,13 +1134,23 @@ if len(lots_to_display) > 0:
                         col1, col2 = st.columns(2)
                         
                         with col1:
-                            quantite_transfert = st.slider(
-                                "Quantité à transférer *",
-                                min_value=1,
-                                max_value=quantite_max,
-                                value=min(5, quantite_max),
-                                key=f"transfer_qty_{lot_id}"
-                            )
+                            if quantite_max <= 1:
+                                # 1 seul pallox : pas de slider possible (min == max), transfert total
+                                quantite_transfert = 1
+                                st.number_input(
+                                    "Quantité à transférer *",
+                                    min_value=1, max_value=1, value=1, disabled=True,
+                                    key=f"transfer_qty_{lot_id}",
+                                    help="1 seul pallox disponible : transfert total."
+                                )
+                            else:
+                                quantite_transfert = st.slider(
+                                    "Quantité à transférer *",
+                                    min_value=1,
+                                    max_value=quantite_max,
+                                    value=min(5, quantite_max),
+                                    key=f"transfer_qty_{lot_id}"
+                                )
                         
                         with col2:
                             sites = get_sites_stockage()
