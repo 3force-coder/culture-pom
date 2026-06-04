@@ -343,6 +343,16 @@ def get_planning_semaine(annee, semaine):
                 COALESCE(p.nom, ljl_first.producteur, lj.producteur) as producteur,
                 se.site_stockage as empl_site,
                 se.emplacement_stockage as empl_code,
+                se.is_active as empl_fige_actif,
+                -- Emplacement(s) RÉEL(S) actif(s) du lot (pour re-mapping si déplacé par le cariste)
+                -- Calculé seulement pour les jobs non terminés (PRÉVU / EN_COURS)
+                CASE WHEN lj.statut IN ('PRÉVU', 'EN_COURS') THEN (
+                    SELECT STRING_AGG(DISTINCT se_act.emplacement_stockage, ', ' ORDER BY se_act.emplacement_stockage)
+                    FROM stock_emplacements se_act
+                    WHERE se_act.lot_id = COALESCE(lj.lot_id, ljl_first.lot_id)
+                      AND se_act.is_active = TRUE
+                      AND se_act.statut_lavage IN ('BRUT', 'GRENAILLES_BRUTES', 'LAVÉ', 'GRENAILLES_LAVÉES')
+                ) ELSE NULL END as empl_reels_actifs,
                 STRING_AGG(DISTINCT pc.marque || ' ' || pc.libelle, ', ') as produits_affectes,
                 tc.libelle as custom_libelle, tc.emoji as custom_emoji,
                 -- Pour info : détail des lots fille (utile pour tooltip/audit)
@@ -384,7 +394,7 @@ def get_planning_semaine(annee, semaine):
                 lj.temps_estime_heures, lj.statut_source,
                 lj.emplacement_id, lj.is_multi_lot, lj.nb_lots,
                 ljl_first.emplacement_id, ljl_first.producteur,
-                p.nom, lj.producteur, se.site_stockage, se.emplacement_stockage,
+                p.nom, lj.producteur, se.site_stockage, se.emplacement_stockage, se.is_active,
                 tc.libelle, tc.emoji
             ORDER BY pe.date_prevue, pe.ligne_lavage, pe.ordre_jour
         """, (annee, semaine))
@@ -5303,7 +5313,17 @@ with tab1:
                                 # Emplacement source
                                 empl_site = elem.get('empl_site') or ''
                                 empl_code = elem.get('empl_code') or ''
-                                empl_ligne = f"<br>📍 {empl_site}/{empl_code}" if empl_code else ""
+                                # Re-mapping emplacement : si la ligne figée du job n'est plus active
+                                # (lot déplacé par le cariste), on affiche les emplacements réels actifs du lot
+                                empl_fige_actif = elem.get('empl_fige_actif')
+                                empl_reels = elem.get('empl_reels_actifs') or ''
+                                empl_deplace = (empl_fige_actif is False) and bool(empl_reels)
+                                if empl_deplace:
+                                    empl_ligne = f"<br>📍 <span style='color:#e65100'>{empl_reels} ⚠️ déplacé</span>"
+                                elif empl_code:
+                                    empl_ligne = f"<br>📍 {empl_site}/{empl_code}"
+                                else:
+                                    empl_ligne = ""
                                 # Produit affecté
                                 produits_aff = elem.get('produits_affectes') or ''
                                 produit_ligne = f"<br>🛒 {produits_aff}" if produits_aff else "<br><small>Sans affectation</small>"
@@ -5332,7 +5352,9 @@ with tab1:
                                     tooltip_parts.append(f"📦 Lot : {elem['code_lot_interne']}")
                                 if producteur:
                                     tooltip_parts.append(f"👤 Producteur : {producteur}")
-                                if empl_code:
+                                if empl_deplace:
+                                    tooltip_parts.append(f"📍 Emplacement d'origine vidé → lot actuellement en : {empl_reels}")
+                                elif empl_code:
                                     tooltip_parts.append(f"📍 Source : {empl_site}/{empl_code}")
                                 if pd.notna(elem.get('quantite_pallox')):
                                     tooltip_parts.append(f"📦 Quantité prévue : {int(elem['quantite_pallox'])} pallox")
