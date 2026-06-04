@@ -338,9 +338,11 @@ def _upsert_supply_df(df_all: pd.DataFrame, username: str):
 
     try:
         cursor = conn.cursor()
+        premiere_erreur = None
 
         for _, r in df_all.iterrows():
             try:
+                cursor.execute("SAVEPOINT sp_row")
                 cursor.execute("""
                     INSERT INTO supply_transports
                         (jour, date_transport, semaine_text, statut,
@@ -386,19 +388,27 @@ def _upsert_supply_df(df_all: pd.DataFrame, username: str):
                     username,
                 ))
                 result = cursor.fetchone()
+                cursor.execute("RELEASE SAVEPOINT sp_row")
                 if result and result['inserted']:
                     nb_insert += 1
                 else:
                     nb_skip += 1
-            except Exception:
+            except Exception as e_row:
+                cursor.execute("ROLLBACK TO SAVEPOINT sp_row")
                 nb_skip += 1
-                conn.rollback()
+                if premiere_erreur is None:
+                    premiere_erreur = str(e_row)
 
         conn.commit()
         cursor.close()
         conn.close()
 
-        msg = (f"✅ Import OK — {nb_insert} nouvelles lignes / {nb_skip} mises à jour ou ignorées")
+        if nb_insert == 0 and premiere_erreur:
+            return False, (f"❌ Import sans effet — aucune ligne écrite. "
+                           f"1re erreur : {premiere_erreur}"), nb_insert, nb_skip
+        msg = f"✅ Import OK — {nb_insert} nouvelles lignes / {nb_skip} mises à jour ou ignorées"
+        if premiere_erreur:
+            msg += f"\n⚠️ {nb_skip} ligne(s) en erreur — 1re : {premiere_erreur}"
         return True, msg, nb_insert, nb_skip
 
     except Exception as e:
@@ -481,9 +491,11 @@ def importer_supply(uploaded_file, username: str):
 
     try:
         cursor = conn.cursor()
+        premiere_erreur = None
 
         for _, r in df_all.iterrows():
             try:
+                cursor.execute("SAVEPOINT sp_row")
                 cursor.execute("""
                     INSERT INTO supply_transports
                         (jour, date_transport, semaine_text, statut,
@@ -529,20 +541,28 @@ def importer_supply(uploaded_file, username: str):
                     username,
                 ))
                 result = cursor.fetchone()
+                cursor.execute("RELEASE SAVEPOINT sp_row")
                 if result and result['inserted']:
                     nb_insert += 1
                 else:
                     nb_skip += 1
-            except Exception:
+            except Exception as e_row:
+                cursor.execute("ROLLBACK TO SAVEPOINT sp_row")
                 nb_skip += 1
-                conn.rollback()
+                if premiere_erreur is None:
+                    premiere_erreur = str(e_row)
 
         conn.commit()
         cursor.close()
         conn.close()
 
+        if nb_insert == 0 and premiere_erreur:
+            return False, (f"❌ Import sans effet — aucune ligne écrite. "
+                           f"1re erreur : {premiere_erreur}"), nb_insert, nb_skip
         msg = (f"✅ Import OK — onglets : {', '.join(onglets_lus)}\n"
                f"{nb_insert} nouvelles lignes / {nb_skip} mises à jour ou ignorées")
+        if premiere_erreur:
+            msg += f"\n⚠️ {nb_skip} ligne(s) en erreur — 1re : {premiere_erreur}"
         return True, msg, nb_insert, nb_skip
 
     except Exception as e:
