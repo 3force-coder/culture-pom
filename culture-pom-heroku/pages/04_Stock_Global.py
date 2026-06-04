@@ -129,6 +129,17 @@ def get_status_emoji(pct):
 # 📊 FONCTIONS DE DONNÉES - TABLEAU DE BORD
 # ============================================================
 
+def _statut_bucket(raw):
+    """Normalise un statut_lavage en bucket d'affichage (tolérant accents et legacy).
+    'LAVÉ'/'LAVE' -> LAVE ; 'GRENAILLES_LAVÉES' -> GREN_LAVEES ;
+    'GRENAILLES_BRUTES'/'GRENAILLES' -> GREN_BRUTES ; sinon -> BRUT."""
+    s = (raw or 'BRUT').strip().upper()
+    if s.startswith('GRENAILLES'):
+        return 'GREN_LAVEES' if 'LAV' in s else 'GREN_BRUTES'
+    if s.startswith('LAV'):
+        return 'LAVE'
+    return 'BRUT'
+
 def get_stock_kpis():
     try:
         conn = get_connection()
@@ -146,20 +157,28 @@ def get_stock_kpis():
         """)
         rows = cursor.fetchall()
         result = {
-            'BRUT':      {'lots': 0, 'pallox': 0, 'tonnes': 0},
-            'LAVE':      {'lots': 0, 'pallox': 0, 'tonnes': 0},
-            'GRENAILLES':{'lots': 0, 'pallox': 0, 'tonnes': 0}
+            'BRUT':        {'lots': 0, 'pallox': 0, 'tonnes': 0},
+            'LAVE':        {'lots': 0, 'pallox': 0, 'tonnes': 0},
+            'GREN_BRUTES': {'lots': 0, 'pallox': 0, 'tonnes': 0},
+            'GREN_LAVEES': {'lots': 0, 'pallox': 0, 'tonnes': 0}
         }
-        total_tonnes = total_pallox = total_lots = 0
+        total_tonnes = total_pallox = 0
         for row in rows:
-            statut = row['statut'] if row['statut'] else 'BRUT'
-            if statut in result:
-                result[statut]['lots']   = int(row['nb_lots'] or 0)
-                result[statut]['pallox'] = int(row['total_pallox'] or 0)
-                result[statut]['tonnes'] = float(row['total_kg'] or 0) / 1000
-                total_tonnes += result[statut]['tonnes']
-                total_pallox += result[statut]['pallox']
-                total_lots   += result[statut]['lots']
+            bucket = _statut_bucket(row['statut'])
+            pallox = int(row['total_pallox'] or 0)
+            tonnes = float(row['total_kg'] or 0) / 1000
+            result[bucket]['lots']   += int(row['nb_lots'] or 0)
+            result[bucket]['pallox'] += pallox
+            result[bucket]['tonnes'] += tonnes
+            total_tonnes += tonnes
+            total_pallox += pallox
+        # Lots distincts réels (un même lot peut être réparti sur plusieurs statuts)
+        cursor.execute("""
+            SELECT COUNT(DISTINCT se.lot_id) as nb_lots
+            FROM stock_emplacements se JOIN lots_bruts l ON se.lot_id = l.id
+            WHERE se.is_active = TRUE AND l.is_active = TRUE AND se.nombre_unites > 0
+        """)
+        total_lots = int(cursor.fetchone()['nb_lots'] or 0)
         cursor.execute("""
             SELECT COUNT(DISTINCT se.site_stockage) as nb_sites
             FROM stock_emplacements se JOIN lots_bruts l ON se.lot_id = l.id
@@ -259,7 +278,7 @@ def get_alertes():
         cursor.execute("""
             SELECT COALESCE(SUM(se.poids_total_kg), 0) as poids_grenailles
             FROM stock_emplacements se JOIN lots_bruts l ON se.lot_id = l.id
-            WHERE se.is_active = TRUE AND l.is_active = TRUE AND se.statut_lavage = 'GRENAILLES'
+            WHERE se.is_active = TRUE AND l.is_active = TRUE AND se.statut_lavage LIKE 'GRENAILLES%'
         """)
         poids_gren = float(cursor.fetchone()['poids_grenailles'] or 0)
         if poids_gren >= SEUIL_GRENAILLES:
@@ -394,8 +413,8 @@ def get_stock_par_site():
                    SUM(se.nombre_unites) as total_pallox,
                    SUM(se.poids_total_kg) / 1000 as total_tonnes,
                    SUM(CASE WHEN COALESCE(se.statut_lavage,'BRUT')='BRUT' THEN se.poids_total_kg ELSE 0 END)/1000 as tonnes_brut,
-                   SUM(CASE WHEN se.statut_lavage='LAVE' THEN se.poids_total_kg ELSE 0 END)/1000 as tonnes_lave,
-                   SUM(CASE WHEN se.statut_lavage='GRENAILLES' THEN se.poids_total_kg ELSE 0 END)/1000 as tonnes_gren
+                   SUM(CASE WHEN se.statut_lavage LIKE 'LAV%' THEN se.poids_total_kg ELSE 0 END)/1000 as tonnes_lave,
+                   SUM(CASE WHEN se.statut_lavage LIKE 'GRENAILLES%' THEN se.poids_total_kg ELSE 0 END)/1000 as tonnes_gren
             FROM stock_emplacements se JOIN lots_bruts l ON se.lot_id = l.id
             WHERE se.is_active = TRUE AND l.is_active = TRUE AND se.nombre_unites > 0
             GROUP BY se.site_stockage ORDER BY total_tonnes DESC
@@ -426,8 +445,8 @@ def get_stock_par_variete():
                    SUM(se.nombre_unites) as total_pallox,
                    SUM(se.poids_total_kg)/1000 as total_tonnes,
                    SUM(CASE WHEN COALESCE(se.statut_lavage,'BRUT')='BRUT' THEN se.poids_total_kg ELSE 0 END)/1000 as tonnes_brut,
-                   SUM(CASE WHEN se.statut_lavage='LAVE' THEN se.poids_total_kg ELSE 0 END)/1000 as tonnes_lave,
-                   SUM(CASE WHEN se.statut_lavage='GRENAILLES' THEN se.poids_total_kg ELSE 0 END)/1000 as tonnes_gren
+                   SUM(CASE WHEN se.statut_lavage LIKE 'LAV%' THEN se.poids_total_kg ELSE 0 END)/1000 as tonnes_lave,
+                   SUM(CASE WHEN se.statut_lavage LIKE 'GRENAILLES%' THEN se.poids_total_kg ELSE 0 END)/1000 as tonnes_gren
             FROM stock_emplacements se JOIN lots_bruts l ON se.lot_id = l.id
             LEFT JOIN ref_varietes v ON l.code_variete = v.code_variete
             WHERE se.is_active = TRUE AND l.is_active = TRUE AND se.nombre_unites > 0
@@ -459,7 +478,7 @@ def get_stock_par_producteur():
                    SUM(se.nombre_unites) as total_pallox,
                    SUM(se.poids_total_kg)/1000 as total_tonnes,
                    SUM(CASE WHEN COALESCE(se.statut_lavage,'BRUT')='BRUT' THEN se.poids_total_kg ELSE 0 END)/1000 as tonnes_brut,
-                   SUM(CASE WHEN se.statut_lavage='LAVE' THEN se.poids_total_kg ELSE 0 END)/1000 as tonnes_lave
+                   SUM(CASE WHEN se.statut_lavage LIKE 'LAV%' THEN se.poids_total_kg ELSE 0 END)/1000 as tonnes_lave
             FROM stock_emplacements se JOIN lots_bruts l ON se.lot_id = l.id
             LEFT JOIN ref_producteurs p ON l.code_producteur = p.code_producteur
             WHERE se.is_active = TRUE AND l.is_active = TRUE AND se.nombre_unites > 0
@@ -848,14 +867,16 @@ with tab1:
 
     if kpis:
         st.subheader("📈 Indicateurs Clés")
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
-            st.metric("🟢 Stock BRUT",  f"{kpis['BRUT']['tonnes']:,.1f} T",      f"{kpis['BRUT']['pallox']:,} pallox")
+            st.metric("🟢 Stock BRUT",  f"{kpis['BRUT']['tonnes']:,.1f} T", f"{kpis['BRUT']['pallox']:,} pallox")
         with col2:
-            st.metric("🧼 Stock LAVÉ",  f"{kpis['LAVE']['tonnes']:,.1f} T",      f"{kpis['LAVE']['pallox']:,} pallox")
+            st.metric("🧼 Stock LAVÉ",  f"{kpis['LAVE']['tonnes']:,.1f} T", f"{kpis['LAVE']['pallox']:,} pallox")
         with col3:
-            st.metric("🌾 Grenailles",  f"{kpis['GRENAILLES']['tonnes']:,.1f} T", f"{kpis['GRENAILLES']['pallox']:,} pallox")
+            st.metric("🌾 Gren. brutes", f"{kpis['GREN_BRUTES']['tonnes']:,.1f} T", f"{kpis['GREN_BRUTES']['pallox']:,} pallox")
         with col4:
+            st.metric("✨ Gren. lavées", f"{kpis['GREN_LAVEES']['tonnes']:,.1f} T", f"{kpis['GREN_LAVEES']['pallox']:,} pallox")
+        with col5:
             if occupation:
                 emoji = get_status_emoji(occupation['taux'])
                 st.metric(f"{emoji} Occupation", f"{occupation['taux']:.1f}%", f"{occupation['disponible']:,} places libres")
@@ -869,7 +890,7 @@ with tab1:
 
         st.markdown("---")
         st.subheader("📊 Répartition par Statut")
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         total_tonnes = kpis['total']['tonnes'] if kpis['total']['tonnes'] > 0 else 1
         with col1:
             pct = kpis['BRUT']['tonnes'] / total_tonnes * 100
@@ -878,8 +899,11 @@ with tab1:
             pct = kpis['LAVE']['tonnes'] / total_tonnes * 100
             st.markdown(f'<div class="status-card status-lave"><h3>🧼 LAVÉ</h3><h2>{pct:.1f}%</h2><p>{kpis["LAVE"]["tonnes"]:,.1f} T | {kpis["LAVE"]["pallox"]:,} pallox</p></div>', unsafe_allow_html=True)
         with col3:
-            pct = kpis['GRENAILLES']['tonnes'] / total_tonnes * 100
-            st.markdown(f'<div class="status-card status-gren"><h3>🌾 GRENAILLES</h3><h2>{pct:.1f}%</h2><p>{kpis["GRENAILLES"]["tonnes"]:,.1f} T | {kpis["GRENAILLES"]["pallox"]:,} pallox</p></div>', unsafe_allow_html=True)
+            pct = kpis['GREN_BRUTES']['tonnes'] / total_tonnes * 100
+            st.markdown(f'<div class="status-card status-gren"><h3>🌾 GREN. BRUTES</h3><h2>{pct:.1f}%</h2><p>{kpis["GREN_BRUTES"]["tonnes"]:,.1f} T | {kpis["GREN_BRUTES"]["pallox"]:,} pallox</p></div>', unsafe_allow_html=True)
+        with col4:
+            pct = kpis['GREN_LAVEES']['tonnes'] / total_tonnes * 100
+            st.markdown(f'<div class="status-card status-gren"><h3>✨ GREN. LAVÉES</h3><h2>{pct:.1f}%</h2><p>{kpis["GREN_LAVEES"]["tonnes"]:,.1f} T | {kpis["GREN_LAVEES"]["pallox"]:,} pallox</p></div>', unsafe_allow_html=True)
 
         st.markdown("---")
         col1, col2 = st.columns([1, 1])
