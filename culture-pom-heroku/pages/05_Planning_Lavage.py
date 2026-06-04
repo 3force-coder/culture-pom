@@ -393,7 +393,7 @@ def get_planning_semaine(annee, semaine):
                 lj.date_activation, lj.date_terminaison,
                 lj.temps_estime_heures, lj.statut_source,
                 lj.emplacement_id, lj.is_multi_lot, lj.nb_lots,
-                ljl_first.emplacement_id, ljl_first.producteur,
+                ljl_first.emplacement_id, ljl_first.producteur, ljl_first.lot_id,
                 p.nom, lj.producteur, se.site_stockage, se.emplacement_stockage, se.is_active,
                 tc.libelle, tc.emoji
             ORDER BY pe.date_prevue, pe.ligne_lavage, pe.ordre_jour
