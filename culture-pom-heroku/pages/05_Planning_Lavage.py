@@ -3191,6 +3191,155 @@ def annuler_job_termine(job_id):
         return False, f"❌ Erreur : {str(e)}"
 
 
+def get_infos_etiquette_job(job_id):
+    """Récupère les infos nécessaires aux étiquettes pallox d'un job.
+
+    Retourne un dict (ou None) : variete, code_lot_interne, nom_usage, producteur,
+    etiquette_pallox (= destination client lavé), etiquette_grenailles,
+    calibre_seuil/min_sortie/max_sortie, date_terminaison, date_prevue,
+    global_gap (booléen du producteur).
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT lj.id, lj.variete, lj.code_lot_interne,
+                   lb.nom_usage,
+                   COALESCE(p.nom, lj.producteur) as producteur,
+                   lj.etiquette_pallox, lj.etiquette_grenailles,
+                   lj.calibre_seuil, lj.calibre_min_sortie, lj.calibre_max_sortie,
+                   lj.date_terminaison, lj.date_prevue,
+                   COALESCE(p.global_gap, FALSE) as global_gap
+            FROM lavages_jobs lj
+            LEFT JOIN lots_bruts lb ON lj.lot_id = lb.id
+            LEFT JOIN ref_producteurs p ON lb.code_producteur = p.code_producteur
+            WHERE lj.id = %s
+        """, (int(job_id),))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def generer_etiquettes_html(infos, type_etiquette, nb_etiquettes, pays="FR", destination_override=None):
+    """Génère le HTML d'impression des étiquettes pallox (A4 paysage, 2 par page côte à côte).
+
+    infos : dict issu de get_infos_etiquette_job
+    type_etiquette : 'LAVÉ' ou 'GRENAILLES'
+    nb_etiquettes : nombre d'étiquettes à produire (1 par pallox)
+    pays : code pays affiché à côté de la variété (défaut FR)
+    destination_override : si fourni, remplace la destination client lue en base
+    """
+    def esc(v):
+        if v is None:
+            return ""
+        return (str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+    is_lave = (type_etiquette == 'LAVÉ')
+    # Calibre selon le type
+    seuil = infos.get('calibre_seuil')
+    cmin = infos.get('calibre_min_sortie')
+    cmax = infos.get('calibre_max_sortie')
+    cmin = int(cmin) if cmin is not None else 0
+    cmax = int(cmax) if cmax is not None else 70
+    if seuil is not None:
+        if is_lave:
+            cal_mini, cal_maxi = int(seuil), cmax
+        else:
+            cal_mini, cal_maxi = cmin, int(seuil)
+    else:
+        cal_mini, cal_maxi = ("", "")
+    # Destination client : etiquette_pallox (lavé) ou etiquette_grenailles (grenailles)
+    if destination_override:
+        destination = destination_override
+    else:
+        destination = infos.get('etiquette_pallox') if is_lave else infos.get('etiquette_grenailles')
+    # Date de lavage = terminaison sinon prévue
+    dlav = infos.get('date_terminaison') or infos.get('date_prevue')
+    date_lav = dlav.strftime('%d/%m/%Y') if dlav else ""
+    gap_txt = "OUI" if infos.get('global_gap') else "NON"
+    bandeau = "#AFCA0A" if is_lave else "#f57c00"
+    type_lbl = "LAVÉ" if is_lave else "GRENAILLES"
+
+    # Un bloc étiquette
+    def une_etiquette():
+        return f"""
+        <div class="etq">
+          <div class="bandeau" style="background:{bandeau}">{type_lbl}</div>
+          <table class="champs">
+            <tr><td class="lbl">Variété</td><td class="val">{esc(infos.get('variete'))} / {esc(pays)}</td></tr>
+            <tr><td class="lbl">N° de lot</td><td class="val">{esc(infos.get('code_lot_interne'))}</td></tr>
+            <tr><td class="lbl">Nom d'usage</td><td class="val">{esc(infos.get('nom_usage'))}</td></tr>
+            <tr><td class="lbl">Producteur</td><td class="val">{esc(infos.get('producteur'))}</td></tr>
+            <tr><td class="lbl">Destination client</td><td class="val">{esc(destination)}</td></tr>
+            <tr><td class="lbl">Calibre</td><td class="val">{cal_mini} / {cal_maxi} mm</td></tr>
+            <tr><td class="lbl">Date de lavage</td><td class="val">{esc(date_lav)}</td></tr>
+            <tr><td class="lbl">Global Gap</td><td class="val gap-{gap_txt.lower()}">{gap_txt}</td></tr>
+          </table>
+        </div>"""
+
+    # Pages de 2 étiquettes (côte à côte)
+    nb = max(1, int(nb_etiquettes))
+    pages_html = []
+    i = 0
+    while i < nb:
+        deux = une_etiquette()
+        if i + 1 < nb:
+            deux += une_etiquette()
+        pages_html.append(f'<div class="page">{deux}</div>')
+        i += 2
+
+    html = f"""<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
+<title>Étiquettes {type_lbl} - {esc(infos.get('code_lot_interne'))}</title>
+<style>
+  @page {{ size: A4 landscape; margin: 8mm; }}
+  * {{ box-sizing: border-box; }}
+  body {{ font-family: Arial, sans-serif; margin:0; }}
+  .page {{ display:flex; gap:8mm; width:100%; height:192mm; page-break-after:always; }}
+  .etq {{ flex:1 1 50%; border:2px solid #333; border-radius:6px; padding:0; overflow:hidden;
+          display:flex; flex-direction:column; }}
+  .bandeau {{ color:#1a1a1a; font-size:34px; font-weight:bold; text-align:center;
+              padding:14px 0; letter-spacing:2px; }}
+  .champs {{ width:100%; border-collapse:collapse; flex:1; }}
+  .champs td {{ border-bottom:1px solid #ccc; padding:14px 18px; font-size:22px; vertical-align:middle; }}
+  .champs .lbl {{ color:#666; font-size:18px; width:38%; }}
+  .champs .val {{ font-weight:bold; font-size:26px; }}
+  .gap-oui {{ color:#2e7d32; }}
+  .gap-non {{ color:#c62828; }}
+  @media screen {{ body {{ background:#eee; padding:10px; }} .page {{ background:#fff; margin-bottom:10px; box-shadow:0 1px 4px rgba(0,0,0,.2); padding:8mm; height:auto; min-height:120mm; }} }}
+</style></head>
+<body onload="window.print()">
+{''.join(pages_html)}
+</body></html>"""
+    return html
+
+
+def bouton_impression_etiquettes(infos, type_etiquette, nb_etiquettes, pays="FR",
+                                 destination_override=None, key_suffix=""):
+    """Affiche un bouton qui ouvre une fenêtre d'impression d'étiquettes (même pattern
+    que la fiche imprimable existante : HTML encodé base64 + window.open)."""
+    import base64
+    html = generer_etiquettes_html(infos, type_etiquette, nb_etiquettes, pays, destination_override)
+    html_b64 = base64.b64encode(html.encode('utf-8')).decode('ascii')
+    couleur = "#AFCA0A" if type_etiquette == 'LAVÉ' else "#f57c00"
+    nb_pages = (max(1, int(nb_etiquettes)) + 1) // 2
+    stc.html(f"""
+    <button onclick="openEtq_{key_suffix}()" style="background:{couleur};color:#1a1a1a;border:none;padding:10px 20px;border-radius:6px;cursor:pointer;font-size:14px;font-weight:bold;width:100%;">
+        🖨️ Ouvrir l'impression — {int(nb_etiquettes)} étiquette(s) {type_etiquette} ({nb_pages} page(s))
+    </button>
+    <script>
+        function openEtq_{key_suffix}() {{
+            var b64 = "{html_b64}";
+            var html = decodeURIComponent(escape(atob(b64)));
+            var win = window.open('', '_blank');
+            win.document.open(); win.document.write(html); win.document.close();
+        }}
+    </script>
+    """, height=58)
+
+
 def get_detail_job_termine(job_id):
     """Récupère le détail complet d'un job TERMINÉ pour affichage en lecture seule.
 
@@ -3631,7 +3780,38 @@ with tab1:
         qty_prev_s = int(e_s['quantite_pallox']) if pd.notna(e_s.get('quantite_pallox')) else 0
         st.info(f"🌱 **{variete_s}** | 📦 Lot: {code_lot_s} | Prévu : **{qty_prev_s} pallox**")
         
-        # === 1. Sélecteur opérateur actuel (session_state pour mémorisation locale) ===
+        # === ÉTIQUETTES PALLOX (impression au fil de l'eau pendant le lavage) ===
+        with st.expander("🏷️ Imprimer des étiquettes pallox", expanded=False):
+            infos_etq = get_infos_etiquette_job(job_en_suivi)
+            if not infos_etq:
+                st.caption("Infos étiquette indisponibles.")
+            else:
+                col_e1, col_e2, col_e3 = st.columns([1, 1, 1])
+                with col_e1:
+                    nb_etq_suivi = st.number_input(
+                        "Nombre d'étiquettes", min_value=1, max_value=200, value=2, step=2,
+                        key=f"nb_etq_suivi_{job_en_suivi}",
+                        help="2 par défaut (1 page A4 paysage = 2 étiquettes)")
+                with col_e2:
+                    pays_etq_suivi = st.text_input(
+                        "Pays", value="FR", max_chars=4,
+                        key=f"pays_etq_suivi_{job_en_suivi}")
+                with col_e3:
+                    dest_over_suivi = st.text_input(
+                        "Destination client (override)", value="",
+                        key=f"dest_etq_suivi_{job_en_suivi}",
+                        placeholder="(laisser vide = valeur du job)")
+                _dov = dest_over_suivi.strip() or None
+                cbe1, cbe2 = st.columns(2)
+                with cbe1:
+                    bouton_impression_etiquettes(
+                        infos_etq, 'LAVÉ', nb_etq_suivi, pays_etq_suivi or "FR",
+                        destination_override=_dov, key_suffix=f"suivi_lave_{job_en_suivi}")
+                with cbe2:
+                    bouton_impression_etiquettes(
+                        infos_etq, 'GRENAILLES', nb_etq_suivi, pays_etq_suivi or "FR",
+                        destination_override=_dov, key_suffix=f"suivi_gren_{job_en_suivi}")
+        
         op_hist = get_operateurs_historiques()
         agreg_now = get_agregats_suivis_job(job_en_suivi)
         op_dernier = agreg_now.get('operateur_dernier') or ''
@@ -5302,7 +5482,7 @@ with tab1:
                                     col_suivi_btn, col_term_btn = st.columns(2)
                                     with col_suivi_btn:
                                         if st.button("📊 Suivi", key=f"suivi_{elem['id']}",
-                                                    use_container_width=True, help="Saisir pallox en cours"):
+                                                    use_container_width=True, help="Saisir pallox + imprimer étiquettes"):
                                             st.session_state[f'show_suivi_{int(elem["job_id"])}'] = True
                                             st.rerun()
                                     with col_term_btn:
@@ -5310,6 +5490,11 @@ with tab1:
                                                     type="primary", use_container_width=True):
                                             st.session_state[f'show_finish_{int(elem["job_id"])}'] = True
                                             st.rerun()
+                                    # Accès direct impression étiquettes (ouvre le bloc suivi qui contient la section)
+                                    if st.button("🏷️ Étiquettes", key=f"etq_card_{elem['id']}",
+                                                use_container_width=True, help="Imprimer des étiquettes pallox"):
+                                        st.session_state[f'show_suivi_{int(elem["job_id"])}'] = True
+                                        st.rerun()
                                     
                                     # Note: Le formulaire de terminaison et le suivi s'affichent en pleine
                                     # largeur au-dessus du calendrier
