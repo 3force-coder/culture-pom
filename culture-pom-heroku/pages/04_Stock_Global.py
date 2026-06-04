@@ -977,18 +977,28 @@ with tab3:
     df_stock = get_stock_complet()
     if not df_stock.empty:
         col1, col2, col3, col4 = st.columns(4)
-        with col1: filtre_statut     = st.selectbox("Statut",  ["Tous","BRUT","LAVE","GRENAILLES"], key="filtre_statut_stock")
+        with col1: filtre_statut     = st.selectbox("Statut",  ["Tous","BRUT","LAVÉ","GRENAILLES_BRUTES","GRENAILLES_LAVÉES"], key="filtre_statut_stock")
         with col2: filtre_site_stock = st.selectbox("Site",    ["Tous"] + sorted(df_stock['site_stockage'].unique().tolist()), key="filtre_site_stock")
         with col3: filtre_variete    = st.selectbox("Variété", ["Toutes"] + sorted(df_stock['variete'].dropna().unique().tolist()), key="filtre_variete_stock")
         with col4: filtre_age        = st.selectbox("Âge",     ["Tous","< 30 jours","30-60 jours","> 60 jours"], key="filtre_age_stock")
 
+        # Filtre calibre par bornes (0–100 = pas de filtre ; conserve les lots dont la plage [min,max] est dans les bornes)
+        colc1, colc2, _colc3, _colc4 = st.columns(4)
+        with colc1: filtre_cal_min = st.number_input("Calibre min ≥", min_value=0, max_value=100, value=0,   key="filtre_cal_min_stock")
+        with colc2: filtre_cal_max = st.number_input("Calibre max ≤", min_value=0, max_value=100, value=100, key="filtre_cal_max_stock")
+        if filtre_cal_min > filtre_cal_max:
+            st.caption("⚠️ Calibre min > max : aucun résultat possible.")
+
         df_filtered = df_stock.copy()
-        if filtre_statut     != "Tous":    df_filtered = df_filtered[df_filtered['statut_lavage'] == filtre_statut]
+        if filtre_statut     != "Tous":    df_filtered = df_filtered[df_filtered['statut_lavage'].map(_statut_bucket) == _statut_bucket(filtre_statut)]
         if filtre_site_stock != "Tous":    df_filtered = df_filtered[df_filtered['site_stockage'] == filtre_site_stock]
         if filtre_variete    != "Toutes":  df_filtered = df_filtered[df_filtered['variete'] == filtre_variete]
         if filtre_age == "< 30 jours":    df_filtered = df_filtered[df_filtered['age_jours'] < 30]
         elif filtre_age == "30-60 jours": df_filtered = df_filtered[(df_filtered['age_jours'] >= 30) & (df_filtered['age_jours'] <= 60)]
         elif filtre_age == "> 60 jours":  df_filtered = df_filtered[df_filtered['age_jours'] > 60]
+        # Calibre : appliqué seulement si les bornes sont resserrées (préserve les lots sans calibre par défaut)
+        if filtre_cal_min > 0 or filtre_cal_max < 100:
+            df_filtered = df_filtered[(df_filtered['calibre_min'] >= filtre_cal_min) & (df_filtered['calibre_max'] <= filtre_cal_max)]
 
         st.markdown("---")
         col1, col2, col3 = st.columns(3)
@@ -1001,8 +1011,10 @@ with tab3:
         df_display['Calibre'] = df_display.apply(
             lambda r: f"{int(r['calibre_min'])}-{int(r['calibre_max'])}"
             if pd.notna(r['calibre_min']) and pd.notna(r['calibre_max']) else "", axis=1)
+        _LBL_STATUT = {"BRUT": "🟢 BRUT", "LAVE": "🧼 LAVÉ",
+                       "GREN_BRUTES": "🌾 Gren. brutes", "GREN_LAVEES": "✨ Gren. lavées"}
         df_display['Statut']  = df_display['statut_lavage'].apply(
-            lambda s: "🟢 BRUT" if s == "BRUT" else ("🧼 LAVÉ" if s == "LAVE" else "🌾 GREN"))
+            lambda s: _LBL_STATUT.get(_statut_bucket(s), s or ""))
 
         st.dataframe(
             df_display[['code_lot_interne','variete','producteur','site_stockage',
