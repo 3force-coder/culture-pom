@@ -988,11 +988,12 @@ if len(lots_to_display) > 0:
                     st.markdown("---")
                     st.markdown(f"##### ➕ Ajouter Emplacement - Lot {lot_info['code_lot_interne']}")
                     
-                    # ⭐ Calculer nombre unités suggéré depuis lot
-                    poids_brut_lot = float(lot_info.get('poids_total_brut_kg') or 0)
+                    # ⭐ Calculer nombre unités suggéré depuis lot (protégé NaN/None)
+                    _poids_raw = lot_info.get('poids_total_brut_kg')
+                    poids_brut_lot = float(_poids_raw) if pd.notna(_poids_raw) else 0.0
                     
                     # Estimer nombre pallox selon poids (Pallox standard 1900kg)
-                    nombre_suggere = max(1, int(round(poids_brut_lot / 1900)))
+                    nombre_suggere = max(1, int(round(poids_brut_lot / 1900))) if poids_brut_lot > 0 else 1
                     
                     st.info(f"💡 **Poids total lot** : {format_number_fr(poids_brut_lot)} kg → Suggéré : **{nombre_suggere} Pallox**")
                     
@@ -1457,9 +1458,10 @@ if len(lots_to_display) > 0:
                     st.markdown("---")
                     st.markdown(f"##### ➕ Ajouter Emplacement - Lot {lot_info['code_lot_interne']}")
                     
-                    # ⭐ Calculer nombre unités suggéré depuis lot
-                    poids_brut_lot = float(lot_info.get('poids_total_brut_kg') or 0)
-                    nombre_suggere = max(1, int(round(poids_brut_lot / 1900)))
+                    # ⭐ Calculer nombre unités suggéré depuis lot (protégé NaN/None)
+                    _poids_raw = lot_info.get('poids_total_brut_kg')
+                    poids_brut_lot = float(_poids_raw) if pd.notna(_poids_raw) else 0.0
+                    nombre_suggere = max(1, int(round(poids_brut_lot / 1900))) if poids_brut_lot > 0 else 1
                     
                     st.info(f"💡 **Poids total lot** : {format_number_fr(poids_brut_lot)} kg → Suggéré : **{nombre_suggere} Pallox**")
                     
@@ -1491,6 +1493,30 @@ if len(lots_to_display) > 0:
                             poids_unit_theorique = 1600
                         
                         poids_theorique = nombre * poids_unit_theorique
+                    
+                    # ⭐ STATUT LAVAGE ET CALIBRE
+                    st.markdown("---")
+                    st.markdown("**🏷️ Statut et Calibre**")
+                    
+                    col_statut, col_cal_min, col_cal_max = st.columns([2, 1, 1])
+                    
+                    with col_statut:
+                        STATUTS = ["BRUT", "LAVÉ", "GRENAILLES_BRUTES", "GRENAILLES_LAVÉES"]
+                        statut_lavage = st.selectbox("Statut lavage *", options=STATUTS, index=0, key=f"add_statut_first_{lot_id}")
+                    
+                    with col_cal_min:
+                        cal_min_raw = lot_info.get('calibre_min')
+                        cal_min_defaut = int(cal_min_raw) if pd.notna(cal_min_raw) else 0
+                        calibre_min = st.number_input("Calibre min *", min_value=0, max_value=100, value=cal_min_defaut, key=f"add_cal_min_first_{lot_id}")
+                    
+                    with col_cal_max:
+                        cal_max_raw = lot_info.get('calibre_max')
+                        cal_max_defaut = int(cal_max_raw) if pd.notna(cal_max_raw) else 75
+                        calibre_max = st.number_input("Calibre max *", min_value=0, max_value=100, value=cal_max_defaut, key=f"add_cal_max_first_{lot_id}")
+                    
+                    # Validation calibre
+                    if calibre_min >= calibre_max:
+                        st.error("❌ Calibre min doit être < calibre max")
                     
                     # ⭐ POIDS MODIFIABLE (ligne complète)
                     st.markdown("---")
@@ -1527,13 +1553,16 @@ if len(lots_to_display) > 0:
                     col_save, col_cancel = st.columns(2)
                     
                     with col_save:
-                        if st.button("💾 Enregistrer", key=f"save_add_first_{lot_id}", type="primary", use_container_width=True):
+                        can_save = calibre_min < calibre_max
+                        if st.button("💾 Enregistrer", key=f"save_add_first_{lot_id}", type="primary", use_container_width=True, disabled=not can_save):
                             if site and emplacement and nombre and type_cond:
-                                # ⭐ Passer le poids saisi à la fonction
+                                # ⭐ Passer le poids saisi, statut et calibre à la fonction
                                 success, message = add_emplacement(
                                     lot_id, site, emplacement, nombre, type_cond,
-                                    statut_lavage='BRUT',
-                                    poids_total_saisi=poids_total_saisi
+                                    statut_lavage=statut_lavage,
+                                    poids_total_saisi=poids_total_saisi,
+                                    calibre_min=calibre_min,
+                                    calibre_max=calibre_max
                                 )
                                 if success:
                                     st.success(message)
