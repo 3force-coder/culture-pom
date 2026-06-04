@@ -375,7 +375,7 @@ def get_stock_complet():
                    se.site_stockage, se.emplacement_stockage,
                    se.nombre_unites, se.poids_total_kg,
                    COALESCE(se.statut_lavage, 'BRUT') as statut_lavage,
-                   se.type_conditionnement, l.calibre_min, l.calibre_max,
+                   se.type_conditionnement, se.calibre_min, se.calibre_max,
                    l.age_jours, l.date_entree_stock
             FROM stock_emplacements se
             JOIN lots_bruts l ON se.lot_id = l.id
@@ -389,9 +389,13 @@ def get_stock_complet():
         conn.close()
         if rows:
             df = pd.DataFrame(rows)
-            for col in ['nombre_unites', 'poids_total_kg', 'calibre_min', 'calibre_max', 'age_jours']:
+            for col in ['nombre_unites', 'poids_total_kg', 'age_jours']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            # Calibre emplacement : NaN conservé (calibre non renseigné -> affiché vide, ignoré par le filtre)
+            for col in ['calibre_min', 'calibre_max']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
             return df
         return pd.DataFrame()
     except Exception as e:
