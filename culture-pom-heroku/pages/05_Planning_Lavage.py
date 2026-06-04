@@ -3206,7 +3206,7 @@ def get_infos_etiquette_job(job_id):
 
     Retourne un dict (ou None) : variete, code_lot_interne, nom_usage, producteur,
     etiquette_pallox (= destination client lavé), etiquette_grenailles,
-    calibre_seuil/min_sortie/max_sortie, date_terminaison, date_prevue,
+    calibre_seuil/min_sortie/max_sortie, date_activation, date_terminaison, date_prevue,
     global_gap (booléen du producteur).
     """
     try:
@@ -3218,7 +3218,7 @@ def get_infos_etiquette_job(job_id):
                    COALESCE(p.nom, lj.producteur) as producteur,
                    lj.etiquette_pallox, lj.etiquette_grenailles,
                    lj.calibre_seuil, lj.calibre_min_sortie, lj.calibre_max_sortie,
-                   lj.date_terminaison, lj.date_prevue,
+                   lj.date_activation, lj.date_terminaison, lj.date_prevue,
                    COALESCE(p.global_gap, FALSE) as global_gap
             FROM lavages_jobs lj
             LEFT JOIN lots_bruts lb ON lj.lot_id = lb.id
@@ -3266,8 +3266,9 @@ def generer_etiquettes_html(infos, type_etiquette, nb_etiquettes, pays="FR", des
         destination = destination_override
     else:
         destination = infos.get('etiquette_pallox') if is_lave else infos.get('etiquette_grenailles')
-    # Date de lavage = terminaison sinon prévue
-    dlav = infos.get('date_terminaison') or infos.get('date_prevue')
+    # Date de lavage = date de DÉMARRAGE du job (passage EN_COURS = date_activation)
+    # Fallback sur la date prévue si le job n'a pas encore été démarré
+    dlav = infos.get('date_activation') or infos.get('date_prevue')
     date_lav = dlav.strftime('%d/%m/%Y') if dlav else ""
     gap_txt = "OUI" if infos.get('global_gap') else "NON"
     bandeau = "#AFCA0A" if is_lave else "#f57c00"
