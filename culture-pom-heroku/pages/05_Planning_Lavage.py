@@ -6284,7 +6284,7 @@ with tab3:
                                 with col_q3:
                                     poids_l = qty_l * poids_unit_l
                                     st.metric("Poids", f"{poids_l/1000:.1f} T")
-                                qtys[ld['lot_id']] = (qty_l, poids_l, ld, type_cond_l)
+                                qtys[(ld['lot_id'], ld['emplacement_id'])] = (qty_l, poids_l, ld, type_cond_l)
                                 st.markdown("<hr style='margin:0.3rem 0;border:none;border-top:1px solid #eee;'>", unsafe_allow_html=True)
                             else:
                                 # MONO-LOT inchangé
@@ -6317,7 +6317,7 @@ with tab3:
                                 col_m1, col_m2 = st.columns(2)
                                 col_m1.metric("Poids total", f"{poids_l:,.0f} kg")
                                 col_m2.metric("Temps estimé", f"{(poids_l/1000)/cadence_t2:.1f} h")
-                                qtys[ld['lot_id']] = (qty_l, poids_l, ld)
+                                qtys[(ld['lot_id'], ld['emplacement_id'])] = (qty_l, poids_l, ld)
 
                         # ── Récap batch ──
                         if is_batch:
@@ -6326,7 +6326,7 @@ with tab3:
                             col_b1, col_b2, col_b3 = st.columns(3)
                             col_b1.metric("Poids total batch", f"{total_poids_batch:.1f} T")
                             col_b2.metric("Temps estimé", f"{temps_batch:.1f} h")
-                            col_b3.metric("Nb lots", len(qtys))
+                            col_b3.metric("Nb lignes", len(qtys), help="Nombre de lignes lot / emplacement (un lot peut être sur plusieurs frigos)")
 
                         # Widget des 5 infos métier (obligatoires)
                         infos_metier_t2 = ui_saisie_infos_metier_lavage(key_prefix="lots_brut")
@@ -6342,9 +6342,9 @@ with tab3:
                                     {
                                         'lot_id': ld['lot_id'],
                                         'emplacement_id': ld['emplacement_id'],
-                                        'quantite_pallox': qtys[ld['lot_id']][0],
-                                        'poids_brut_kg': qtys[ld['lot_id']][1],
-                                        'type_conditionnement': qtys[ld['lot_id']][3],
+                                        'quantite_pallox': qtys[(ld['lot_id'], ld['emplacement_id'])][0],
+                                        'poids_brut_kg': qtys[(ld['lot_id'], ld['emplacement_id'])][1],
+                                        'type_conditionnement': qtys[(ld['lot_id'], ld['emplacement_id'])][3],
                                     }
                                     for ld in lots_sel_data
                                 ]
@@ -6366,7 +6366,7 @@ with tab3:
                                     st.error(msg_b)
                             else:
                                 ld = lots_sel_data[0]
-                                qty_s, poids_s, _ = qtys[ld['lot_id']]
+                                qty_s, poids_s, _ = qtys[(ld['lot_id'], ld['emplacement_id'])]
                                 ok_s, msg_s = create_job_lavage(
                                     ld['lot_id'], ld['emplacement_id'],
                                     qty_s, poids_s,
@@ -6630,7 +6630,7 @@ with tab3:
                                 with col_q3:
                                     poids_l = qty_l * poids_unit_l
                                     st.metric("Poids", f"{poids_l/1000:.1f} T")
-                                qtys[ld['lot_id']] = (qty_l, poids_l, ld, type_cond_l)
+                                qtys[(ld['lot_id'], ld['emplacement_id'])] = (qty_l, poids_l, ld, type_cond_l)
                                 st.markdown("<hr style='margin:0.3rem 0;border:none;border-top:1px solid #eee;'>", unsafe_allow_html=True)
                             else:
                                 # MONO-LOT inchangé
@@ -6663,7 +6663,7 @@ with tab3:
                                 col_m1, col_m2 = st.columns(2)
                                 col_m1.metric("Poids total", f"{poids_l:,.0f} kg")
                                 col_m2.metric("Temps estimé", f"{(poids_l/1000)/cadence_t2:.1f} h")
-                                qtys[ld['lot_id']] = (qty_l, poids_l, ld)
+                                qtys[(ld['lot_id'], ld['emplacement_id'])] = (qty_l, poids_l, ld)
 
                         # ── Récap batch ──
                         if is_batch:
@@ -6672,7 +6672,7 @@ with tab3:
                             col_b1, col_b2, col_b3 = st.columns(3)
                             col_b1.metric("Poids total batch", f"{total_poids_batch:.1f} T")
                             col_b2.metric("Temps estimé", f"{temps_batch:.1f} h")
-                            col_b3.metric("Nb lots", len(qtys))
+                            col_b3.metric("Nb lignes", len(qtys), help="Nombre de lignes lot / emplacement (un lot peut être sur plusieurs frigos)")
 
                         # Widget des 5 infos métier (obligatoires)
                         infos_metier_t2 = ui_saisie_infos_metier_lavage(key_prefix="lots_relav")
@@ -6688,9 +6688,9 @@ with tab3:
                                     {
                                         'lot_id': ld['lot_id'],
                                         'emplacement_id': ld['emplacement_id'],
-                                        'quantite_pallox': qtys[ld['lot_id']][0],
-                                        'poids_brut_kg': qtys[ld['lot_id']][1],
-                                        'type_conditionnement': qtys[ld['lot_id']][3],
+                                        'quantite_pallox': qtys[(ld['lot_id'], ld['emplacement_id'])][0],
+                                        'poids_brut_kg': qtys[(ld['lot_id'], ld['emplacement_id'])][1],
+                                        'type_conditionnement': qtys[(ld['lot_id'], ld['emplacement_id'])][3],
                                     }
                                     for ld in lots_sel_data
                                 ]
@@ -6712,7 +6712,7 @@ with tab3:
                                     st.error(msg_b)
                             else:
                                 ld = lots_sel_data[0]
-                                qty_s, poids_s, _ = qtys[ld['lot_id']]
+                                qty_s, poids_s, _ = qtys[(ld['lot_id'], ld['emplacement_id'])]
                                 ok_s, msg_s = create_job_lavage(
                                     ld['lot_id'], ld['emplacement_id'],
                                     qty_s, poids_s,
