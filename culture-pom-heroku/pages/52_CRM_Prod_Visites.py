@@ -647,17 +647,16 @@ with tab1:
                 note = safe_int(visite.get('note_qualite_pdt'), 0)
                 note_display = f"⭐ {note}/10" if note > 0 else ''
 
-                st.markdown(f"""
-                <div class="{card_class}">
-                    <strong>📅 {date_str}</strong> — {visite['producteur_nom']} ({visite['ville'] or '—'})<br>
-                    <strong>Type :</strong> {visite.get('type_visite') or '—'}
-                    {' &nbsp; | &nbsp; <strong>Dépôt :</strong> ' + str(visite['depot_libelle']) if visite.get('depot_libelle') else ''}
-                    <br>
-                    <strong>Intervenant :</strong> {visite.get('intervenant') or '—'}
-                    &nbsp; | &nbsp; <strong>Statut :</strong> {statut}
-                    &nbsp; {note_display}
-                </div>
-                """, unsafe_allow_html=True)
+                depot_html = (' &nbsp; | &nbsp; <strong>Dépôt :</strong> ' + str(visite['depot_libelle'])) if visite.get('depot_libelle') else ''
+                st.markdown(
+                    f'<div class="{card_class}">'
+                    f'<strong>📅 {date_str}</strong> — {visite["producteur_nom"]} ({visite["ville"] or "—"})<br>'
+                    f'<strong>Type :</strong> {visite.get("type_visite") or "—"}{depot_html}<br>'
+                    f'<strong>Intervenant :</strong> {visite.get("intervenant") or "—"}'
+                    f' &nbsp; | &nbsp; <strong>Statut :</strong> {statut} &nbsp; {note_display}'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
 
                 if visite.get('compte_rendu'):
                     st.info(f"📝 {visite['compte_rendu']}")
@@ -719,10 +718,10 @@ with tab2:
                                  expanded=True):
                     for v in par_date[d]:
                         depot = f" — Dépôt {v['depot_libelle']}" if v.get('depot_libelle') else ''
-                        st.markdown(f"""
-                        - **{v['producteur_nom']}** ({v['ville'] or '—'}){depot}
-                          — {v.get('type_visite') or '—'} — {v.get('intervenant') or '—'}
-                        """)
+                        st.markdown(
+                            f"- **{v['producteur_nom']}** ({v['ville'] or '—'}){depot}"
+                            f" — {v.get('type_visite') or '—'} — {v.get('intervenant') or '—'}"
+                        )
 
     with sub_mois:
         st.subheader("🗓️ Planning par mois")
@@ -754,6 +753,11 @@ with tab3:
         st.warning("⚠️ Aucun producteur disponible.")
     else:
         st.subheader("➕ Nouvelle visite")
+
+        # Message de succès persistant après création (évite la confusion / double-clic)
+        if st.session_state.get('visite_success_msg'):
+            st.success(st.session_state.pop('visite_success_msg'))
+            st.caption("Le formulaire a été réinitialisé. Consultez l'onglet « Liste des visites » pour la retrouver.")
 
         # Pré-sélection contexte depuis page 50 (Q6)
         preselect_prod_id = st.session_state.get('new_pvisite_producteur_id')
@@ -803,6 +807,16 @@ with tab3:
                                           "dates plantation/arrachage prévues...")
         new_actions = st.text_area("Actions à suivre", key="new_actions_v", height=80)
 
+        # Création auto de la prochaine visite si une date est renseignée
+        creer_prochaine = False
+        if new_proch:
+            creer_prochaine = st.checkbox(
+                f"➕ Créer aussi la prochaine visite (PLANIFIÉE le {new_proch.strftime('%d/%m/%Y')})",
+                value=True, key="new_creer_proch_v",
+                help="Crée automatiquement une 2e visite planifiée à cette date, "
+                     "avec le même producteur, type et intervenant."
+            )
+
         is_creating = st.session_state.get('is_creating_v', False)
         if st.button("✅ Créer la visite", type="primary", key="btn_create_v",
                      disabled=is_creating):
@@ -820,7 +834,27 @@ with tab3:
                 'actions_suivre': new_actions,
             })
             if ok:
-                st.success(msg)
+                messages = [msg]
+                # Création auto de la prochaine visite (PLANIFIEE), si demandé
+                if new_proch and creer_prochaine:
+                    ok2, msg2 = create_visite({
+                        'producteur_id': new_prod[0],
+                        'depot_id': new_dep[0],
+                        'type_visite_id': new_type[0],
+                        'intervenant_id': new_interv[0],
+                        'date_visite': new_proch,
+                        'statut': 'PLANIFIEE',
+                        'compte_rendu': None,
+                        'note_qualite_pdt': None,
+                        'prochaine_visite_date': None,
+                        'actions_suivre': None,
+                    })
+                    if ok2:
+                        messages.append(f"📅 Prochaine visite planifiée le {new_proch.strftime('%d/%m/%Y')} ({msg2})")
+                    else:
+                        messages.append(f"⚠️ Prochaine visite NON créée : {msg2}")
+                # Message persistant après rerun + reset du formulaire
+                st.session_state['visite_success_msg'] = " — ".join(messages)
                 for k in list(st.session_state.keys()):
                     if k.startswith('new_') and k.endswith('_v'):
                         st.session_state.pop(k, None)
