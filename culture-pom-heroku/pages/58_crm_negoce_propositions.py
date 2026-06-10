@@ -119,7 +119,7 @@ def get_propositions(filtres=None):
         cursor = conn.cursor()
         query = """
             SELECT p.id, p.date_proposition, p.volume_t, p.prix_eur_t, p.statut,
-                   p.contrat_id, p.notes,
+                   p.ligne_id, p.notes,
                    c.code_client, c.raison_sociale,
                    COALESCE(v.nom_variete, v.code_variete) AS variete,
                    COALESCE(pr.nom, pr.code_producteur) AS producteur,
@@ -212,15 +212,17 @@ def supprimer_proposition(prop_id):
         return False, f"❌ Erreur : {e}"
 
 
-def convertir_en_contrat(prop_id):
-    """Crée un contrat (statut SIGNE) depuis une proposition, lie les deux,
-    et passe la proposition en ACCEPTEE. Transaction unique."""
+def convertir_en_ligne(prop_id):
+    """Crée une LIGNE autonome (statut PREVUE) depuis une proposition, lie les deux,
+    et passe la proposition en ACCEPTEE. La ligne est autonome (contrat_id NULL, Q1=A).
+    Mapping : volume -> volume_prevu_t, prix -> prix_eur_t, client/variété/producteur repris.
+    Transaction unique."""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         # Lire la proposition
         cursor.execute("""
-            SELECT client_id, variete_id, producteur_id, volume_t, prix_eur_t, contrat_id
+            SELECT client_id, variete_id, producteur_id, volume_t, prix_eur_t, ligne_id
             FROM crm_neg_propositions WHERE id = %s
         """, (int(prop_id),))
         p = cursor.fetchone()
@@ -228,30 +230,31 @@ def convertir_en_contrat(prop_id):
             cursor.close()
             conn.close()
             return False, "Proposition introuvable", None
-        if p['contrat_id']:
+        if p['ligne_id']:
             cursor.close()
             conn.close()
-            return False, f"Cette proposition est déjà liée au contrat #{p['contrat_id']}", None
-        # Créer le contrat
+            return False, f"Cette proposition est déjà liée à la ligne #{p['ligne_id']}", None
+        # Créer la ligne autonome (contrat_id NULL)
         cursor.execute("""
-            INSERT INTO crm_neg_contrats
-                (client_id, variete_id, producteur_id, volume_t, prix_eur_t,
-                 statut, proposition_id, created_by)
-            VALUES (%s,%s,%s,%s,%s,'SIGNE',%s,%s) RETURNING id
+            INSERT INTO crm_neg_contrat_lignes
+                (contrat_id, client_id, variete_id, producteur_id, statut,
+                 volume_prevu_t, prix_eur_t, notes, created_by)
+            VALUES (NULL,%s,%s,%s,'PREVUE',%s,%s,%s,%s) RETURNING id
         """, (
             p['client_id'], p['variete_id'], p['producteur_id'],
-            p['volume_t'], p['prix_eur_t'], int(prop_id),
+            p['volume_t'], p['prix_eur_t'],
+            f"Issue de la proposition #{int(prop_id)}",
             st.session_state.get('username', 'system')
         ))
-        contrat_id = cursor.fetchone()['id']
-        # Lier la proposition au contrat + passer ACCEPTEE
+        ligne_id = cursor.fetchone()['id']
+        # Lier la proposition à la ligne + passer ACCEPTEE
         cursor.execute("""
-            UPDATE crm_neg_propositions SET contrat_id=%s, statut='ACCEPTEE' WHERE id=%s
-        """, (contrat_id, int(prop_id)))
+            UPDATE crm_neg_propositions SET ligne_id=%s, statut='ACCEPTEE' WHERE id=%s
+        """, (ligne_id, int(prop_id)))
         conn.commit()
         cursor.close()
         conn.close()
-        return True, f"✅ Contrat #{contrat_id} créé depuis la proposition", contrat_id
+        return True, f"✅ Ligne #{ligne_id} créée depuis la proposition", ligne_id
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
@@ -295,10 +298,10 @@ with tab_liste:
             d_aff = pd.to_datetime(p['date_proposition']).strftime('%d/%m/%Y')
             vol = f"{float(p['volume_t']):,.0f} T" if pd.notna(p['volume_t']) else '—'
             prix = f"{float(p['prix_eur_t']):,.0f} €/T" if pd.notna(p['prix_eur_t']) else '—'
-            lien_contrat = f" · 📄 Contrat #{int(p['contrat_id'])}" if pd.notna(p['contrat_id']) else ""
+            lien_ligne = f" · 📦 Ligne #{int(p['ligne_id'])}" if pd.notna(p['ligne_id']) else ""
             st.markdown(
                 f'<div class="{css}"><strong>{d_aff}</strong> — {p["code_client"]} ({p["raison_sociale"] or "—"})'
-                f' &nbsp;<span class="badge" style="background:#eee">{p["statut"]}</span>{lien_contrat}<br>'
+                f' &nbsp;<span class="badge" style="background:#eee">{p["statut"]}</span>{lien_ligne}<br>'
                 f'🥔 {p["variete"] or "—"} · 👨‍🌾 {p["producteur"] or "—"} · {vol} · {prix}'
                 f'{(" · 👤 " + p["contact"]) if p["contact"] and p["contact"].strip() else ""}</div>',
                 unsafe_allow_html=True)
@@ -306,12 +309,12 @@ with tab_liste:
                 st.caption(f"📝 {p['notes']}")
 
             cols = st.columns([1, 1, 1, 3])
-            # Conversion en contrat (si pas déjà liée et statut EMISE/ACCEPTEE)
+            # Conversion en ligne autonome (si pas déjà liée et statut EMISE/ACCEPTEE)
             with cols[0]:
-                if CAN_EDIT and pd.isna(p['contrat_id']) and p['statut'] in ('EMISE', 'ACCEPTEE'):
-                    if st.button("📄 Convertir", key=f"conv_{p['id']}",
-                                 help="Créer un contrat depuis cette proposition"):
-                        ok, msg, cid = convertir_en_contrat(p['id'])
+                if CAN_EDIT and pd.isna(p['ligne_id']) and p['statut'] in ('EMISE', 'ACCEPTEE'):
+                    if st.button("📦 Convertir en ligne", key=f"conv_{p['id']}",
+                                 help="Créer une ligne autonome depuis cette proposition"):
+                        ok, msg, lid = convertir_en_ligne(p['id'])
                         st.session_state['prop_msg'] = msg
                         st.rerun()
             with cols[1]:
