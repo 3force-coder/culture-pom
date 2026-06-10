@@ -136,6 +136,7 @@ pages = {
     ],
         "🌍 CRM Négoce-Export": [
         st.Page("pages/55_crm_negoce_clients.py",      title="Clients & Contacts",  icon="🏢"),
+        st.Page("pages/56_crm_negoce_lignes.py",       title="Lignes",             icon="📦"),
         st.Page("pages/57_crm_negoce_contrats.py",     title="Contrats de vente",   icon="📄"),
         st.Page("pages/58_crm_negoce_propositions.py", title="Propositions",        icon="💡"),
         st.Page("pages/59_crm_negoce_litiges.py",      title="Litiges & Lignes",    icon="⚖️"),
