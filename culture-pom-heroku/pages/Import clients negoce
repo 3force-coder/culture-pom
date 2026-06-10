@@ -1,0 +1,300 @@
+"""
+Import des clients Négoce-Export depuis l'export SharePoint Excel.
+
+À lancer APRÈS migration_crm_negoce_v1.py.
+
+Mapping (validé Julien 2026-06) :
+  Title                      -> code_client
+  Nom de la société          -> raison_sociale
+  Catégorie                  -> categorie
+  Langue                     -> langue
+  Nom/Prénom du gérant       -> nom_gerant/prenom_gerant + contact DIRECTION
+  SIRET / TVA                -> siret / tva
+  Montant assurance crédit   -> montant_assurance_credit
+  Référent client Interne    -> referent_interne + matching referent_user_id (comptes app)
+  Pays/Ville/CP              -> normalisés (FR -> FRANCE, strip)
+  Adresses                   -> parse JSON SharePoint (DisplayName) sinon brut
+  Commentaires               -> notes
+  Debut Campagne             -> debut_campagne (texte libre)
+  Dernier contact client     -> interaction historique type SUIVI (si date)
+  Bloc commercial            -> contact COMM (principal)
+  Bloc administratif         -> contact ADMIN
+  Mail logistique            -> contact LOGISTIQUE
+
+Ré-exécutable sans doublon : ON CONFLICT (code_client) DO NOTHING (les clients
+déjà importés sont ignorés, rapport en fin de script).
+
+USAGE :
+  pip3 install psycopg2-binary openpyxl   (si pas déjà fait)
+  python3 import_clients_negoce.py [chemin_du_fichier.xlsx]
+  (sans argument : cherche 'clients_négoce_.xlsx' dans le dossier courant)
+"""
+import sys
+import json
+import re
+import datetime
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from openpyxl import load_workbook
+
+if sys.platform == "win32":
+    import codecs
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+
+DATABASE_URL = "postgresql://u8fafht88lvtnt:p42c6cb90faa6ceaa84b011769f50aee9e2af1272183236e9df633d514e1cd797@c56ek37a3ak9jo.cluster-czz5s0kz4scl.eu-west-1.rds.amazonaws.com:5432/dfe2dfrd3gcho5"
+
+FICHIER_DEFAUT = "clients_négoce_.xlsx"
+
+# Indices des colonnes (0-based) de l'export SharePoint
+COL = {
+    'title': 0, 'referent': 1, 'societe': 2, 'categorie': 3, 'langue': 4,
+    'nom_gerant': 5, 'prenom_gerant': 6, 'siret': 7, 'tva': 8,
+    'assurance': 9, 'nom_comm': 10, 'mail_comm': 11, 'tel_comm': 12,
+    'nom_admin': 13, 'mail_admin': 14, 'tel_admin': 15, 'mail_logi': 16,
+    'pays': 17, 'ville': 18, 'cp': 19, 'adr_fact': 20, 'adr_depot': 21,
+    'dernier_contact': 22, 'commentaires': 23, 'debut_campagne': 24,
+}
+
+PAYS_NORMALISATION = {
+    'FR': 'FRANCE', 'FRANCE': 'FRANCE',
+}
+
+
+def clean(v):
+    """Nettoie une valeur de cellule : None si vide, str strippée sinon."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s if s else None
+
+
+def parse_adresse(v):
+    """Parse une adresse SharePoint.
+
+    - JSON valide -> DisplayName (ou Address.Street)
+    - JSON tronqué/invalide -> extraction DisplayName par regex
+    - JSON sans adresse utile (bruit de géoloc Score/EntityType) -> None
+    - Texte simple -> brut
+    """
+    s = clean(v)
+    if not s:
+        return None
+    if s.startswith('{'):
+        try:
+            data = json.loads(s)
+            dn = data.get('DisplayName') or data.get('Address', {}).get('Street')
+            return str(dn).strip() if dn else None
+        except (json.JSONDecodeError, AttributeError):
+            m = re.search(r'"DisplayName"\s*:\s*"([^"]*)"', s)
+            if m and m.group(1).strip():
+                return m.group(1).strip()
+            return None  # JSON cassé sans adresse exploitable -> pas de bruit en base
+    return s
+
+
+def norm_pays(v):
+    s = clean(v)
+    if not s:
+        return None
+    s = s.upper().strip()
+    return PAYS_NORMALISATION.get(s, s)
+
+
+def to_decimal(v):
+    s = clean(v)
+    if s is None:
+        return None
+    try:
+        return float(str(s).replace(',', '.').replace(' ', ''))
+    except ValueError:
+        return None
+
+
+def to_date(v):
+    if isinstance(v, datetime.datetime):
+        return v.date()
+    if isinstance(v, datetime.date):
+        return v
+    return None
+
+
+def main():
+    fichier = sys.argv[1] if len(sys.argv) > 1 else FICHIER_DEFAUT
+    print(f"\nIMPORT CLIENTS NÉGOCE — fichier : {fichier}\n")
+
+    try:
+        wb = load_workbook(fichier, data_only=True)
+    except FileNotFoundError:
+        print(f"ERREUR : fichier '{fichier}' introuvable dans le dossier courant.")
+        return 1
+    ws = wb[wb.sheetnames[0]]
+    rows = list(ws.iter_rows(min_row=2, values_only=True))
+    print(f"{len(rows)} ligne(s) lues dans l'Excel.")
+
+    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    # Vérifier que la migration a été lancée
+    cursor.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'crm_neg_clients'")
+    if not cursor.fetchone():
+        print("ERREUR : table crm_neg_clients absente. Lancer d'abord migration_crm_negoce_v1.py")
+        return 1
+
+    # Référentiel fonctions
+    cursor.execute("SELECT id, code FROM crm_neg_fonctions")
+    fonctions = {r['code']: r['id'] for r in cursor.fetchall()}
+
+    # Matching référents -> comptes utilisateurs de l'application (détection défensive)
+    users_map = {}
+    cursor.execute("""
+        SELECT table_name FROM information_schema.tables
+        WHERE table_name IN ('users', 'app_users', 'utilisateurs') LIMIT 1
+    """)
+    t_users = cursor.fetchone()
+    if t_users:
+        t_users = t_users['table_name']
+        cursor.execute("""
+            SELECT column_name FROM information_schema.columns WHERE table_name = %s
+        """, (t_users,))
+        ucols = [r['column_name'] for r in cursor.fetchall()]
+        name_cols = [c for c in ['nom_complet', 'full_name', 'nom', 'name', 'username', 'prenom']
+                     if c in ucols]
+        if 'id' in ucols and name_cols:
+            cursor.execute(f"SELECT id, {', '.join(name_cols)} FROM {t_users}")
+            for u in cursor.fetchall():
+                for c in name_cols:
+                    if u.get(c):
+                        users_map[str(u[c]).strip().lower()] = u['id']
+        print(f"Table utilisateurs détectée : {t_users} ({len(users_map)} entrée(s) de matching)")
+    else:
+        print("Table utilisateurs non détectée — referent_user_id restera NULL (nom brut conservé).")
+
+    def match_user(nom_referent):
+        if not nom_referent:
+            return None
+        key = nom_referent.strip().lower()
+        if key in users_map:
+            return users_map[key]
+        # Tentative par sous-partie (prénom ou nom contenus)
+        for uname, uid in users_map.items():
+            if key in uname or uname in key:
+                return uid
+        return None
+
+    stats = {'clients': 0, 'skip': 0, 'contacts': 0, 'interactions': 0, 'erreurs': 0}
+    referents_non_matches = set()
+
+    for i, r in enumerate(rows, start=2):
+        code = clean(r[COL['title']])
+        if not code:
+            continue
+        try:
+            referent = clean(r[COL['referent']])
+            ref_uid = match_user(referent)
+            if referent and not ref_uid:
+                referents_non_matches.add(referent)
+
+            cursor.execute("""
+                INSERT INTO crm_neg_clients (
+                    code_client, raison_sociale, categorie, langue,
+                    nom_gerant, prenom_gerant, siret, tva,
+                    montant_assurance_credit, pays, ville, code_postal,
+                    adresse_facturation, adresse_depot,
+                    referent_interne, referent_user_id, debut_campagne, notes, created_by
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'import_sharepoint')
+                ON CONFLICT (code_client) DO NOTHING
+                RETURNING id
+            """, (
+                code,
+                clean(r[COL['societe']]),
+                clean(r[COL['categorie']]) or 'PROSPECT',
+                clean(r[COL['langue']]),
+                clean(r[COL['nom_gerant']]),
+                clean(r[COL['prenom_gerant']]),
+                clean(r[COL['siret']]),
+                clean(r[COL['tva']]),
+                to_decimal(r[COL['assurance']]),
+                norm_pays(r[COL['pays']]),
+                clean(r[COL['ville']]),
+                clean(r[COL['cp']]),
+                parse_adresse(r[COL['adr_fact']]),
+                parse_adresse(r[COL['adr_depot']]),
+                referent,
+                ref_uid,
+                clean(r[COL['debut_campagne']]),
+                clean(r[COL['commentaires']]),
+            ))
+            res = cursor.fetchone()
+            if not res:
+                stats['skip'] += 1
+                continue
+            client_id = res['id']
+            stats['clients'] += 1
+
+            # --- Contacts ---
+            def inserer_contact(nom, tel, mail, code_fct, principal=False, prenom=None):
+                if not any([clean(nom), clean(tel), clean(mail)]):
+                    return
+                cursor.execute("""
+                    INSERT INTO crm_neg_contacts
+                        (client_id, nom, prenom, fonction_id, telephone, email, is_principal, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'import_sharepoint')
+                """, (client_id, clean(nom), clean(prenom), fonctions.get(code_fct),
+                      clean(tel), clean(mail), principal))
+                stats['contacts'] += 1
+
+            inserer_contact(r[COL['nom_comm']], r[COL['tel_comm']], r[COL['mail_comm']],
+                            'COMM', principal=True)
+            inserer_contact(r[COL['nom_admin']], r[COL['tel_admin']], r[COL['mail_admin']],
+                            'ADMIN')
+            inserer_contact(None, None, r[COL['mail_logi']], 'LOGISTIQUE')
+            if clean(r[COL['nom_gerant']]) or clean(r[COL['prenom_gerant']]):
+                inserer_contact(r[COL['nom_gerant']], None, None, 'DIRECTION',
+                                prenom=r[COL['prenom_gerant']])
+
+            # --- Dernier contact -> interaction historique ---
+            d_contact = to_date(r[COL['dernier_contact']])
+            if d_contact:
+                cursor.execute("""
+                    INSERT INTO crm_neg_interactions
+                        (client_id, date_interaction, type_interaction, commentaire, created_by)
+                    VALUES (%s, %s, 'SUIVI', 'Dernier contact (import SharePoint)', 'import_sharepoint')
+                """, (client_id, d_contact))
+                stats['interactions'] += 1
+
+        except Exception as e:
+            stats['erreurs'] += 1
+            print(f"   ERREUR ligne {i} ({code}) : {e}")
+            conn.rollback()
+            continue
+
+    conn.commit()
+
+    print("\n" + "=" * 70)
+    print("RÉSULTAT IMPORT")
+    print("=" * 70)
+    print(f"   Clients importés      : {stats['clients']}")
+    print(f"   Clients déjà présents : {stats['skip']} (ignorés)")
+    print(f"   Contacts créés        : {stats['contacts']}")
+    print(f"   Interactions créées   : {stats['interactions']}")
+    print(f"   Erreurs               : {stats['erreurs']}")
+    if referents_non_matches:
+        print(f"\n   Référents NON matchés avec un compte utilisateur (nom brut conservé) :")
+        for ref in sorted(referents_non_matches):
+            print(f"     - {ref}")
+        print("   -> Tu pourras les relier manuellement plus tard si besoin.")
+
+    # Vérification finale
+    cursor.execute("SELECT categorie, COUNT(*) as nb FROM crm_neg_clients GROUP BY categorie ORDER BY nb DESC")
+    print("\n   Répartition par catégorie en base :")
+    for r in cursor.fetchall():
+        print(f"     {r['categorie']:20s} {r['nb']}")
+
+    cursor.close()
+    conn.close()
+    print("\nImport terminé.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
