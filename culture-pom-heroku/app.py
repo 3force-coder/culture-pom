@@ -135,10 +135,10 @@ pages = {
         # st.Page("pages/54_CRM_Prod_Dashboard.py",   title="Dashboard",    icon="📊"),
     ],
         "🌍 CRM Négoce-Export": [
-        st.Page("pages/55_crm_negoce_clients",      title="Clients & Contacts",  icon="🏢"),
-        st.Page("pages/57_crm_negoce_contrats",     title="Contrats de vente",   icon="📄"),
-        st.Page("pages/58_crm_negoce_propositions", title="Propositions",        icon="💡"),
-        st.Page("pages/59_crm_negoce_litiges",      title="Litiges & Lignes",    icon="⚖️"),
+        st.Page("pages/55_crm_negoce_clients.py",      title="Clients & Contacts",  icon="🏢"),
+        st.Page("pages/57_crm_negoce_contrats.py",     title="Contrats de vente",   icon="📄"),
+        st.Page("pages/58_crm_negoce_propositions.py", title="Propositions",        icon="💡"),
+        st.Page("pages/59_crm_negoce_litiges.py",      title="Litiges & Lignes",    icon="⚖️"),
     ],
     "💰 Finance": [
         st.Page("pages/09_Valorisation_Lots.py", title="Valorisation Lots", icon="💰"),
