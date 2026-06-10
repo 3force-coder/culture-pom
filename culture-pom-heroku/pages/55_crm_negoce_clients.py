@@ -433,50 +433,11 @@ tab_clients, tab_inter = st.tabs(["🏢 Clients & Contacts", "📜 Interactions 
 # ONGLET 1 — CLIENTS (master-détail) + contacts + interactions client
 # ------------------------------------------------------------
 with tab_clients:
-    col_liste, col_detail = st.columns([1, 2])
-
-    # ----- COLONNE GAUCHE : filtres + liste -----
-    with col_liste:
-        st.markdown("#### 🔎 Filtres")
-        cats = ['— Toutes —'] + get_categories()
-        f_cat = st.selectbox("Catégorie", cats, key="f_cat_neg")
-        pays_opts = ['— Tous —'] + get_pays_list()
-        f_pays = st.selectbox("Pays", pays_opts, key="f_pays_neg")
-        ref_opts = ['— Tous —'] + get_referents_list()
-        f_ref = st.selectbox("Référent", ref_opts, key="f_ref_neg")
-        lang_opts = ['— Toutes —'] + get_langues_list()
-        f_lang = st.selectbox("Langue", lang_opts, key="f_lang_neg")
-        f_search = st.text_input("Recherche (code / nom)", key="f_search_neg")
-        f_inact = st.checkbox("Inclure inactifs", value=False, key="f_inact_neg")
-
-        df_clients = get_clients({
-            'categorie': f_cat, 'pays': f_pays, 'referent': f_ref, 'langue': f_lang,
-            'recherche': f_search, 'inclure_inactifs': f_inact
-        })
-        st.markdown(f"**{len(df_clients)} client(s)**")
-
-        if df_clients.empty:
-            st.info("Aucun client.")
-        else:
-            for _, c in df_clients.iterrows():
-                sel = st.session_state.get('neg_client_sel') == int(c['id'])
-                label = f"{c['code_client']} — {c['raison_sociale'] or '—'}"
-                meta = f"{c['categorie'] or '—'} · {c['pays'] or '—'} · 👤{int(c['nb_contacts'])}"
-                if st.button(f"{label}\n\n{meta}", key=f"selc_{c['id']}",
-                             use_container_width=True,
-                             type="primary" if sel else "secondary"):
-                    st.session_state['neg_client_sel'] = int(c['id'])
-                    st.session_state.pop('neg_edit_mode', None)
-                    st.rerun()
-
-        st.markdown("---")
-        if CAN_EDIT and st.button("➕ Nouveau client", use_container_width=True, key="btn_new_client"):
-            st.session_state['neg_client_sel'] = 'NEW'
-            st.session_state.pop('neg_edit_mode', None)
-            st.rerun()
-
-    # ----- COLONNE DROITE : fiche détail -----
-    with col_detail:
+    # ============================================================
+    # PANNEAU DÉTAIL EN HAUT (fiche du client sélectionné / création)
+    # L'utilisateur est ramené ici au clic sur une ligne de la table.
+    # ============================================================
+    if True:
         sel = st.session_state.get('neg_client_sel')
 
         # --- Création d'un nouveau client ---
@@ -560,7 +521,7 @@ with tab_clients:
 
         # --- Aucun client sélectionné ---
         elif not sel:
-            st.info("👈 Sélectionne un client dans la liste, ou crée-en un nouveau.")
+            st.caption("👇 Cliquez une ligne dans la table ci-dessous pour afficher la fiche ici, ou créez un nouveau client.")
 
         # --- Fiche d'un client existant ---
         else:
@@ -570,6 +531,13 @@ with tab_clients:
             else:
                 if st.session_state.get('neg_detail_msg'):
                     st.success(st.session_state.pop('neg_detail_msg'))
+
+                col_close1, col_close2 = st.columns([5, 1])
+                with col_close2:
+                    if st.button("✖ Fermer", key="btn_close_fiche", use_container_width=True):
+                        st.session_state.pop('neg_client_sel', None)
+                        st.session_state.pop('neg_edit_mode', None)
+                        st.rerun()
 
                 statut_badge = "" if client['is_active'] else " 🔴 INACTIF"
                 st.markdown(
@@ -804,6 +772,66 @@ with tab_clients:
                                 f'<span class="badge-cat">{it["type_interaction"]}</span>{contact_aff}'
                                 f'<br>{comm}</div>',
                                 unsafe_allow_html=True)
+
+    # ============================================================
+    # FILTRES + TABLE CLIQUABLE (en bas)
+    # ============================================================
+    st.markdown("---")
+    fcol1, fcol2, fcol3, fcol4 = st.columns(4)
+    with fcol1:
+        cats = ['— Toutes —'] + get_categories()
+        f_cat = st.selectbox("Catégorie", cats, key="f_cat_neg")
+    with fcol2:
+        pays_opts = ['— Tous —'] + get_pays_list()
+        f_pays = st.selectbox("Pays", pays_opts, key="f_pays_neg")
+    with fcol3:
+        ref_opts = ['— Tous —'] + get_referents_list()
+        f_ref = st.selectbox("Référent", ref_opts, key="f_ref_neg")
+    with fcol4:
+        lang_opts = ['— Toutes —'] + get_langues_list()
+        f_lang = st.selectbox("Langue", lang_opts, key="f_lang_neg")
+    fcol5, fcol6, fcol7 = st.columns([2, 1, 1])
+    with fcol5:
+        f_search = st.text_input("Recherche (code / nom)", key="f_search_neg")
+    with fcol6:
+        f_inact = st.checkbox("Inclure inactifs", value=False, key="f_inact_neg")
+    with fcol7:
+        if CAN_EDIT and st.button("➕ Nouveau client", use_container_width=True, key="btn_new_client"):
+            st.session_state['neg_client_sel'] = 'NEW'
+            st.session_state.pop('neg_edit_mode', None)
+            st.rerun()
+
+    df_clients = get_clients({
+        'categorie': f_cat, 'pays': f_pays, 'referent': f_ref, 'langue': f_lang,
+        'recherche': f_search, 'inclure_inactifs': f_inact
+    })
+    st.markdown(f"**{len(df_clients)} client(s)** — cliquez une ligne pour voir la fiche en haut")
+
+    if df_clients.empty:
+        st.info("Aucun client.")
+    else:
+        # Table compacte avec colonnes lisibles
+        df_table = pd.DataFrame({
+            'Code': df_clients['code_client'],
+            'Raison sociale': df_clients['raison_sociale'].fillna('—'),
+            'Catégorie': df_clients['categorie'].fillna('—'),
+            'Pays': df_clients['pays'].fillna('—'),
+            'Référent': df_clients['referent_aff'].fillna('—'),
+            'Contacts': df_clients['nb_contacts'].astype(int),
+        })
+        event = st.dataframe(
+            df_table, use_container_width=True, hide_index=True,
+            on_select="rerun", selection_mode="single-row", key="tbl_clients_neg"
+        )
+        # Au clic sur une ligne -> sélectionner le client et remonter au panneau détail
+        sel_rows = event.selection.rows if event and event.selection else []
+        if sel_rows:
+            idx = sel_rows[0]
+            client_id_clic = int(df_clients.iloc[idx]['id'])
+            if st.session_state.get('neg_client_sel') != client_id_clic:
+                st.session_state['neg_client_sel'] = client_id_clic
+                st.session_state.pop('neg_edit_mode', None)
+                st.rerun()
 
 # ------------------------------------------------------------
 # ONGLET 2 — INTERACTIONS (vue transversale)
